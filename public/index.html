@@ -11,7 +11,6 @@
     .login-box { max-width: 420px; margin: 40px auto; background: white; padding: 25px; border-radius: 8px; box-shadow: 0 0 10px rgba(0,0,0,0.1); }
     input { width: 100%; padding: 8px; margin-bottom: 10px; font-size: 14px; }
     button { padding: 8px 15px; margin-top: 5px; cursor: pointer; }
-    #appArea { display: none; }
     .dia-bloco { background: white; padding: 15px; margin-bottom: 15px; border-radius: 6px; box-shadow: 0 0 5px rgba(0,0,0,0.08); }
     select, textarea { width: 100%; margin-top: 5px; margin-bottom: 10px; padding: 6px; }
     textarea { height: 60px; resize: vertical; }
@@ -46,7 +45,7 @@
   </div>
 
   <!-- APLICAÇÃO -->
-  <div id="appArea" class="container">
+  <div id="appArea" class="container" style="display:none;">
 
     <div class="top-actions">
       <span id="saveStatus" class="pill" style="display:none;"></span>
@@ -55,7 +54,7 @@
       <button onclick="logout()">Sair</button>
     </div>
 
-    <!-- ADMIN: Alberto/Mosna podem editar qualquer oficial e, após o fechamento, liberar edição -->
+    <!-- ADMIN -->
     <div id="adminBox" class="admin-box">
       <div class="admin-row">
         <label><strong>modo administrador:</strong></label>

@@ -1,11 +1,6 @@
-/* public/app.js
- * Regras:
- * - semana vigente: segunda a domingo (datas corretas)
- * - salvar automático
- * - Alberto/Mosna: podem editar qualquer oficial (dropdown)
- * - fechamento: sexta-feira 11h (São Paulo) bloqueia edição para oficiais
- *   e libera para Alberto/Mosna se marcar "alterar após fechamento"
- * - PDF: somente Alberto/Mosna, sempre com assinatura, e com todos os oficiais em tabela
+/* public/app.js (v4)
+ * Correção principal: garantir que x-access-key seja enviado SEMPRE (mesmo se AUTH.key ficar vazio),
+ * evitando 403 em /api/state e /api/lock para alguns usuários.
  */
 
 (() => {
@@ -28,15 +23,12 @@
   function getWeekRangeISO(baseDate = new Date()) {
     const d = new Date(baseDate);
     d.setHours(0, 0, 0, 0);
-    const day = d.getDay(); // 0=dom..6=sab
+    const day = d.getDay();
     const diffToMonday = (day === 0 ? -6 : 1) - day;
-
     const monday = new Date(d);
     monday.setDate(d.getDate() + diffToMonday);
-
     const sunday = new Date(monday);
     sunday.setDate(monday.getDate() + 6);
-
     return { monday, sunday };
   }
 
@@ -51,10 +43,8 @@
     const out = [];
     const cur = new Date(fromDate);
     cur.setHours(0, 0, 0, 0);
-
     const end = new Date(toDate);
     end.setHours(0, 0, 0, 0);
-
     while (cur <= end) {
       out.push(toISODate(cur));
       cur.setDate(cur.getDate() + 1);
@@ -69,9 +59,6 @@
     return dias[dt.getDay()];
   }
 
-  // =========================
-  // API_BASE
-  // =========================
   function resolveApiBase() {
     const url = new URL(location.href);
     const apiFromQuery = url.searchParams.get("api");
@@ -82,18 +69,21 @@
   }
   const API_BASE = resolveApiBase();
 
-  // =========================
-  // Auth / Request
-  // =========================
+  // Auth
   const AUTH = {
     key: localStorage.getItem("ACCESS_KEY") || "",
     nome: localStorage.getItem("USER_NAME") || "",
     role: localStorage.getItem("ROLE") || "",
   };
 
+  function currentKey() {
+    // >>> GARANTIA: sempre pega do localStorage se AUTH.key estiver vazio
+    return (AUTH.key || localStorage.getItem("ACCESS_KEY") || "").toString().trim();
+  }
+
   function setAuth({ key, nome, role = "" }) {
-    AUTH.key = key || "";
-    AUTH.nome = nome || "";
+    AUTH.key = (key || "").toString().trim();
+    AUTH.nome = (nome || "").toString();
     AUTH.role = role || "";
     localStorage.setItem("ACCESS_KEY", AUTH.key);
     localStorage.setItem("USER_NAME", AUTH.nome);
@@ -128,14 +118,13 @@
     const url = API_BASE ? `${API_BASE}${path}` : path;
 
     const h = { ...headers };
-    if (AUTH.key) h["x-access-key"] = AUTH.key;
+
+    const k = currentKey();
+    if (k) h["x-access-key"] = k;
     if (AUTH.nome) h["x-user-name"] = AUTH.nome;
 
-    // admin pode editar outro oficial
     const target = getTargetUser();
     if (target && target !== AUTH.nome) h["x-target-user"] = target;
-
-    // admin override após fechamento
     if (getAdminOverride()) h["x-admin-override"] = "1";
 
     let payload;
@@ -159,18 +148,13 @@
     try { data = txt ? JSON.parse(txt) : null; } catch { data = txt ? { raw: txt } : null; }
 
     if (!resp.ok) {
-      const msg =
-        (data && (data.error || data.message || data.details)) ||
-        (data && data.raw) ||
-        `HTTP ${resp.status}`;
+      const msg = (data && (data.error || data.message || data.details)) || (data && data.raw) || `HTTP ${resp.status}`;
       throw new Error(msg);
     }
     return data;
   }
 
-  // =========================
   // State
-  // =========================
   const CODES_CORRETOS = ["", "EXP", "SR", "FO", "MA", "VE", "LP", "FÉRIAS", "CFP_DIA", "CFP_NOITE", "OUTROS"];
 
   const DEFAULT_STATE = {
@@ -252,10 +236,7 @@
     sel.innerHTML = names.map(n => `<option value="${escapeHtml(n)}"${n===current?" selected":""}>${escapeHtml(n)}</option>`).join("");
 
     sel.onchange = () => render();
-    cb.onchange = () => {
-      // ao marcar override, tenta salvar novamente se estiver sujo
-      if (IS_DIRTY) scheduleAutoSave();
-    };
+    cb.onchange = () => { if (IS_DIRTY) scheduleAutoSave(); };
   }
 
   function render() {
@@ -343,7 +324,6 @@
       markDirty(false);
       renderSaveStatus("salvo");
     } catch (err) {
-      // se estiver fechado, backend devolve erro; mostra na tela
       renderSaveStatus("não salvo");
       alert(`Não foi possível salvar.\n\nDetalhes: ${err.message || err}`);
     } finally {
@@ -361,7 +341,6 @@
     if (!st) st = structuredClone(DEFAULT_STATE);
     st = ensureWeek(st);
     st = ensureCodes(st);
-    // garante que o usuário e (se admin) o alvo existam
     if (AUTH.nome) ensureUser(st, AUTH.nome);
     STATE = st;
     markDirty(false);
@@ -374,14 +353,10 @@
       const r = await request("/api/lock", { method: "GET" });
       renderLockStatus(!!r.closed);
     } catch {
-      // se não existir /api/lock, não quebra
       renderLockStatus(false);
     }
   }
 
-  // =========================
-  // PDF (somente 2 nomes)
-  // =========================
   function canGeneratePdf() { return isAdmin(); }
 
   function applyPdfVisibility() {
@@ -400,9 +375,6 @@
     }
   }
 
-  // =========================
-  // Login / Logout
-  // =========================
   async function doLogin(nome, key) {
     nome = normalizeName(nome);
     key = String(key || "").trim();
@@ -410,10 +382,14 @@
     if (!nome) throw new Error("Informe seu nome completo.");
     if (!key) throw new Error("Informe a chave de acesso.");
 
+    // >>> IMPORTANTE: salva a chave ANTES de qualquer loadState
+    setAuth({ key, nome, role: "" });
+
     try {
       const r = await request("/api/login", { method: "POST", body: { access_key: key, nome } });
       setAuth({ key, nome, role: (r && r.role) ? r.role : "" });
     } catch {
+      // mantém a chave salva mesmo se /api/login falhar
       setAuth({ key, nome, role: "" });
     }
 
@@ -422,8 +398,7 @@
 
     const btnPdf = $("#btnPdf");
     if (btnPdf) {
-      btnPdf.removeEventListener("click", gerarPdf);
-      btnPdf.addEventListener("click", gerarPdf);
+      btnPdf.onclick = gerarPdf;
     }
 
     await loadState();
@@ -471,16 +446,11 @@
       });
     }
 
-    if (AUTH.key && AUTH.nome) {
+    if (currentKey() && AUTH.nome) {
       showApp();
       applyPdfVisibility();
-
       const btnPdf = $("#btnPdf");
-      if (btnPdf) {
-        btnPdf.removeEventListener("click", gerarPdf);
-        btnPdf.addEventListener("click", gerarPdf);
-      }
-
+      if (btnPdf) btnPdf.onclick = gerarPdf;
       await loadState();
     } else {
       showLogin();

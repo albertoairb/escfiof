@@ -310,8 +310,8 @@ app.put("/api/state", mustBeKey, async (req, res) => {
   }
 });
 
-// PDF: somente Alberto/Mosna, sempre com assinaturas, tabela com todos os oficiais.
-// Ajuste: OUTROS imprime texto inteiro e a linha cresce para caber (altura dinâmica).
+// PDF: somente Alberto/Mosna, sempre com assinaturas, tabela com todos os oficiais (colunas segunda->domingo).
+// Ajuste: quando OUTROS tiver texto grande, a linha cresce (altura dinâmica) para caber tudo.
 app.get("/api/pdf", mustBeKey, async (req, res) => {
   const editor = (req.headers["x-user-name"] || "").toString().trim();
   if (!isAdminByName(editor)) {
@@ -383,6 +383,7 @@ app.get("/api/pdf", mustBeKey, async (req, res) => {
         const it = d ? entry[d] || { code: "", obs: "" } : { code: "", obs: "" };
         const text = cellText(it);
 
+        // altura necessária para este texto na largura da célula
         const needed = doc.heightOfString(text, { width: colW - 8 });
         rowHeight = Math.max(rowHeight, needed + 14);
       }
