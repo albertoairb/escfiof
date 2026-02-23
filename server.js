@@ -10,7 +10,7 @@ const mysql = require("mysql2/promise");
 // CONFIG / ENV
 // ===============================
 const PORT = Number(process.env.PORT || 8080);
-const TZ = (process.env.TZ || "America/Sao_Paulo").trim();
+const TZ = process.env.TZ || "America/Sao_Paulo";
 
 const SUPERVISOR_KEY = (process.env.SUPERVISOR_KEY || "supervisor123").trim();
 
@@ -63,64 +63,62 @@ const pool = DB_URL
 // ===============================
 // UTIL
 // ===============================
-function pad2(n) {
-  return String(n).padStart(2, "0");
-}
 
-function ymdToString(y, m, d) {
-  return `${y}-${pad2(m)}-${pad2(d)}`;
-}
-
-function getZonedYMDW(tz) {
-  // pega ano/mes/dia + weekday no fuso desejado (sem depender do timezone do servidor)
-  const fmt = new Intl.DateTimeFormat("en-US", {
-    timeZone: tz,
+function fmtYMDInTZ(date) {
+  // Retorna YYYY-MM-DD no fuso TZ (sem “virar o dia” por causa do UTC)
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: TZ,
     year: "numeric",
     month: "2-digit",
-    day: "2-digit",
-    weekday: "short"
-  });
-
-  const parts = fmt.formatToParts(new Date());
-  const get = (type) => parts.find((p) => p.type === type)?.value;
-
-  const year = Number(get("year"));
-  const month = Number(get("month"));
-  const day = Number(get("day"));
-  const weekdayStr = String(get("weekday") || "Mon"); // Sun, Mon, Tue...
-
-  const map = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 };
-  const weekday = map[weekdayStr] ?? 1;
-
-  return { year, month, day, weekday };
+    day: "2-digit"
+  }).format(date);
 }
 
-function addDaysUTCNoon(y, m, d, deltaDays) {
-  // usa UTC ao meio-dia para evitar “pulos” por fuso/DST, e retorna Y-M-D
-  const dt = new Date(Date.UTC(y, m - 1, d, 12, 0, 0));
-  dt.setUTCDate(dt.getUTCDate() + deltaDays);
-  return {
-    year: dt.getUTCFullYear(),
-    month: dt.getUTCMonth() + 1,
-    day: dt.getUTCDate()
-  };
+function getWeekdayIndexInTZ(date) {
+  // 0=domingo ... 6=sábado, calculado no fuso TZ
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: TZ,
+    weekday: "short"
+  }).formatToParts(date);
+
+  const wd = parts.find(p => p.type === "weekday")?.value || "";
+  const map = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 };
+  return map[wd] ?? 0;
+}
+
+function getYMDInTZ(date) {
+  // Extrai ano/mês/dia no fuso TZ
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: TZ,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit"
+  }).formatToParts(date);
+
+  const y = Number(parts.find(p => p.type === "year")?.value);
+  const m = Number(parts.find(p => p.type === "month")?.value);
+  const d = Number(parts.find(p => p.type === "day")?.value);
+
+  return { y, m, d };
 }
 
 function getWeekRangeISO() {
   // Semana vigente: segunda a domingo, em YYYY-MM-DD, respeitando TZ
-  // weekday: 0=domingo ... 6=sábado (map acima)
-  const { year, month, day, weekday } = getZonedYMDW(TZ);
+  const now = new Date();
 
-  // quantos dias desde a segunda-feira
-  // se domingo(0) -> 6 dias desde segunda; se segunda(1) -> 0; ...; sábado(6) -> 5
-  const daysSinceMonday = weekday === 0 ? 6 : (weekday - 1);
+  // “âncora” no meio do dia para evitar mudança de data ao somar/subtrair dias
+  const { y, m, d } = getYMDInTZ(now);
+  const anchor = new Date(Date.UTC(y, m - 1, d, 12, 0, 0));
 
-  const monday = addDaysUTCNoon(year, month, day, -daysSinceMonday);
-  const sunday = addDaysUTCNoon(monday.year, monday.month, monday.day, 6);
+  const day = getWeekdayIndexInTZ(now); // 0=dom ... 6=sáb no TZ
+  const diffToMonday = day === 0 ? -6 : 1 - day;
+
+  const monday = new Date(anchor.getTime() + diffToMonday * 86400000);
+  const sunday = new Date(monday.getTime() + 6 * 86400000);
 
   return {
-    start: ymdToString(monday.year, monday.month, monday.day),
-    end: ymdToString(sunday.year, sunday.month, sunday.day)
+    start: fmtYMDInTZ(monday),
+    end: fmtYMDInTZ(sunday)
   };
 }
 
@@ -133,34 +131,31 @@ function mustBeSupervisor(req, res, next) {
 }
 
 async function ensureSchema() {
-  // Cria tabelas se não existirem (1 statement por query)
-  const sqlRelatorios = `
-    CREATE TABLE IF NOT EXISTS relatorios (
-      id INT AUTO_INCREMENT PRIMARY KEY,
-      titulo VARCHAR(255) NOT NULL,
-      period_start DATE NOT NULL,
-      period_end DATE NOT NULL,
-      created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
-    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-  `;
-
-  const sqlLancamentos = `
-    CREATE TABLE IF NOT EXISTS lancamentos (
-      id INT AUTO_INCREMENT PRIMARY KEY,
-      relatorio_id INT NOT NULL,
-      data DATE NOT NULL,
-      codigo VARCHAR(64) NOT NULL,
-      observacao TEXT NULL,
-      created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-      FOREIGN KEY (relatorio_id) REFERENCES relatorios(id) ON DELETE CASCADE,
-      INDEX idx_relatorio_data (relatorio_id, data)
-    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-  `;
-
+  // Executar CREATE em comandos separados (evita erro de parser em alguns ambientes)
   const conn = await pool.getConnection();
   try {
-    await conn.query(sqlRelatorios);
-    await conn.query(sqlLancamentos);
+    await conn.query(`
+      CREATE TABLE IF NOT EXISTS relatorios (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        titulo VARCHAR(255) NOT NULL,
+        period_start DATE NOT NULL,
+        period_end DATE NOT NULL,
+        created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+    `);
+
+    await conn.query(`
+      CREATE TABLE IF NOT EXISTS lancamentos (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        relatorio_id INT NOT NULL,
+        data DATE NOT NULL,
+        codigo VARCHAR(64) NOT NULL,
+        observacao TEXT NULL,
+        created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (relatorio_id) REFERENCES relatorios(id) ON DELETE CASCADE,
+        INDEX idx_relatorio_data (relatorio_id, data)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+    `);
   } finally {
     conn.release();
   }
@@ -261,7 +256,9 @@ app.post("/api/relatorios/:id/lancamentos", mustBeSupervisor, async (req, res) =
     if (Number.isNaN(dataDia.getTime())) {
       return res.status(400).json({ error: "Data inválida." });
     }
-    const dataYYYYMMDD = dataDia.toISOString().slice(0, 10);
+
+    // Salvar data no formato YYYY-MM-DD no fuso TZ (evita virar o dia)
+    const dataYYYYMMDD = fmtYMDInTZ(dataDia);
 
     const rel = await safeQuery("SELECT id FROM relatorios WHERE id = ?", [relatorioId]);
     if (!rel.length) {
@@ -371,7 +368,6 @@ app.get("/api/relatorios/:id/pdf", mustBeSupervisor, async (req, res) => {
     app.listen(PORT, () => {
       console.log(`OK - Backend rodando na porta ${PORT}`);
       console.log(`DB_MODE=${DB_URL ? "url" : "host"} TZ=${TZ}`);
-      console.log("WEEK=", getWeekRangeISO());
     });
   } catch (err) {
     console.error("FALHA AO INICIALIZAR:", err);
