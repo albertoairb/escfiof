@@ -10,12 +10,12 @@ const mysql = require("mysql2/promise");
 // CONFIG / ENV
 // ===============================
 const PORT = Number(process.env.PORT || 8080);
-const TZ = process.env.TZ || "America/Sao_Paulo";
+const TZ = (process.env.TZ || "America/Sao_Paulo").trim();
 
-const SUPERVISOR_KEY = (process.env.SUPERVISOR_KEY || "supervisor123").trim();
+const SUPERVISOR_KEY = (process.env.SUPERVISOR_KEY || "sr123").trim();
 
 // DB: Railway (URL) > Docker/local (DB_HOST...)
-const DB_URL = (process.env.DB_URL || process.env.MYSQL_URL || "").trim();
+const DB_URL = (process.env.DB_URL || process.env.MYSQL_URL || process.env.MYSQL_PUBLIC_URL || "").trim();
 
 // Defaults para Docker/local (quando DB_URL não existir)
 const DB_HOST = (process.env.DB_HOST || "db").trim();
@@ -25,10 +25,7 @@ const DB_PASSWORD = (process.env.DB_PASSWORD || "app").trim();
 const DB_NAME = (process.env.DB_NAME || process.env.DB_DATABASE || "escala").trim();
 
 // PDF: nomes autorizados
-const PDF_ALLOWED_NAMES = new Set([
-  "Alberto Franzini Neto",
-  "Eduardo Mosna Xavier"
-]);
+const PDF_ALLOWED_NAMES = new Set(["Alberto Franzini Neto", "Eduardo Mosna Xavier"]);
 
 // ===============================
 // APP
@@ -63,62 +60,23 @@ const pool = DB_URL
 // ===============================
 // UTIL
 // ===============================
-
-function fmtYMDInTZ(date) {
-  // Retorna YYYY-MM-DD no fuso TZ (sem “virar o dia” por causa do UTC)
-  return new Intl.DateTimeFormat("en-CA", {
-    timeZone: TZ,
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit"
-  }).format(date);
-}
-
-function getWeekdayIndexInTZ(date) {
-  // 0=domingo ... 6=sábado, calculado no fuso TZ
-  const parts = new Intl.DateTimeFormat("en-US", {
-    timeZone: TZ,
-    weekday: "short"
-  }).formatToParts(date);
-
-  const wd = parts.find(p => p.type === "weekday")?.value || "";
-  const map = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 };
-  return map[wd] ?? 0;
-}
-
-function getYMDInTZ(date) {
-  // Extrai ano/mês/dia no fuso TZ
-  const parts = new Intl.DateTimeFormat("en-US", {
-    timeZone: TZ,
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit"
-  }).formatToParts(date);
-
-  const y = Number(parts.find(p => p.type === "year")?.value);
-  const m = Number(parts.find(p => p.type === "month")?.value);
-  const d = Number(parts.find(p => p.type === "day")?.value);
-
-  return { y, m, d };
-}
-
 function getWeekRangeISO() {
-  // Semana vigente: segunda a domingo, em YYYY-MM-DD, respeitando TZ
+  // Semana vigente: segunda a domingo, em YYYY-MM-DD
   const now = new Date();
-
-  // “âncora” no meio do dia para evitar mudança de data ao somar/subtrair dias
-  const { y, m, d } = getYMDInTZ(now);
-  const anchor = new Date(Date.UTC(y, m - 1, d, 12, 0, 0));
-
-  const day = getWeekdayIndexInTZ(now); // 0=dom ... 6=sáb no TZ
+  const day = now.getDay(); // 0=dom
   const diffToMonday = day === 0 ? -6 : 1 - day;
 
-  const monday = new Date(anchor.getTime() + diffToMonday * 86400000);
-  const sunday = new Date(monday.getTime() + 6 * 86400000);
+  const monday = new Date(now);
+  monday.setHours(0, 0, 0, 0);
+  monday.setDate(now.getDate() + diffToMonday);
+
+  const sunday = new Date(monday);
+  sunday.setDate(monday.getDate() + 6);
+  sunday.setHours(23, 59, 59, 999);
 
   return {
-    start: fmtYMDInTZ(monday),
-    end: fmtYMDInTZ(sunday)
+    start: monday.toISOString().slice(0, 10),
+    end: sunday.toISOString().slice(0, 10)
   };
 }
 
@@ -130,32 +88,48 @@ function mustBeSupervisor(req, res, next) {
   return next();
 }
 
+// Aceita:
+// - "2026-02-23"
+// - "2026-02-23T00:00:00.000Z"
+// - "2026-02-23T12:34:56-03:00"
+// e sempre salva como "YYYY-MM-DD" sem converter timezone
+function toYYYYMMDD(input) {
+  const s = (input || "").toString().trim();
+  if (!s) return null;
+
+  const m = s.match(/^(\d{4}-\d{2}-\d{2})/);
+  if (!m) return null;
+
+  return m[1];
+}
+
 async function ensureSchema() {
-  // Executar CREATE em comandos separados (evita erro de parser em alguns ambientes)
+  // Importante: executar UMA query por vez (compatibilidade total)
+  const sqls = [
+    `CREATE TABLE IF NOT EXISTS relatorios (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      titulo VARCHAR(255) NOT NULL,
+      period_start DATE NOT NULL,
+      period_end DATE NOT NULL,
+      created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;`,
+
+    `CREATE TABLE IF NOT EXISTS lancamentos (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      relatorio_id INT NOT NULL,
+      data DATE NOT NULL,
+      codigo VARCHAR(64) NOT NULL,
+      observacao TEXT NULL,
+      created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      INDEX idx_relatorio_data (relatorio_id, data),
+      CONSTRAINT fk_lanc_rel
+        FOREIGN KEY (relatorio_id) REFERENCES relatorios(id) ON DELETE CASCADE
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;`
+  ];
+
   const conn = await pool.getConnection();
   try {
-    await conn.query(`
-      CREATE TABLE IF NOT EXISTS relatorios (
-        id INT AUTO_INCREMENT PRIMARY KEY,
-        titulo VARCHAR(255) NOT NULL,
-        period_start DATE NOT NULL,
-        period_end DATE NOT NULL,
-        created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
-      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-    `);
-
-    await conn.query(`
-      CREATE TABLE IF NOT EXISTS lancamentos (
-        id INT AUTO_INCREMENT PRIMARY KEY,
-        relatorio_id INT NOT NULL,
-        data DATE NOT NULL,
-        codigo VARCHAR(64) NOT NULL,
-        observacao TEXT NULL,
-        created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY (relatorio_id) REFERENCES relatorios(id) ON DELETE CASCADE,
-        INDEX idx_relatorio_data (relatorio_id, data)
-      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-    `);
+    for (const s of sqls) await conn.query(s);
   } finally {
     conn.release();
   }
@@ -191,12 +165,7 @@ app.get("/api/health", async (req, res) => {
       message: err && err.message,
       code: err && err.code,
       errno: err && err.errno,
-      sqlState: err && err.sqlState,
-      using: DB_URL ? "DB_URL/MYSQL_URL" : "DB_HOST",
-      DB_HOST: DB_HOST,
-      DB_PORT: DB_PORT,
-      DB_USER: DB_USER,
-      DB_NAME: DB_NAME
+      sqlState: err && err.sqlState
     });
 
     return res.status(500).json({
@@ -215,7 +184,7 @@ app.post("/api/login", (req, res) => {
   return res.json({ ok: true, role: "supervisor" });
 });
 
-// Criar relatório da semana vigente (sempre cria um novo, simples e estável)
+// Criar relatório da semana vigente
 app.post("/api/relatorios", mustBeSupervisor, async (req, res) => {
   try {
     const titulo = (req.body && req.body.titulo ? req.body.titulo : "Escala Semanal").toString().trim();
@@ -244,22 +213,15 @@ app.post("/api/relatorios/:id/lancamentos", mustBeSupervisor, async (req, res) =
       return res.status(400).json({ error: "ID inválido." });
     }
 
-    const dataISO = (req.body && req.body.data ? req.body.data : "").toString().trim();
+    const dataYYYYMMDD = toYYYYMMDD(req.body && req.body.data ? req.body.data : "");
     const codigo = (req.body && req.body.codigo ? req.body.codigo : "").toString().trim();
     const observacao = (req.body && req.body.observacao ? req.body.observacao : "").toString();
 
-    if (!dataISO || !codigo) {
-      return res.status(400).json({ error: "Campos obrigatórios: data, codigo." });
+    if (!dataYYYYMMDD || !codigo) {
+      return res.status(400).json({ error: "Campos obrigatórios: data (YYYY-MM-DD), codigo." });
     }
 
-    const dataDia = new Date(dataISO);
-    if (Number.isNaN(dataDia.getTime())) {
-      return res.status(400).json({ error: "Data inválida." });
-    }
-
-    // Salvar data no formato YYYY-MM-DD no fuso TZ (evita virar o dia)
-    const dataYYYYMMDD = fmtYMDInTZ(dataDia);
-
+    // Confere se relatório existe
     const rel = await safeQuery("SELECT id FROM relatorios WHERE id = ?", [relatorioId]);
     if (!rel.length) {
       return res.status(404).json({ error: "Relatório não encontrado." });
@@ -270,7 +232,7 @@ app.post("/api/relatorios/:id/lancamentos", mustBeSupervisor, async (req, res) =
       [relatorioId, dataYYYYMMDD, codigo, observacao || null]
     );
 
-    return res.json({ ok: true, id: r.insertId });
+    return res.json({ ok: true, id: r.insertId, data: dataYYYYMMDD });
   } catch (err) {
     console.error("[LANCAMENTOS][POST] erro:", err);
     return res.status(500).json({ error: "Erro ao salvar.", details: err.message });
@@ -304,6 +266,7 @@ app.get("/api/relatorios/:id/pdf", mustBeSupervisor, async (req, res) => {
     return res.status(403).json({ error: "PDF final permitido somente para Alberto e Major Mosna." });
   }
 
+  // Implementação simples com PDFKit (se estiver instalado)
   let PDFDocument;
   try {
     PDFDocument = require("pdfkit");
