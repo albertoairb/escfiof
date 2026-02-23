@@ -71,6 +71,25 @@
     .top-actions {
       margin-bottom: 20px;
       text-align: right;
+      display: flex;
+      gap: 10px;
+      justify-content: flex-end;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+
+    .pill {
+      background: #eef2ff;
+      color: #1f2a44;
+      border: 1px solid #c7d2fe;
+      padding: 6px 10px;
+      border-radius: 999px;
+      font-size: 12px;
+    }
+
+    .muted {
+      color: #666;
+      font-size: 12px;
     }
   </style>
 </head>
@@ -91,13 +110,15 @@
     <input type="password" id="chave" placeholder="Digite sua chave" />
 
     <button onclick="login()">Entrar</button>
+    <div class="muted" style="margin-top:10px;">O sistema salva automaticamente ao editar.</div>
   </div>
 
   <!-- APLICAÇÃO -->
   <div id="appArea" class="container">
 
     <div class="top-actions">
-      <button onclick="gerarPDF()">Gerar PDF Final</button>
+      <span id="saveStatus" class="pill" style="display:none;"></span>
+      <button id="btnPdf" style="display:none;">Gerar PDF Final</button>
       <button onclick="logout()">Sair</button>
     </div>
 

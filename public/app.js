@@ -1,22 +1,25 @@
 /* public/app.js
- * Frontend: Escala Semanal de Oficiais
- * Compatível com o index.html enviado:
+ * Escala Semanal de Oficiais (Railway/local)
+ * Compatível com o index.html:
  * - #loginArea, #appArea, #semanaContainer
  * - inputs: #nome, #chave
- * - funções globais: login(), logout(), gerarPDF()
+ * - funções globais: login(), logout()
  *
- * Backend esperado (padrão):
- * - POST /api/login  { access_key, nome }  -> opcional (se não existir, segue apenas com header)
- * - GET  /api/state  -> retorna estado do sistema
- * - PUT  /api/state  -> salva estado do sistema (inteiro)
- * - GET  /api/pdf    -> retorna PDF (blob) (opcional)
+ * Regras implementadas:
+ * 1) semana vigente: segunda a domingo
+ * 2) códigos: EXP, SR, FO, MA, VE, LP, FÉRIAS, CFP_DIA, CFP_NOITE, OUTROS
+ * 3) salvar automático (debounce) ao editar qualquer dia (situação/observações)
+ * 4) PDF: botão só aparece para:
+ *    - Alberto Franzini Neto
+ *    - Eduardo Mosna Xavier
+ *    Observação: o backend precisa ter GET /api/pdf (senão dará 404)
  */
 
 (() => {
   "use strict";
 
   // =========================
-  // 0) Helpers
+  // Helpers
   // =========================
   const $ = (sel) => document.querySelector(sel);
 
@@ -30,9 +33,11 @@
   }
 
   function normalizeName(nome) {
-    return String(nome || "")
-      .trim()
-      .replace(/\s+/g, " ");
+    return String(nome || "").trim().replace(/\s+/g, " ");
+  }
+
+  function safeJsonParse(txt) {
+    try { return JSON.parse(txt); } catch { return null; }
   }
 
   // Semana vigente: segunda -> domingo
@@ -83,23 +88,26 @@
   }
 
   // =========================
-  // 1) API_BASE resolver
+  // API_BASE resolver
   // =========================
   function resolveApiBase() {
     const url = new URL(location.href);
+
+    // ?api=https://xxxx.up.railway.app
     const apiFromQuery = url.searchParams.get("api");
     if (apiFromQuery) return apiFromQuery.replace(/\/$/, "");
 
     const apiFromStorage = localStorage.getItem("API_BASE");
     if (apiFromStorage) return apiFromStorage.replace(/\/$/, "");
 
+    // mesma origem
     return "";
   }
 
-  const API_BASE = resolveApiBase(); // "" => mesma origem
+  const API_BASE = resolveApiBase();
 
   // =========================
-  // 2) Auth / Request
+  // Auth / Request
   // =========================
   const AUTH = {
     key: localStorage.getItem("ACCESS_KEY") || "",
@@ -131,6 +139,9 @@
 
     const h = { ...headers };
     if (AUTH.key) h["x-access-key"] = AUTH.key;
+
+    // útil para o backend decidir permissão do PDF por nome
+    if (AUTH.nome) h["x-user-name"] = AUTH.nome;
 
     let payload;
     if (body !== null && body !== undefined) {
@@ -168,21 +179,19 @@
   }
 
   // =========================
-  // 3) Estado do sistema (multiusuário por nome)
+  // State
   // =========================
+  const CODES_CORRETOS = ["", "EXP", "SR", "FO", "MA", "VE", "LP", "FÉRIAS", "CFP_DIA", "CFP_NOITE", "OUTROS"];
+
   const DEFAULT_STATE = {
     meta: {
       title: "Escala Semanal de Oficiais",
       author: "Desenvolvido por Alberto Franzini Neto",
       created_at: new Date().toISOString(),
     },
-    period: { start: "", end: "" }, // segunda -> domingo
+    period: { start: "", end: "" },
     dates: [],
-    // CÓDIGOS CORRETOS (conforme sua regra)
-    // - remover: F, 12H
-    // - adicionar: FÉRIAS, OUTROS
-    // - manter: EXP, SR, FO, MA, VE, LP, CFP_DIA, CFP_NOITE
-    codes: ["", "EXP", "SR", "FO", "MA", "VE", "LP", "FÉRIAS", "CFP_DIA", "CFP_NOITE", "OUTROS"],
+    codes: CODES_CORRETOS,
     byUser: {},
     updated_at: new Date().toISOString(),
   };
@@ -192,6 +201,7 @@
 
   function markDirty(v) {
     IS_DIRTY = !!v;
+    renderSaveStatus();
   }
 
   function ensureWeek(state) {
@@ -215,6 +225,7 @@
   function ensureUser(state, nome) {
     if (!state.byUser) state.byUser = {};
     if (!state.byUser[nome]) state.byUser[nome] = {};
+
     for (const d of state.dates || []) {
       if (!state.byUser[nome][d]) state.byUser[nome][d] = { code: "", obs: "" };
       if (state.byUser[nome][d].code === undefined) state.byUser[nome][d].code = "";
@@ -224,14 +235,63 @@
   }
 
   function ensureCodes(state) {
-    // força sempre a lista correta, mesmo que o backend tenha salvo lista antiga
-    state.codes = ["", "EXP", "SR", "FO", "MA", "VE", "LP", "FÉRIAS", "CFP_DIA", "CFP_NOITE", "OUTROS"];
+    state.codes = CODES_CORRETOS.slice();
     return state;
   }
 
   // =========================
-  // 4) Render (blocos por dia)
+  // Local fallback (se backend falhar)
   // =========================
+  function localKeyForState(periodStart, periodEnd, nome) {
+    const p = `${periodStart}_${periodEnd}`;
+    const u = nome || "sem_usuario";
+    return `ESCFOF_STATE_${u}_${p}`;
+  }
+
+  function saveLocalFallback() {
+    try {
+      if (!STATE || !AUTH.nome) return;
+      const k = localKeyForState(STATE.period.start, STATE.period.end, AUTH.nome);
+      localStorage.setItem(k, JSON.stringify(STATE));
+    } catch (e) {
+      console.warn("Falha ao salvar fallback local:", e);
+    }
+  }
+
+  function loadLocalFallback(periodStart, periodEnd, nome) {
+    try {
+      const k = localKeyForState(periodStart, periodEnd, nome);
+      const raw = localStorage.getItem(k);
+      if (!raw) return null;
+      return safeJsonParse(raw);
+    } catch {
+      return null;
+    }
+  }
+
+  // =========================
+  // Render
+  // =========================
+  function renderSaveStatus(text = null) {
+    const el = $("#saveStatus");
+    if (!el) return;
+
+    if (!AUTH.nome) {
+      el.style.display = "none";
+      el.textContent = "";
+      return;
+    }
+
+    el.style.display = "inline-block";
+
+    if (text !== null) {
+      el.textContent = text;
+      return;
+    }
+
+    el.textContent = IS_DIRTY ? "salvando..." : "salvo";
+  }
+
   function render() {
     const container = $("#semanaContainer");
     if (!container || !STATE) return;
@@ -243,13 +303,12 @@
     }
 
     const dates = STATE.dates || [];
-    const codes = Array.isArray(STATE.codes) ? STATE.codes : DEFAULT_STATE.codes;
+    const codes = Array.isArray(STATE.codes) ? STATE.codes : CODES_CORRETOS;
 
     let html = "";
     html += `<div style="margin-bottom:12px;">
       <div><strong>usuário:</strong> ${escapeHtml(nome)}</div>
       <div><strong>período:</strong> ${escapeHtml(STATE.period.start)} a ${escapeHtml(STATE.period.end)}</div>
-      ${API_BASE ? `<div><strong>api:</strong> ${escapeHtml(API_BASE)}</div>` : ""}
     </div>`;
 
     for (const d of dates) {
@@ -267,14 +326,10 @@
 
           <label>situação:</label>
           <select data-field="code">
-            ${codes
-              .map((c) => {
-                const label = c === "" ? "(vazio)" : c;
-                return `<option value="${escapeHtml(c)}"${
-                  c === code ? " selected" : ""
-                }>${escapeHtml(label)}</option>`;
-              })
-              .join("")}
+            ${codes.map((c) => {
+              const label = c === "" ? "(vazio)" : c;
+              return `<option value="${escapeHtml(c)}"${c === code ? " selected" : ""}>${escapeHtml(label)}</option>`;
+            }).join("")}
           </select>
 
           <label>observações:</label>
@@ -289,6 +344,42 @@
       el.addEventListener("change", onEntryChange);
       el.addEventListener("input", onEntryChange);
     });
+  }
+
+  // =========================
+  // Auto-save (debounce)
+  // =========================
+  let SAVE_TIMER = null;
+  let SAVE_IN_FLIGHT = false;
+
+  function scheduleAutoSave() {
+    if (SAVE_TIMER) clearTimeout(SAVE_TIMER);
+    SAVE_TIMER = setTimeout(() => {
+      autoSave().catch(() => void 0);
+    }, 800);
+  }
+
+  async function autoSave() {
+    if (!STATE || !IS_DIRTY) return;
+    if (SAVE_IN_FLIGHT) return;
+
+    SAVE_IN_FLIGHT = true;
+    renderSaveStatus("salvando...");
+
+    try {
+      await saveState(false);
+      renderSaveStatus("salvo");
+    } catch (err) {
+      console.warn("Falha ao salvar no backend; usando fallback local:", err.message || err);
+      saveLocalFallback();
+      renderSaveStatus("salvo local");
+      // mantém IS_DIRTY true? Aqui não: o usuário não pode ficar “preso”.
+      // Se quiser garantir insistência no backend, deixe como true.
+      // Para simplicidade operacional: marca como salvo (local) e segue.
+      IS_DIRTY = false;
+    } finally {
+      SAVE_IN_FLIGHT = false;
+    }
   }
 
   function onEntryChange(e) {
@@ -306,11 +397,13 @@
 
     STATE.byUser[AUTH.nome][date][field] = el.value;
     STATE.updated_at = new Date().toISOString();
+
     markDirty(true);
+    scheduleAutoSave();
   }
 
   // =========================
-  // 5) Load / Save (backend)
+  // Load / Save
   // =========================
   async function loadState() {
     let st = null;
@@ -318,32 +411,42 @@
     try {
       st = await request("/api/state", { method: "GET" });
     } catch (err) {
-      console.warn("Falha ao carregar /api/state:", err.message);
+      console.warn("Falha ao carregar /api/state:", err.message || err);
     }
 
     if (!st) st = structuredClone(DEFAULT_STATE);
 
     st = ensureWeek(st);
+    st = ensureCodes(st);
     st = ensureUser(st, AUTH.nome);
-    st = ensureCodes(st); // força códigos corretos sempre
+
+    // Se backend falhou, tenta fallback local específico desse período/usuário
+    if (!st || !st.byUser || !st.byUser[AUTH.nome]) {
+      const local = loadLocalFallback(st.period.start, st.period.end, AUTH.nome);
+      if (local) {
+        st = local;
+        st = ensureWeek(st);
+        st = ensureCodes(st);
+        st = ensureUser(st, AUTH.nome);
+      }
+    }
 
     STATE = st;
     markDirty(false);
     render();
 
+    // tenta persistir estrutura correta
     try {
       await saveState(false);
     } catch {
-      // ignora
+      saveLocalFallback();
     }
   }
 
   async function saveState(showAlert = true) {
     if (!STATE) return;
 
-    // garante que nunca vai salvar lista errada
     ensureCodes(STATE);
-
     await request("/api/state", { method: "PUT", body: STATE });
 
     markDirty(false);
@@ -351,7 +454,52 @@
   }
 
   // =========================
-  // 6) Login / Logout / PDF
+  // PDF visibility (somente 2 nomes)
+  // =========================
+  const PDF_ALLOWED_NAMES = [
+    "Alberto Franzini Neto",
+    "Eduardo Mosna Xavier"
+  ];
+
+  function canGeneratePdf() {
+    const nome = (AUTH.nome || "").trim();
+    return PDF_ALLOWED_NAMES.includes(nome);
+  }
+
+  function applyPdfVisibility() {
+    const btn = $("#btnPdf");
+    if (!btn) return;
+    btn.style.display = canGeneratePdf() ? "inline-block" : "none";
+  }
+
+  async function gerarPdfSomenteAutorizado() {
+    if (!canGeneratePdf()) {
+      alert("PDF final disponível somente para Alberto Franzini Neto e Eduardo Mosna Xavier.");
+      return;
+    }
+
+    // tenta salvar antes
+    try {
+      if (IS_DIRTY) {
+        await saveState(false);
+      }
+    } catch {
+      // mantém
+      saveLocalFallback();
+    }
+
+    // chama PDF
+    try {
+      const blob = await request("/api/pdf", { method: "GET", isBlob: true });
+      const url = URL.createObjectURL(blob);
+      window.open(url, "_blank", "noopener,noreferrer");
+    } catch (err) {
+      alert(`Não foi possível gerar/abrir o PDF.\n\nDetalhes: ${err.message || err}`);
+    }
+  }
+
+  // =========================
+  // Login / Logout
   // =========================
   async function doLogin(nome, key) {
     nome = normalizeName(nome);
@@ -360,6 +508,7 @@
     if (!nome) throw new Error("Informe seu nome completo.");
     if (!key) throw new Error("Informe a chave de acesso.");
 
+    // tenta login no backend (se existir)
     try {
       const r = await request("/api/login", { method: "POST", body: { access_key: key, nome } });
       setAuth({ key, nome, role: r?.role || "" });
@@ -368,6 +517,14 @@
     }
 
     showApp();
+    applyPdfVisibility();
+
+    const btnPdf = $("#btnPdf");
+    if (btnPdf) {
+      btnPdf.removeEventListener("click", gerarPdfSomenteAutorizado);
+      btnPdf.addEventListener("click", gerarPdfSomenteAutorizado);
+    }
+
     await loadState();
   }
 
@@ -383,24 +540,12 @@
     if (c) c.value = "";
   }
 
-  async function openPdf() {
-    try {
-      const blob = await request("/api/pdf", { method: "GET", isBlob: true });
-      const url = URL.createObjectURL(blob);
-      window.open(url, "_blank", "noopener,noreferrer");
-    } catch (err) {
-      alert(`Não foi possível gerar/abrir o PDF.\n\nDetalhes: ${err.message}`);
-    }
-  }
-
-  // =========================
-  // 7) UI
-  // =========================
   function showLogin() {
     const a = $("#loginArea");
     const b = $("#appArea");
     if (a) a.style.display = "block";
     if (b) b.style.display = "none";
+    renderSaveStatus(null);
   }
 
   function showApp() {
@@ -408,10 +553,11 @@
     const b = $("#appArea");
     if (a) a.style.display = "none";
     if (b) b.style.display = "block";
+    renderSaveStatus(null);
   }
 
   // =========================
-  // 8) Funções globais (index.html usa onclick)
+  // Globais (index.html usa onclick)
   // =========================
   window.login = async function login() {
     try {
@@ -427,23 +573,30 @@
     doLogout();
   };
 
-  window.gerarPDF = async function gerarPDF() {
-    try {
-      if (IS_DIRTY) {
-        await saveState(false);
-      }
-    } catch {
-      // ignora
-    }
-    await openPdf();
-  };
-
   // =========================
-  // 9) Boot
+  // Boot
   // =========================
   async function boot() {
+    const chaveEl = $("#chave");
+    if (chaveEl) {
+      chaveEl.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          window.login();
+        }
+      });
+    }
+
     if (AUTH.key && AUTH.nome) {
       showApp();
+      applyPdfVisibility();
+
+      const btnPdf = $("#btnPdf");
+      if (btnPdf) {
+        btnPdf.removeEventListener("click", gerarPdfSomenteAutorizado);
+        btnPdf.addEventListener("click", gerarPdfSomenteAutorizado);
+      }
+
       await loadState();
     } else {
       showLogin();
@@ -455,16 +608,6 @@
         e.returnValue = "";
       }
     });
-
-    const chaveEl = $("#chave");
-    if (chaveEl) {
-      chaveEl.addEventListener("keydown", (e) => {
-        if (e.key === "Enter") {
-          e.preventDefault();
-          window.login();
-        }
-      });
-    }
   }
 
   boot().catch((err) => {
