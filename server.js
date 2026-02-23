@@ -257,7 +257,8 @@ function cellText(it) {
   if (!obs) return code;
 
   if (code === "OUTROS") {
-    return obs; // sem cortar
+    if (!obs) return "OUTROS";
+    return `OUTROS - ${obs}`;
   }
 
   const short = obs.length > 36 ? obs.slice(0, 35) + "…" : obs;
@@ -341,6 +342,7 @@ app.get("/api/pdf", mustBeKey, async (req, res) => {
 
     const title = st?.meta?.title || "Escala Semanal de Oficiais";
     doc.fontSize(16).text(title, { align: "center" });
+    doc.fontSize(8).text("v9", { align: "right" });
     doc.moveDown(0.3);
     doc.fontSize(10).text(`Período: ${st?.period?.start || ""} a ${st?.period?.end || ""}`, { align: "center" });
     doc.moveDown(0.7);
