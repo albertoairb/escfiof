@@ -76,7 +76,6 @@
   }
 
   function diaSemanaPt(isoDate) {
-    // isoDate: YYYY-MM-DD
     const [y, m, d] = isoDate.split("-").map(Number);
     const dt = new Date(y, m - 1, d);
     const dias = ["domingo", "segunda-feira", "terça-feira", "quarta-feira", "quinta-feira", "sexta-feira", "sábado"];
@@ -87,16 +86,13 @@
   // 1) API_BASE resolver
   // =========================
   function resolveApiBase() {
-    // (a) override por querystring: ?api=https://xxxx.up.railway.app
     const url = new URL(location.href);
     const apiFromQuery = url.searchParams.get("api");
     if (apiFromQuery) return apiFromQuery.replace(/\/$/, "");
 
-    // (b) override por localStorage
     const apiFromStorage = localStorage.getItem("API_BASE");
     if (apiFromStorage) return apiFromStorage.replace(/\/$/, "");
 
-    // (c) padrão: mesma origem (ideal quando backend serve /public)
     return "";
   }
 
@@ -182,15 +178,12 @@
     },
     period: { start: "", end: "" }, // segunda -> domingo
     dates: [],
-    // códigos padrão (ajuste livre)
-    codes: ["", "EXP", "SR", "FO", "MA", "VE", "F", "LP", "CFP_DIA", "CFP_NOITE", "12H"],
-    // dados por usuário (nome)
-    byUser: {
-      // "Nome Completo": {
-      //   "2026-02-23": { code:"SR", obs:"..." },
-      //   ...
-      // }
-    },
+    // CÓDIGOS CORRETOS (conforme sua regra)
+    // - remover: F, 12H
+    // - adicionar: FÉRIAS, OUTROS
+    // - manter: EXP, SR, FO, MA, VE, LP, CFP_DIA, CFP_NOITE
+    codes: ["", "EXP", "SR", "FO", "MA", "VE", "LP", "FÉRIAS", "CFP_DIA", "CFP_NOITE", "OUTROS"],
+    byUser: {},
     updated_at: new Date().toISOString(),
   };
 
@@ -222,12 +215,17 @@
   function ensureUser(state, nome) {
     if (!state.byUser) state.byUser = {};
     if (!state.byUser[nome]) state.byUser[nome] = {};
-    // garante chaves para a semana
     for (const d of state.dates || []) {
       if (!state.byUser[nome][d]) state.byUser[nome][d] = { code: "", obs: "" };
       if (state.byUser[nome][d].code === undefined) state.byUser[nome][d].code = "";
       if (state.byUser[nome][d].obs === undefined) state.byUser[nome][d].obs = "";
     }
+    return state;
+  }
+
+  function ensureCodes(state) {
+    // força sempre a lista correta, mesmo que o backend tenha salvo lista antiga
+    state.codes = ["", "EXP", "SR", "FO", "MA", "VE", "LP", "FÉRIAS", "CFP_DIA", "CFP_NOITE", "OUTROS"];
     return state;
   }
 
@@ -255,7 +253,11 @@
     </div>`;
 
     for (const d of dates) {
-      const entry = (STATE.byUser && STATE.byUser[nome] && STATE.byUser[nome][d]) ? STATE.byUser[nome][d] : { code: "", obs: "" };
+      const entry =
+        STATE.byUser && STATE.byUser[nome] && STATE.byUser[nome][d]
+          ? STATE.byUser[nome][d]
+          : { code: "", obs: "" };
+
       const code = entry.code || "";
       const obs = entry.obs || "";
 
@@ -265,10 +267,14 @@
 
           <label>situação:</label>
           <select data-field="code">
-            ${codes.map(c => {
-              const label = c === "" ? "(vazio)" : c;
-              return `<option value="${escapeHtml(c)}"${c === code ? " selected" : ""}>${escapeHtml(label)}</option>`;
-            }).join("")}
+            ${codes
+              .map((c) => {
+                const label = c === "" ? "(vazio)" : c;
+                return `<option value="${escapeHtml(c)}"${
+                  c === code ? " selected" : ""
+                }>${escapeHtml(label)}</option>`;
+              })
+              .join("")}
           </select>
 
           <label>observações:</label>
@@ -279,7 +285,6 @@
 
     container.innerHTML = html;
 
-    // binds
     container.querySelectorAll('select[data-field], textarea[data-field]').forEach((el) => {
       el.addEventListener("change", onEntryChange);
       el.addEventListener("input", onEntryChange);
@@ -320,15 +325,12 @@
 
     st = ensureWeek(st);
     st = ensureUser(st, AUTH.nome);
-
-    // garante códigos (se vier vazio do backend)
-    if (!Array.isArray(st.codes) || st.codes.length === 0) st.codes = DEFAULT_STATE.codes;
+    st = ensureCodes(st); // força códigos corretos sempre
 
     STATE = st;
     markDirty(false);
     render();
 
-    // se o backend ainda não tinha nada, tenta persistir sem incomodar
     try {
       await saveState(false);
     } catch {
@@ -338,6 +340,9 @@
 
   async function saveState(showAlert = true) {
     if (!STATE) return;
+
+    // garante que nunca vai salvar lista errada
+    ensureCodes(STATE);
 
     await request("/api/state", { method: "PUT", body: STATE });
 
@@ -355,7 +360,6 @@
     if (!nome) throw new Error("Informe seu nome completo.");
     if (!key) throw new Error("Informe a chave de acesso.");
 
-    // tenta login no backend (se existir). Se não existir, segue apenas com header.
     try {
       const r = await request("/api/login", { method: "POST", body: { access_key: key, nome } });
       setAuth({ key, nome, role: r?.role || "" });
@@ -372,7 +376,7 @@
     STATE = null;
     markDirty(false);
     showLogin();
-    // limpa campos
+
     const n = $("#nome");
     const c = $("#chave");
     if (n) n.value = "";
@@ -424,13 +428,12 @@
   };
 
   window.gerarPDF = async function gerarPDF() {
-    // antes de gerar PDF, tenta salvar (evita PDF desatualizado)
     try {
       if (IS_DIRTY) {
         await saveState(false);
       }
     } catch {
-      // se salvar falhar, ainda assim tenta PDF (dependendo da regra do backend)
+      // ignora
     }
     await openPdf();
   };
@@ -439,7 +442,6 @@
   // 9) Boot
   // =========================
   async function boot() {
-    // se já tiver sessão salva, entra direto
     if (AUTH.key && AUTH.nome) {
       showApp();
       await loadState();
@@ -447,7 +449,6 @@
       showLogin();
     }
 
-    // aviso antes de sair se tiver alterações
     window.addEventListener("beforeunload", (e) => {
       if (IS_DIRTY) {
         e.preventDefault();
@@ -455,7 +456,6 @@
       }
     });
 
-    // atalho: Enter no campo chave tenta login
     const chaveEl = $("#chave");
     if (chaveEl) {
       chaveEl.addEventListener("keydown", (e) => {
