@@ -13,9 +13,6 @@ const PORT = Number(process.env.PORT || 8080);
 const TZ = (process.env.TZ || "America/Sao_Paulo").trim();
 
 // Chave única: todos os oficiais usam a mesma chave para editar.
-// Regras:
-// - todos podem salvar (com a chave correta)
-// - somente Alberto e Mosna podem gerar PDF
 const SUPERVISOR_KEY = (process.env.SUPERVISOR_KEY || "sr123").trim();
 
 // DB: Railway (URL) > Docker/local (DB_HOST...)
@@ -28,7 +25,7 @@ const DB_USER = (process.env.DB_USER || "app").trim();
 const DB_PASSWORD = (process.env.DB_PASSWORD || "app").trim();
 const DB_NAME = (process.env.DB_NAME || process.env.DB_DATABASE || "escala").trim();
 
-// PDF: nomes autorizados (somente estes dois podem gerar PDF)
+// Admin (somente estes dois geram PDF e podem alterar após fechamento)
 const ADMIN_NAMES = new Set(["Alberto Franzini Neto", "Eduardo Mosna Xavier"]);
 
 // ===============================
@@ -57,18 +54,22 @@ const pool = DB_URL
       waitForConnections: true,
       connectionLimit: 10,
       queueLimit: 0,
-      timezone: "Z"
+      timezone: "Z",
     });
 
 // ===============================
 // UTIL
 // ===============================
 function safeJsonParse(s) {
-  try { return JSON.parse(s); } catch { return null; }
+  try {
+    return JSON.parse(s);
+  } catch {
+    return null;
+  }
 }
 
 function safeString(s) {
-  return (s === null || s === undefined) ? "" : String(s);
+  return s === null || s === undefined ? "" : String(s);
 }
 
 // formata YYYY-MM-DD usando o timezone local do processo (TZ)
@@ -120,9 +121,10 @@ function mustBeKey(req, res, next) {
 
 // Fechamento: sexta-feira às 11h (São Paulo) até o fim da semana
 function isClosedNow() {
-  const now = new Date(); // já respeita TZ no processo
+  const now = new Date(); // respeita TZ no processo
   const day = now.getDay(); // 5=sexta
   const hour = now.getHours();
+
   if (day < 5) return false;
   if (day === 5) return hour >= 11;
   return true; // sábado/domingo após sexta 11h
@@ -156,6 +158,7 @@ function normalizeBaseState(state) {
   out.codes = CODES_CORRETOS.slice();
   if (!out.byUser || typeof out.byUser !== "object") out.byUser = {};
   out.updated_at = new Date().toISOString();
+
   return out;
 }
 
@@ -177,7 +180,7 @@ async function ensureSchema() {
       id INT PRIMARY KEY,
       payload LONGTEXT NOT NULL,
       updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
-    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;`
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;`,
   ];
 
   const conn = await pool.getConnection();
@@ -229,15 +232,26 @@ async function putStateMergedByUser(editorName, targetName, incomingState) {
 }
 
 function requirePdfKitOr501(res) {
-  try { return require("pdfkit"); }
-  catch { res.status(501).json({ error: "Geração de PDF indisponível (instale: npm i pdfkit)." }); return null; }
+  try {
+    return require("pdfkit");
+  } catch {
+    res.status(501).json({ error: "Geração de PDF indisponível (instale: npm i pdfkit)." });
+    return null;
+  }
 }
 
+// PDF: regra do OUTROS = mostra observação completa
 function cellText(it) {
   const code = safeString(it && it.code ? it.code : "").trim();
   const obs = safeString(it && it.obs ? it.obs : "").trim();
+
   if (!obs) return code;
-  const short = obs.length > 36 ? (obs.slice(0, 35) + "…") : obs;
+
+  if (code === "OUTROS") {
+    return obs; // sem cortar
+  }
+
+  const short = obs.length > 36 ? obs.slice(0, 35) + "…" : obs;
   return code ? `${code} - ${short}` : short;
 }
 
@@ -280,11 +294,12 @@ app.put("/api/state", mustBeKey, async (req, res) => {
     if (!editor) return res.status(400).json({ error: "Nome do usuário ausente (header x-user-name)." });
 
     const targetHeader = (req.headers["x-target-user"] || "").toString().trim();
-    const target = (targetHeader && isAdminByName(editor)) ? targetHeader : editor;
+    const target = targetHeader && isAdminByName(editor) ? targetHeader : editor;
 
-    // fechamento: após sexta 11h, bloqueia para não-admin
     if (isClosedNow() && !canOverride(req)) {
-      return res.status(423).json({ error: "Edição bloqueada após sexta-feira às 11h. Somente Alberto/Mosna podem alterar com 'alterar após fechamento'." });
+      return res.status(423).json({
+        error: "Edição bloqueada após sexta-feira às 11h. Somente Alberto/Mosna podem alterar com 'alterar após fechamento'.",
+      });
     }
 
     const incoming = req.body && typeof req.body === "object" ? req.body : null;
@@ -295,7 +310,8 @@ app.put("/api/state", mustBeKey, async (req, res) => {
   }
 });
 
-// PDF: somente Alberto/Mosna, sempre com assinaturas, e com todos os oficiais em tabela
+// PDF: somente Alberto/Mosna, sempre com assinaturas, tabela com todos os oficiais.
+// Ajuste: OUTROS imprime texto inteiro e a linha cresce para caber (altura dinâmica).
 app.get("/api/pdf", mustBeKey, async (req, res) => {
   const editor = (req.headers["x-user-name"] || "").toString().trim();
   if (!isAdminByName(editor)) {
@@ -318,15 +334,16 @@ app.get("/api/pdf", mustBeKey, async (req, res) => {
     doc.fontSize(16).text(title, { align: "center" });
     doc.moveDown(0.3);
     doc.fontSize(10).text(`Período: ${st?.period?.start || ""} a ${st?.period?.end || ""}`, { align: "center" });
-    doc.moveDown(0.5);
+    doc.moveDown(0.7);
 
     const dates = Array.isArray(st.dates) ? st.dates : [];
-    const byUser = (st.byUser && typeof st.byUser === "object") ? st.byUser : {};
-    const officers = Object.keys(byUser).sort((a,b)=>a.localeCompare(b,"pt-BR"));
+    const byUser = st.byUser && typeof st.byUser === "object" ? st.byUser : {};
+    const officers = Object.keys(byUser).sort((a, b) => a.localeCompare(b, "pt-BR"));
 
     if (!officers.length) {
       doc.fontSize(11).text("Nenhum oficial registrado ainda.");
-      doc.end(); return;
+      doc.end();
+      return;
     }
 
     const pageWidth = doc.page.width - doc.page.margins.left - doc.page.margins.right;
@@ -335,7 +352,7 @@ app.get("/api/pdf", mustBeKey, async (req, res) => {
 
     const nameColW = 200;
     const colW = (pageWidth - nameColW) / 7;
-    const rowH = 26;
+    const baseRowH = 26;
     const headerH = 24;
 
     function drawCell(x, y, w, h, text, isHeader = false) {
@@ -344,29 +361,49 @@ app.get("/api/pdf", mustBeKey, async (req, res) => {
       doc.text(text, x + 4, y + 7, { width: w - 8, height: h - 10, ellipsis: true });
     }
 
-    // header
-    drawCell(x0, y, nameColW, headerH, "oficial", true);
-    for (let i = 0; i < 7; i++) drawCell(x0 + nameColW + (colW*i), y, colW, headerH, dates[i] || "", true);
-    y += headerH;
+    function drawHeader() {
+      drawCell(x0, y, nameColW, headerH, "oficial", true);
+      for (let i = 0; i < 7; i++) {
+        drawCell(x0 + nameColW + colW * i, y, colW, headerH, dates[i] || "", true);
+      }
+      y += headerH;
+    }
+
+    drawHeader();
+
+    const bottomReserve = 70; // reserva para assinaturas
 
     for (const offName of officers) {
-      if (y + rowH > (doc.page.height - doc.page.margins.bottom - 70)) {
-        doc.addPage({ size: "A4", layout: "landscape", margin: 36 });
-        y = doc.page.margins.top;
-
-        drawCell(x0, y, nameColW, headerH, "oficial", true);
-        for (let i = 0; i < 7; i++) drawCell(x0 + nameColW + (colW*i), y, colW, headerH, dates[i] || "", true);
-        y += headerH;
-      }
-
-      drawCell(x0, y, nameColW, rowH, offName, false);
       const entry = byUser[offName] && typeof byUser[offName] === "object" ? byUser[offName] : {};
+
+      // 1) calcula altura necessária desta linha (para caber OUTROS grande)
+      let rowHeight = baseRowH;
       for (let i = 0; i < 7; i++) {
         const d = dates[i];
-        const it = d ? (entry[d] || { code:"", obs:"" }) : { code:"", obs:"" };
-        drawCell(x0 + nameColW + (colW*i), y, colW, rowH, cellText(it), false);
+        const it = d ? entry[d] || { code: "", obs: "" } : { code: "", obs: "" };
+        const text = cellText(it);
+
+        const needed = doc.heightOfString(text, { width: colW - 8 });
+        rowHeight = Math.max(rowHeight, needed + 14);
       }
-      y += rowH;
+
+      // 2) quebra de página se não couber
+      if (y + rowHeight > doc.page.height - doc.page.margins.bottom - bottomReserve) {
+        doc.addPage({ size: "A4", layout: "landscape", margin: 36 });
+        y = doc.page.margins.top;
+        drawHeader();
+      }
+
+      // 3) desenha linha com a altura calculada
+      drawCell(x0, y, nameColW, rowHeight, offName, false);
+
+      for (let i = 0; i < 7; i++) {
+        const d = dates[i];
+        const it = d ? entry[d] || { code: "", obs: "" } : { code: "", obs: "" };
+        drawCell(x0 + nameColW + colW * i, y, colW, rowHeight, cellText(it), false);
+      }
+
+      y += rowHeight;
     }
 
     // assinaturas (sempre que gerar PDF)
