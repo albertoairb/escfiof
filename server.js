@@ -10,7 +10,7 @@ const mysql = require("mysql2/promise");
 // CONFIG / ENV
 // ===============================
 const PORT = Number(process.env.PORT || 8080);
-const TZ = process.env.TZ || "America/Sao_Paulo";
+const TZ = (process.env.TZ || "America/Sao_Paulo").trim();
 
 const SUPERVISOR_KEY = (process.env.SUPERVISOR_KEY || "supervisor123").trim();
 
@@ -63,23 +63,64 @@ const pool = DB_URL
 // ===============================
 // UTIL
 // ===============================
+function pad2(n) {
+  return String(n).padStart(2, "0");
+}
+
+function ymdToString(y, m, d) {
+  return `${y}-${pad2(m)}-${pad2(d)}`;
+}
+
+function getZonedYMDW(tz) {
+  // pega ano/mes/dia + weekday no fuso desejado (sem depender do timezone do servidor)
+  const fmt = new Intl.DateTimeFormat("en-US", {
+    timeZone: tz,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    weekday: "short"
+  });
+
+  const parts = fmt.formatToParts(new Date());
+  const get = (type) => parts.find((p) => p.type === type)?.value;
+
+  const year = Number(get("year"));
+  const month = Number(get("month"));
+  const day = Number(get("day"));
+  const weekdayStr = String(get("weekday") || "Mon"); // Sun, Mon, Tue...
+
+  const map = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 };
+  const weekday = map[weekdayStr] ?? 1;
+
+  return { year, month, day, weekday };
+}
+
+function addDaysUTCNoon(y, m, d, deltaDays) {
+  // usa UTC ao meio-dia para evitar “pulos” por fuso/DST, e retorna Y-M-D
+  const dt = new Date(Date.UTC(y, m - 1, d, 12, 0, 0));
+  dt.setUTCDate(dt.getUTCDate() + deltaDays);
+  return {
+    year: dt.getUTCFullYear(),
+    month: dt.getUTCMonth() + 1,
+    day: dt.getUTCDate()
+  };
+}
+
 function getWeekRangeISO() {
-  // Semana vigente: segunda a domingo, em YYYY-MM-DD
-  const now = new Date();
-  const day = now.getDay(); // 0=dom
-  const diffToMonday = day === 0 ? -6 : 1 - day;
+  // Semana vigente: segunda a domingo, em YYYY-MM-DD, respeitando TZ
+  // weekday: 0=domingo ... 6=sábado (map acima)
+  const { year, month, day, weekday } = getZonedYMDW(TZ);
 
-  const monday = new Date(now);
-  monday.setHours(0, 0, 0, 0);
-  monday.setDate(now.getDate() + diffToMonday);
+  // quantos dias desde a segunda-feira
+  // se domingo(0) -> 6 dias desde segunda; se segunda(1) -> 0; ...; sábado(6) -> 5
+  const daysSinceMonday = weekday === 0 ? 6 : (weekday - 1);
 
-  const sunday = new Date(monday);
-  sunday.setDate(monday.getDate() + 6);
-  sunday.setHours(23, 59, 59, 999);
+  const monday = addDaysUTCNoon(year, month, day, -daysSinceMonday);
+  const sunday = addDaysUTCNoon(monday.year, monday.month, monday.day, 6);
 
   return {
-    start: monday.toISOString().slice(0, 10),
-    end: sunday.toISOString().slice(0, 10)
+    start: ymdToString(monday.year, monday.month, monday.day),
+    end: ymdToString(sunday.year, sunday.month, sunday.day)
   };
 }
 
@@ -92,7 +133,7 @@ function mustBeSupervisor(req, res, next) {
 }
 
 async function ensureSchema() {
-  // Cria tabelas se não existirem (uma query por vez: mais compatível e estável)
+  // Cria tabelas se não existirem (1 statement por query)
   const sqlRelatorios = `
     CREATE TABLE IF NOT EXISTS relatorios (
       id INT AUTO_INCREMENT PRIMARY KEY,
@@ -216,14 +257,12 @@ app.post("/api/relatorios/:id/lancamentos", mustBeSupervisor, async (req, res) =
       return res.status(400).json({ error: "Campos obrigatórios: data, codigo." });
     }
 
-    // data vem como ISO; salvamos só a parte YYYY-MM-DD
     const dataDia = new Date(dataISO);
     if (Number.isNaN(dataDia.getTime())) {
       return res.status(400).json({ error: "Data inválida." });
     }
     const dataYYYYMMDD = dataDia.toISOString().slice(0, 10);
 
-    // Confere se relatório existe
     const rel = await safeQuery("SELECT id FROM relatorios WHERE id = ?", [relatorioId]);
     if (!rel.length) {
       return res.status(404).json({ error: "Relatório não encontrado." });
@@ -268,7 +307,6 @@ app.get("/api/relatorios/:id/pdf", mustBeSupervisor, async (req, res) => {
     return res.status(403).json({ error: "PDF final permitido somente para Alberto e Major Mosna." });
   }
 
-  // Implementação simples com PDFKit (se estiver instalado)
   let PDFDocument;
   try {
     PDFDocument = require("pdfkit");
@@ -328,12 +366,12 @@ app.get("/api/relatorios/:id/pdf", mustBeSupervisor, async (req, res) => {
   try {
     process.env.TZ = TZ;
 
-    // garante schema
     await ensureSchema();
 
     app.listen(PORT, () => {
       console.log(`OK - Backend rodando na porta ${PORT}`);
       console.log(`DB_MODE=${DB_URL ? "url" : "host"} TZ=${TZ}`);
+      console.log("WEEK=", getWeekRangeISO());
     });
   } catch (err) {
     console.error("FALHA AO INICIALIZAR:", err);
