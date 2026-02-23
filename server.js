@@ -12,8 +12,10 @@ const mysql = require("mysql2/promise");
 const PORT = Number(process.env.PORT || 8080);
 const TZ = (process.env.TZ || "America/Sao_Paulo").trim();
 
-// Chave (hoje, única) usada no header x-access-key.
-// Se você quiser chaves diferentes por oficial no futuro, dá para evoluir.
+// Chave única (por enquanto): todos os oficiais usam a mesma chave para editar.
+// Regras:
+// - todos podem salvar (com a chave correta)
+// - somente Alberto e Mosna podem gerar PDF
 const SUPERVISOR_KEY = (process.env.SUPERVISOR_KEY || "sr123").trim();
 
 // DB: Railway (URL) > Docker/local (DB_HOST...)
@@ -37,7 +39,7 @@ app.set("trust proxy", true);
 
 app.use(helmet({ contentSecurityPolicy: false }));
 app.use(compression());
-app.use(express.json({ limit: "2mb" }));
+app.use(express.json({ limit: "3mb" }));
 
 // Servir frontend (serviço único)
 app.use(express.static(path.join(__dirname, "public")));
@@ -90,21 +92,6 @@ function mustBeSupervisor(req, res, next) {
   return next();
 }
 
-// Aceita:
-// - "2026-02-23"
-// - "2026-02-23T00:00:00.000Z"
-// - "2026-02-23T12:34:56-03:00"
-// e sempre salva como "YYYY-MM-DD" sem converter timezone
-function toYYYYMMDD(input) {
-  const s = (input || "").toString().trim();
-  if (!s) return null;
-
-  const m = s.match(/^(\d{4}-\d{2}-\d{2})/);
-  if (!m) return null;
-
-  return m[1];
-}
-
 function safeJsonParse(s) {
   try {
     return JSON.parse(s);
@@ -113,15 +100,16 @@ function safeJsonParse(s) {
   }
 }
 
-// códigos oficiais do frontend (garantir consistência no state)
+function safeString(s) {
+  return (s === null || s === undefined) ? "" : String(s);
+}
+
+// códigos oficiais do frontend
 const CODES_CORRETOS = ["", "EXP", "SR", "FO", "MA", "VE", "LP", "FÉRIAS", "CFP_DIA", "CFP_NOITE", "OUTROS"];
 
-function normalizeStateForWeek(state) {
-  const w = getWeekRangeISO();
-
+function buildDatesForWeek(startYYYYMMDD) {
   const dates = [];
-  // gera 7 dias a partir de w.start
-  const [y, m, d] = w.start.split("-").map(Number);
+  const [y, m, d] = startYYYYMMDD.split("-").map(Number);
   const base = new Date(y, m - 1, d);
   base.setHours(0, 0, 0, 0);
 
@@ -130,8 +118,16 @@ function normalizeStateForWeek(state) {
     cur.setDate(base.getDate() + i);
     dates.push(cur.toISOString().slice(0, 10));
   }
+  return dates;
+}
+
+function normalizeBaseState(state) {
+  // normaliza SEM apagar byUser (preserva todos os oficiais)
+  const w = getWeekRangeISO();
+  const dates = buildDatesForWeek(w.start);
 
   const out = state && typeof state === "object" ? state : {};
+
   out.meta = out.meta && typeof out.meta === "object" ? out.meta : {};
   if (!out.meta.title) out.meta.title = "Escala Semanal de Oficiais";
   if (!out.meta.author) out.meta.author = "Desenvolvido por Alberto Franzini Neto";
@@ -143,6 +139,19 @@ function normalizeStateForWeek(state) {
   if (!out.byUser || typeof out.byUser !== "object") out.byUser = {};
   out.updated_at = new Date().toISOString();
 
+  return out;
+}
+
+function normalizeUserEntry(userEntry, dates) {
+  // garante { [date]: { code, obs } } para as 7 datas
+  const out = userEntry && typeof userEntry === "object" ? userEntry : {};
+  for (const d of dates) {
+    if (!out[d] || typeof out[d] !== "object") out[d] = { code: "", obs: "" };
+    if (out[d].code === undefined) out[d].code = "";
+    if (out[d].obs === undefined) out[d].obs = "";
+    out[d].code = safeString(out[d].code);
+    out[d].obs = safeString(out[d].obs);
+  }
   return out;
 }
 
@@ -184,7 +193,7 @@ async function ensureSchema() {
     // seed do state id=1 (se não existir)
     const [rows] = await conn.query("SELECT id FROM state_store WHERE id=1 LIMIT 1");
     if (!rows.length) {
-      const initial = normalizeStateForWeek(null);
+      const initial = normalizeBaseState({});
       await conn.query("INSERT INTO state_store (id, payload) VALUES (1, ?)", [JSON.stringify(initial)]);
     }
   } finally {
@@ -204,16 +213,31 @@ async function safeQuery(sql, params = []) {
 
 async function getState() {
   const rows = await safeQuery("SELECT payload FROM state_store WHERE id=1 LIMIT 1");
-  if (!rows.length) return normalizeStateForWeek(null);
+  if (!rows.length) return normalizeBaseState({});
 
   const st = safeJsonParse(rows[0].payload);
-  return normalizeStateForWeek(st);
+  return normalizeBaseState(st || {});
 }
 
-async function putState(newState) {
-  const normalized = normalizeStateForWeek(newState);
-  await safeQuery("UPDATE state_store SET payload=? WHERE id=1", [JSON.stringify(normalized)]);
-  return normalized;
+async function putStateMergedByUser(nome, incomingState) {
+  const current = await getState(); // já normalizado e preserva byUser
+  const dates = Array.isArray(current.dates) ? current.dates : [];
+
+  const inc = incomingState && typeof incomingState === "object" ? incomingState : {};
+  const incByUser = inc.byUser && typeof inc.byUser === "object" ? inc.byUser : {};
+  const incUserEntry = incByUser[nome];
+
+  // se o frontend enviar o estado inteiro mas sem byUser[nome], não apaga nada
+  if (incUserEntry && typeof incUserEntry === "object") {
+    current.byUser[nome] = normalizeUserEntry(incUserEntry, dates);
+  } else {
+    // fallback: tenta ler pelo layout "notesByDate" (se algum dia mudar)
+    // mas por segurança não altera nada se não tiver dados
+  }
+
+  current.updated_at = new Date().toISOString();
+  await safeQuery("UPDATE state_store SET payload=? WHERE id=1", [JSON.stringify(current)]);
+  return current;
 }
 
 function requirePdfKitOr501(res) {
@@ -224,6 +248,16 @@ function requirePdfKitOr501(res) {
     res.status(501).json({ error: "Geração de PDF indisponível (instale: npm i pdfkit)." });
     return null;
   }
+}
+
+// texto curto para célula do PDF
+function cellText(it) {
+  const code = safeString(it && it.code ? it.code : "").trim();
+  const obs = safeString(it && it.obs ? it.obs : "").trim();
+  if (!obs) return code;
+  // corta observação para caber na tabela
+  const short = obs.length > 36 ? (obs.slice(0, 35) + "…") : obs;
+  return code ? `${code} - ${short}` : short;
 }
 
 // ===============================
@@ -262,7 +296,7 @@ app.post("/api/login", (req, res) => {
   if (key !== SUPERVISOR_KEY) {
     return res.status(403).json({ error: "Acesso negado." });
   }
-  return res.json({ ok: true, role: "supervisor" });
+  return res.json({ ok: true, role: "oficial" });
 });
 
 // ============ STATE (frontend) ============
@@ -277,11 +311,15 @@ app.get("/api/state", mustBeSupervisor, async (req, res) => {
   }
 });
 
-// PUT /api/state: salva estado inteiro (normalizado para semana vigente)
+// PUT /api/state: salva APENAS os dados do usuário logado (merge, sem apagar os demais)
 app.put("/api/state", mustBeSupervisor, async (req, res) => {
   try {
+    const nome = (req.headers["x-user-name"] || "").toString().trim();
+    if (!nome) return res.status(400).json({ error: "Nome do usuário ausente (header x-user-name)." });
+
     const incoming = req.body && typeof req.body === "object" ? req.body : null;
-    const st = await putState(incoming);
+    const st = await putStateMergedByUser(nome, incoming);
+
     return res.json({ ok: true, state: st });
   } catch (err) {
     console.error("[STATE][PUT] erro:", err);
@@ -291,6 +329,7 @@ app.put("/api/state", mustBeSupervisor, async (req, res) => {
 
 // ============ PDF (somente autorizados) ============
 // Frontend chama GET /api/pdf (sem id), e envia nome no header x-user-name.
+// PDF deve mostrar TODOS os oficiais em colunas (segunda->domingo).
 app.get("/api/pdf", mustBeSupervisor, async (req, res) => {
   const nome = (req.headers["x-user-name"] || "").toString().trim();
 
@@ -307,32 +346,77 @@ app.get("/api/pdf", mustBeSupervisor, async (req, res) => {
     res.setHeader("Content-Type", "application/pdf");
     res.setHeader("Content-Disposition", `inline; filename="escala_semanal.pdf"`);
 
-    const doc = new PDFDocument({ margin: 40 });
+    const doc = new PDFDocument({ margin: 36, size: "A4", layout: "landscape" });
     doc.pipe(res);
 
-    doc.fontSize(16).text(st?.meta?.title || "Escala Semanal de Oficiais", { align: "center" });
+    const title = st?.meta?.title || "Escala Semanal de Oficiais";
+    doc.fontSize(16).text(title, { align: "center" });
+    doc.moveDown(0.3);
+    doc.fontSize(10).text(`Período: ${st?.period?.start || ""} a ${st?.period?.end || ""}`, { align: "center" });
     doc.moveDown(0.5);
-    doc.fontSize(11).text(`Período: ${st?.period?.start || ""} a ${st?.period?.end || ""}`, { align: "center" });
-    doc.moveDown(1);
-    doc.fontSize(10).text(`Gerado por: ${nome}`);
-    doc.moveDown(1);
+    doc.fontSize(9).text(`Gerado por: ${nome}`, { align: "left" });
+    doc.moveDown(0.6);
 
     const dates = Array.isArray(st.dates) ? st.dates : [];
-    const byUser = st.byUser && typeof st.byUser === "object" ? st.byUser : {};
-    const user = byUser[nome] && typeof byUser[nome] === "object" ? byUser[nome] : {};
+    const byUser = (st.byUser && typeof st.byUser === "object") ? st.byUser : {};
 
-    doc.fontSize(12).text("Registros:", { underline: true });
-    doc.moveDown(0.5);
+    const officers = Object.keys(byUser).sort((a, b) => a.localeCompare(b, "pt-BR"));
+    if (!officers.length) {
+      doc.fontSize(11).text("Nenhum oficial registrado ainda.");
+      doc.end();
+      return;
+    }
 
-    if (!dates.length) {
-      doc.fontSize(10).text("Sem datas na semana.");
-    } else {
-      for (const d of dates) {
-        const it = user[d] || { code: "", obs: "" };
-        doc.fontSize(10).text(`${d} — ${it.code || ""}`);
-        if (it.obs) doc.fontSize(9).text(`Obs: ${it.obs}`);
-        doc.moveDown(0.5);
+    // --- Tabela ---
+    const pageWidth = doc.page.width - doc.page.margins.left - doc.page.margins.right;
+    const x0 = doc.page.margins.left;
+    let y = doc.y;
+
+    const nameColW = 200; // coluna do nome do oficial
+    const colW = (pageWidth - nameColW) / 7; // 7 dias
+    const rowH = 26;
+    const headerH = 24;
+
+    function drawCell(x, y, w, h, text, isHeader = false) {
+      doc.rect(x, y, w, h).stroke();
+      doc.fontSize(isHeader ? 9 : 8);
+      doc.text(text, x + 4, y + 7, { width: w - 8, height: h - 10, ellipsis: true });
+    }
+
+    // Cabeçalho
+    drawCell(x0, y, nameColW, headerH, "oficial", true);
+    for (let i = 0; i < 7; i++) {
+      const d = dates[i] || "";
+      drawCell(x0 + nameColW + (colW * i), y, colW, headerH, d, true);
+    }
+    y += headerH;
+
+    // Linhas
+    for (const offName of officers) {
+      // quebra de página
+      if (y + rowH > (doc.page.height - doc.page.margins.bottom)) {
+        doc.addPage({ size: "A4", layout: "landscape", margin: 36 });
+        y = doc.page.margins.top;
+
+        // redesenha cabeçalho
+        drawCell(x0, y, nameColW, headerH, "oficial", true);
+        for (let i = 0; i < 7; i++) {
+          const d = dates[i] || "";
+          drawCell(x0 + nameColW + (colW * i), y, colW, headerH, d, true);
+        }
+        y += headerH;
       }
+
+      drawCell(x0, y, nameColW, rowH, offName, false);
+
+      const entry = byUser[offName] && typeof byUser[offName] === "object" ? byUser[offName] : {};
+      for (let i = 0; i < 7; i++) {
+        const d = dates[i];
+        const it = d ? (entry[d] || { code: "", obs: "" }) : { code: "", obs: "" };
+        drawCell(x0 + nameColW + (colW * i), y, colW, rowH, cellText(it), false);
+      }
+
+      y += rowH;
     }
 
     doc.end();
@@ -375,7 +459,15 @@ app.post("/api/relatorios/:id/lancamentos", mustBeSupervisor, async (req, res) =
       return res.status(400).json({ error: "ID inválido." });
     }
 
-    const dataYYYYMMDD = toYYYYMMDD(req.body && req.body.data ? req.body.data : "");
+    // Aceita:
+    // - "2026-02-23"
+    // - "2026-02-23T00:00:00.000Z"
+    // - "2026-02-23T12:34:56-03:00"
+    // e sempre salva como "YYYY-MM-DD"
+    const s = (req.body && req.body.data ? req.body.data : "").toString().trim();
+    const m = s.match(/^(\d{4}-\d{2}-\d{2})/);
+    const dataYYYYMMDD = m ? m[1] : null;
+
     const codigo = (req.body && req.body.codigo ? req.body.codigo : "").toString().trim();
     const observacao = (req.body && req.body.observacao ? req.body.observacao : "").toString();
 
@@ -416,60 +508,6 @@ app.get("/api/relatorios/:id", mustBeSupervisor, async (req, res) => {
   } catch (err) {
     console.error("[RELATORIO][GET] erro:", err);
     return res.status(500).json({ error: "Erro ao carregar relatório.", details: err.message });
-  }
-});
-
-// PDF final (LEGADO) com id (mantido)
-app.get("/api/relatorios/:id/pdf", mustBeSupervisor, async (req, res) => {
-  const nome = (req.query.nome || "").toString().trim();
-
-  if (!PDF_ALLOWED_NAMES.has(nome)) {
-    return res.status(403).json({ error: "PDF final permitido somente para Alberto e Eduardo Mosna Xavier." });
-  }
-
-  const PDFDocument = requirePdfKitOr501(res);
-  if (!PDFDocument) return;
-
-  try {
-    const relatorioId = Number(req.params.id);
-    const relRows = await safeQuery("SELECT * FROM relatorios WHERE id = ?", [relatorioId]);
-    if (!relRows.length) return res.status(404).json({ error: "Relatório não encontrado." });
-
-    const lancRows = await safeQuery(
-      "SELECT * FROM lancamentos WHERE relatorio_id = ? ORDER BY data ASC, created_at ASC, id ASC",
-      [relatorioId]
-    );
-
-    res.setHeader("Content-Type", "application/pdf");
-    res.setHeader("Content-Disposition", `inline; filename="escala_${relatorioId}.pdf"`);
-
-    const doc = new PDFDocument({ margin: 40 });
-    doc.pipe(res);
-
-    doc.fontSize(16).text(relRows[0].titulo, { align: "center" });
-    doc.moveDown(0.5);
-    doc.fontSize(11).text(`Período: ${relRows[0].period_start} a ${relRows[0].period_end}`, { align: "center" });
-    doc.moveDown(1);
-    doc.fontSize(10).text(`Gerado por: ${nome}`);
-    doc.moveDown(1);
-
-    doc.fontSize(12).text("Lançamentos:", { underline: true });
-    doc.moveDown(0.5);
-
-    if (!lancRows.length) {
-      doc.fontSize(10).text("Nenhum lançamento registrado.");
-    } else {
-      lancRows.forEach((l) => {
-        doc.fontSize(10).text(`${l.data} — ${l.codigo}`);
-        if (l.observacao) doc.fontSize(9).text(`Obs: ${l.observacao}`);
-        doc.moveDown(0.5);
-      });
-    }
-
-    doc.end();
-  } catch (err) {
-    console.error("[PDF] erro:", err);
-    return res.status(500).json({ error: "Erro ao gerar PDF.", details: err.message });
   }
 });
 
