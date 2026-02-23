@@ -1,6 +1,8 @@
-/* public/app.js (v4)
- * Correção principal: garantir que x-access-key seja enviado SEMPRE (mesmo se AUTH.key ficar vazio),
- * evitando 403 em /api/state e /api/lock para alguns usuários.
+/* public/app.js (v6)
+ * Correções:
+ * - login agora é OBRIGATÓRIO: se /api/login falhar, não entra no sistema (evita "parece logado" mas dá 403).
+ * - se /api/state ou /api/lock retornarem 403, o sistema força logout e pede a chave novamente.
+ * - mantém envio consistente de x-access-key e x-user-name.
  */
 
 (() => {
@@ -23,7 +25,7 @@
   function getWeekRangeISO(baseDate = new Date()) {
     const d = new Date(baseDate);
     d.setHours(0, 0, 0, 0);
-    const day = d.getDay();
+    const day = d.getDay(); // 0=dom..6=sáb
     const diffToMonday = (day === 0 ? -6 : 1) - day;
     const monday = new Date(d);
     monday.setDate(d.getDate() + diffToMonday);
@@ -77,7 +79,6 @@
   };
 
   function currentKey() {
-    // >>> GARANTIA: sempre pega do localStorage se AUTH.key estiver vazio
     return (AUTH.key || localStorage.getItem("ACCESS_KEY") || "").toString().trim();
   }
 
@@ -100,12 +101,14 @@
   }
 
   const ADMIN_NAMES = ["Alberto Franzini Neto", "Eduardo Mosna Xavier"];
-  function isAdmin() { return ADMIN_NAMES.includes((AUTH.nome || "").trim()); }
+  function isAdmin() {
+    return ADMIN_NAMES.includes((AUTH.nome || "").trim());
+  }
 
   function getTargetUser() {
     if (!isAdmin()) return AUTH.nome;
     const sel = $("#adminTarget");
-    return (sel && sel.value) ? sel.value : AUTH.nome;
+    return sel && sel.value ? sel.value : AUTH.nome;
   }
 
   function getAdminOverride() {
@@ -116,7 +119,6 @@
 
   async function request(path, { method = "GET", body = null, headers = {}, isBlob = false } = {}) {
     const url = API_BASE ? `${API_BASE}${path}` : path;
-
     const h = { ...headers };
 
     const k = currentKey();
@@ -135,22 +137,35 @@
 
     const resp = await fetch(url, { method, headers: h, body: payload });
 
+    // blob
     if (isBlob) {
       if (!resp.ok) {
         const txt = await resp.text().catch(() => "");
-        throw new Error(txt || `HTTP ${resp.status}`);
+        const err = new Error(txt || `HTTP ${resp.status}`);
+        err.status = resp.status;
+        throw err;
       }
       return await resp.blob();
     }
 
     const txt = await resp.text().catch(() => "");
     let data = null;
-    try { data = txt ? JSON.parse(txt) : null; } catch { data = txt ? { raw: txt } : null; }
+    try {
+      data = txt ? JSON.parse(txt) : null;
+    } catch {
+      data = txt ? { raw: txt } : null;
+    }
 
     if (!resp.ok) {
-      const msg = (data && (data.error || data.message || data.details)) || (data && data.raw) || `HTTP ${resp.status}`;
-      throw new Error(msg);
+      const msg =
+        (data && (data.error || data.message || data.details)) ||
+        (data && data.raw) ||
+        `HTTP ${resp.status}`;
+      const err = new Error(msg);
+      err.status = resp.status;
+      throw err;
     }
+
     return data;
   }
 
@@ -312,6 +327,14 @@
     SAVE_TIMER = setTimeout(() => autoSave().catch(()=>{}), 800);
   }
 
+  function forceLogoutWithMessage(msg) {
+    clearAuth();
+    STATE = null;
+    IS_DIRTY = false;
+    showLogin();
+    alert(msg);
+  }
+
   async function autoSave() {
     if (!STATE || !IS_DIRTY) return;
     if (SAVE_IN_FLIGHT) return;
@@ -325,6 +348,12 @@
       renderSaveStatus("salvo");
     } catch (err) {
       renderSaveStatus("não salvo");
+
+      if (err && err.status === 403) {
+        forceLogoutWithMessage("Acesso negado. Sua chave pode estar incorreta. Entre novamente com a chave correta.");
+        return;
+      }
+
       alert(`Não foi possível salvar.\n\nDetalhes: ${err.message || err}`);
     } finally {
       SAVE_IN_FLIGHT = false;
@@ -336,8 +365,13 @@
     try {
       st = await request("/api/state", { method: "GET" });
     } catch (err) {
+      if (err && err.status === 403) {
+        forceLogoutWithMessage("Acesso negado. Sua chave pode estar incorreta. Entre novamente com a chave correta.");
+        return;
+      }
       console.warn("Falha ao carregar /api/state:", err.message || err);
     }
+
     if (!st) st = structuredClone(DEFAULT_STATE);
     st = ensureWeek(st);
     st = ensureCodes(st);
@@ -352,7 +386,11 @@
     try {
       const r = await request("/api/lock", { method: "GET" });
       renderLockStatus(!!r.closed);
-    } catch {
+    } catch (err) {
+      if (err && err.status === 403) {
+        forceLogoutWithMessage("Acesso negado. Sua chave pode estar incorreta. Entre novamente com a chave correta.");
+        return;
+      }
       renderLockStatus(false);
     }
   }
@@ -371,6 +409,10 @@
       const url = URL.createObjectURL(blob);
       window.open(url, "_blank", "noopener,noreferrer");
     } catch (err) {
+      if (err && err.status === 403) {
+        forceLogoutWithMessage("Acesso negado. Sua chave pode estar incorreta. Entre novamente com a chave correta.");
+        return;
+      }
       alert(`Não foi possível gerar/abrir o PDF.\n\nDetalhes: ${err.message || err}`);
     }
   }
@@ -382,24 +424,18 @@
     if (!nome) throw new Error("Informe seu nome completo.");
     if (!key) throw new Error("Informe a chave de acesso.");
 
-    // >>> IMPORTANTE: salva a chave ANTES de qualquer loadState
+    // salva antes para garantir header em /api/login
     setAuth({ key, nome, role: "" });
 
-    try {
-      const r = await request("/api/login", { method: "POST", body: { access_key: key, nome } });
-      setAuth({ key, nome, role: (r && r.role) ? r.role : "" });
-    } catch {
-      // mantém a chave salva mesmo se /api/login falhar
-      setAuth({ key, nome, role: "" });
-    }
+    // >>> LOGIN OBRIGATÓRIO (sem fallback)
+    const r = await request("/api/login", { method: "POST", body: { access_key: key, nome } });
+    setAuth({ key, nome, role: (r && r.role) ? r.role : "" });
 
     showApp();
     applyPdfVisibility();
 
     const btnPdf = $("#btnPdf");
-    if (btnPdf) {
-      btnPdf.onclick = gerarPdf;
-    }
+    if (btnPdf) btnPdf.onclick = gerarPdf;
 
     await loadState();
   }
@@ -432,6 +468,9 @@
     try {
       await doLogin($("#nome")?.value ?? "", $("#chave")?.value ?? "");
     } catch (err) {
+      // se falhar login, limpa e fica na tela
+      clearAuth();
+      showLogin();
       alert(err.message || String(err));
     }
   };
@@ -446,11 +485,12 @@
       });
     }
 
+    const btnPdf = $("#btnPdf");
+    if (btnPdf) btnPdf.onclick = gerarPdf;
+
     if (currentKey() && AUTH.nome) {
       showApp();
       applyPdfVisibility();
-      const btnPdf = $("#btnPdf");
-      if (btnPdf) btnPdf.onclick = gerarPdf;
       await loadState();
     } else {
       showLogin();
