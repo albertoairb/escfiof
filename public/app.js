@@ -1,285 +1,474 @@
-// ===============================
-// CONFIGURAÇÃO DA API
-// - Local:   http://localhost:8080
-// - Railway: usa o mesmo host (sem porta fixa)
-// ===============================
-const API = (() => {
-  const { protocol, hostname, port } = location;
+/* public/app.js
+ * Frontend: Escala Semanal de Oficiais
+ * Compatível com o index.html enviado:
+ * - #loginArea, #appArea, #semanaContainer
+ * - inputs: #nome, #chave
+ * - funções globais: login(), logout(), gerarPDF()
+ *
+ * Backend esperado (padrão):
+ * - POST /api/login  { access_key, nome }  -> opcional (se não existir, segue apenas com header)
+ * - GET  /api/state  -> retorna estado do sistema
+ * - PUT  /api/state  -> salva estado do sistema (inteiro)
+ * - GET  /api/pdf    -> retorna PDF (blob) (opcional)
+ */
 
-  // Se estiver em localhost/127.0.0.1, mantém a porta 8080 (backend local).
-  if (hostname === "localhost" || hostname === "127.0.0.1") {
-    return `${protocol}//${hostname}:8080`;
+(() => {
+  "use strict";
+
+  // =========================
+  // 0) Helpers
+  // =========================
+  const $ = (sel) => document.querySelector(sel);
+
+  function escapeHtml(s) {
+    return String(s ?? "")
+      .replaceAll("&", "&amp;")
+      .replaceAll("<", "&lt;")
+      .replaceAll(">", "&gt;")
+      .replaceAll('"', "&quot;")
+      .replaceAll("'", "&#039;");
   }
 
-  // Em produção (Railway), usa o mesmo host/porta atual do site.
-  // Se front e back estiverem no mesmo serviço/domínio, funciona direto.
-  // Se estiverem separados, ajuste aqui para o domínio do backend.
-  return `${protocol}//${hostname}${port ? `:${port}` : ""}`;
-})();
-
-// ===============================
-// ESTADO GLOBAL
-// ===============================
-let usuarioLogado = null;
-let relatorioAtual = null;
-
-// ===============================
-// FUNÇÃO PADRÃO DE REQUISIÇÃO
-// ===============================
-async function request(path, method = "GET", body = null) {
-  const headers = { "Content-Type": "application/json" };
-
-  if (usuarioLogado && usuarioLogado.access_key) {
-    headers["x-access-key"] = usuarioLogado.access_key;
+  function normalizeName(nome) {
+    return String(nome || "")
+      .trim()
+      .replace(/\s+/g, " ");
   }
 
-  const resp = await fetch(API + path, {
-    method,
-    headers,
-    body: body ? JSON.stringify(body) : null
-  });
+  // Semana vigente: segunda -> domingo
+  function getWeekRangeISO(baseDate = new Date()) {
+    const d = new Date(baseDate);
+    d.setHours(0, 0, 0, 0);
 
-  // Tenta interpretar JSON, mas não quebra se vier vazio/HTML
-  let data = null;
-  const contentType = resp.headers.get("content-type") || "";
-  if (contentType.includes("application/json")) {
-    try {
-      data = await resp.json();
-    } catch (e) {
-      data = null;
+    // JS: 0=domingo..6=sábado
+    const day = d.getDay();
+    const diffToMonday = (day === 0 ? -6 : 1) - day;
+
+    const monday = new Date(d);
+    monday.setDate(d.getDate() + diffToMonday);
+
+    const sunday = new Date(monday);
+    sunday.setDate(monday.getDate() + 6);
+
+    return { monday, sunday };
+  }
+
+  function toISODate(d) {
+    const yyyy = d.getFullYear();
+    const mm = String(d.getMonth() + 1).padStart(2, "0");
+    const dd = String(d.getDate()).padStart(2, "0");
+    return `${yyyy}-${mm}-${dd}`;
+  }
+
+  function listDatesISO(fromDate, toDate) {
+    const out = [];
+    const cur = new Date(fromDate);
+    cur.setHours(0, 0, 0, 0);
+
+    const end = new Date(toDate);
+    end.setHours(0, 0, 0, 0);
+
+    while (cur <= end) {
+      out.push(toISODate(cur));
+      cur.setDate(cur.getDate() + 1);
     }
-  } else {
-    // fallback: tenta texto só para enriquecer mensagem de erro
-    try {
-      const txt = await resp.text();
-      data = { error: txt };
-    } catch (e) {
-      data = null;
+    return out;
+  }
+
+  function diaSemanaPt(isoDate) {
+    // isoDate: YYYY-MM-DD
+    const [y, m, d] = isoDate.split("-").map(Number);
+    const dt = new Date(y, m - 1, d);
+    const dias = ["domingo", "segunda-feira", "terça-feira", "quarta-feira", "quinta-feira", "sexta-feira", "sábado"];
+    return dias[dt.getDay()];
+  }
+
+  // =========================
+  // 1) API_BASE resolver
+  // =========================
+  function resolveApiBase() {
+    // (a) override por querystring: ?api=https://xxxx.up.railway.app
+    const url = new URL(location.href);
+    const apiFromQuery = url.searchParams.get("api");
+    if (apiFromQuery) return apiFromQuery.replace(/\/$/, "");
+
+    // (b) override por localStorage
+    const apiFromStorage = localStorage.getItem("API_BASE");
+    if (apiFromStorage) return apiFromStorage.replace(/\/$/, "");
+
+    // (c) padrão: mesma origem (ideal quando backend serve /public)
+    return "";
+  }
+
+  const API_BASE = resolveApiBase(); // "" => mesma origem
+
+  // =========================
+  // 2) Auth / Request
+  // =========================
+  const AUTH = {
+    key: localStorage.getItem("ACCESS_KEY") || "",
+    nome: localStorage.getItem("USER_NAME") || "",
+    role: localStorage.getItem("ROLE") || "",
+  };
+
+  function setAuth({ key, nome, role = "" }) {
+    AUTH.key = key || "";
+    AUTH.nome = nome || "";
+    AUTH.role = role || "";
+
+    localStorage.setItem("ACCESS_KEY", AUTH.key);
+    localStorage.setItem("USER_NAME", AUTH.nome);
+    localStorage.setItem("ROLE", AUTH.role);
+  }
+
+  function clearAuth() {
+    AUTH.key = "";
+    AUTH.nome = "";
+    AUTH.role = "";
+    localStorage.removeItem("ACCESS_KEY");
+    localStorage.removeItem("USER_NAME");
+    localStorage.removeItem("ROLE");
+  }
+
+  async function request(path, { method = "GET", body = null, headers = {}, isBlob = false } = {}) {
+    const url = API_BASE ? `${API_BASE}${path}` : path;
+
+    const h = { ...headers };
+    if (AUTH.key) h["x-access-key"] = AUTH.key;
+
+    let payload;
+    if (body !== null && body !== undefined) {
+      h["Content-Type"] = "application/json";
+      payload = JSON.stringify(body);
     }
-  }
 
-  if (!resp.ok) {
-    const msg =
-      (data && (data.error || data.details)) ||
-      `Erro na requisição (HTTP ${resp.status})`;
-    throw new Error(msg);
-  }
+    const resp = await fetch(url, { method, headers: h, body: payload });
 
-  return data;
-}
-
-// ===============================
-// LOGIN SIMPLES
-// ===============================
-async function login() {
-  const nome = document.getElementById("nome").value.trim();
-  const chave = document.getElementById("chave").value.trim();
-
-  if (!nome || !chave) {
-    alert("Preencha nome e chave.");
-    return;
-  }
-
-  try {
-    const resp = await request("/api/login", "POST", { access_key: chave });
-
-    usuarioLogado = {
-      nome,
-      access_key: chave,
-      role: resp && resp.role ? resp.role : null
-    };
-
-    document.getElementById("loginArea").style.display = "none";
-    document.getElementById("appArea").style.display = "block";
-
-    carregarOuCriarRelatorio();
-  } catch (err) {
-    alert("Acesso negado.");
-  }
-}
-
-// ===============================
-// LOGOUT
-// ===============================
-function logout() {
-  usuarioLogado = null;
-  relatorioAtual = null;
-
-  document.getElementById("appArea").style.display = "none";
-  document.getElementById("loginArea").style.display = "block";
-}
-
-// ===============================
-// CRIAR OU CARREGAR RELATÓRIO
-// ===============================
-async function carregarOuCriarRelatorio() {
-  try {
-    const resp = await request("/api/relatorios", "POST", {
-      titulo: "Escala Semanal"
-    });
-
-    relatorioAtual = resp.relatorio;
-    renderSemana();
-  } catch (err) {
-    alert("Erro ao carregar relatório.");
-  }
-}
-
-// ===============================
-// GERAR SEMANA (SEGUNDA A DOMINGO)
-// ===============================
-function getSemanaAtual() {
-  const hoje = new Date();
-  const diaSemana = hoje.getDay(); // 0 = domingo
-  const diff = hoje.getDate() - diaSemana + (diaSemana === 0 ? -6 : 1);
-
-  const segunda = new Date(hoje.setDate(diff));
-  const dias = [];
-
-  for (let i = 0; i < 7; i++) {
-    const d = new Date(segunda);
-    d.setDate(segunda.getDate() + i);
-    dias.push(new Date(d));
-  }
-
-  return dias;
-}
-
-// ===============================
-// LISTA DE CÓDIGOS (SEM F e SEM 12H)
-// + OUTROS (digitável)
-// ===============================
-const CODIGOS = [
-  "EXP",
-  "SR",
-  "FO",
-  "FO*",
-  "FOJ",
-  "MA",
-  "VE",
-  "LP",
-  "CFP_DIA",
-  "CFP_NOITE",
-  "OUTROS"
-];
-
-// ===============================
-// RENDERIZAR SEMANA
-// ===============================
-function renderSemana() {
-  const container = document.getElementById("semanaContainer");
-  container.innerHTML = "";
-
-  const dias = getSemanaAtual();
-
-  dias.forEach((data) => {
-    const div = document.createElement("div");
-    div.className = "dia-bloco";
-
-    const titulo = document.createElement("h3");
-    titulo.innerText = data.toLocaleDateString("pt-BR", {
-      weekday: "long",
-      day: "2-digit",
-      month: "2-digit"
-    });
-
-    const select = document.createElement("select");
-    CODIGOS.forEach((codigo) => {
-      const option = document.createElement("option");
-      option.value = codigo;
-      option.innerText = codigo;
-      select.appendChild(option);
-    });
-
-    // Campo "OUTROS" (apenas quando selecionado)
-    const outrosWrap = document.createElement("div");
-    outrosWrap.style.display = "none";
-    outrosWrap.style.marginTop = "6px";
-
-    const outrosLabel = document.createElement("div");
-    outrosLabel.innerText = "especifique (OUTROS):";
-    outrosLabel.style.fontSize = "12px";
-    outrosLabel.style.opacity = "0.85";
-
-    const outrosInput = document.createElement("input");
-    outrosInput.type = "text";
-    outrosInput.placeholder = "Digite o código/descrição";
-    outrosInput.style.width = "100%";
-
-    outrosWrap.appendChild(outrosLabel);
-    outrosWrap.appendChild(outrosInput);
-
-    select.onchange = () => {
-      const isOutros = select.value === "OUTROS";
-      outrosWrap.style.display = isOutros ? "block" : "none";
-      if (!isOutros) outrosInput.value = "";
-    };
-
-    const obs = document.createElement("textarea");
-    obs.placeholder = "Observações do dia";
-
-    const btn = document.createElement("button");
-    btn.innerText = "Salvar";
-    btn.onclick = () => {
-      const codigo = select.value;
-
-      // Se for OUTROS, exige preenchimento e salva como "OUTROS: <texto>"
-      let codigoFinal = codigo;
-      if (codigo === "OUTROS") {
-        const txt = (outrosInput.value || "").trim();
-        if (!txt) {
-          alert("Preencha o campo 'OUTROS'.");
-          return;
-        }
-        codigoFinal = `OUTROS: ${txt}`;
+    if (isBlob) {
+      if (!resp.ok) {
+        const txt = await resp.text().catch(() => "");
+        throw new Error(txt || `HTTP ${resp.status}`);
       }
+      return await resp.blob();
+    }
 
-      salvarDia(data, codigoFinal, obs.value);
-    };
+    const txt = await resp.text().catch(() => "");
+    let data = null;
+    try {
+      data = txt ? JSON.parse(txt) : null;
+    } catch {
+      data = txt ? { raw: txt } : null;
+    }
 
-    div.appendChild(titulo);
-    div.appendChild(select);
-    div.appendChild(outrosWrap);
-    div.appendChild(obs);
-    div.appendChild(btn);
+    if (!resp.ok) {
+      const msg =
+        (data && (data.error || data.message || data.details)) ||
+        (data && data.raw) ||
+        `HTTP ${resp.status}`;
+      throw new Error(msg);
+    }
 
-    container.appendChild(div);
-  });
-}
+    return data;
+  }
 
-// ===============================
-// SALVAR DIA
-// ===============================
-async function salvarDia(data, codigo, observacao) {
-  try {
-    await request(`/api/relatorios/${relatorioAtual.id}/lancamentos`, "POST", {
-      data: data.toISOString(),
-      codigo,
-      observacao
+  // =========================
+  // 3) Estado do sistema (multiusuário por nome)
+  // =========================
+  const DEFAULT_STATE = {
+    meta: {
+      title: "Escala Semanal de Oficiais",
+      author: "Desenvolvido por Alberto Franzini Neto",
+      created_at: new Date().toISOString(),
+    },
+    period: { start: "", end: "" }, // segunda -> domingo
+    dates: [],
+    // códigos padrão (ajuste livre)
+    codes: ["", "EXP", "SR", "FO", "MA", "VE", "F", "LP", "CFP_DIA", "CFP_NOITE", "12H"],
+    // dados por usuário (nome)
+    byUser: {
+      // "Nome Completo": {
+      //   "2026-02-23": { code:"SR", obs:"..." },
+      //   ...
+      // }
+    },
+    updated_at: new Date().toISOString(),
+  };
+
+  let STATE = null;
+  let IS_DIRTY = false;
+
+  function markDirty(v) {
+    IS_DIRTY = !!v;
+  }
+
+  function ensureWeek(state) {
+    if (!state.period) state.period = { start: "", end: "" };
+
+    const needDates =
+      !state.period.start ||
+      !state.period.end ||
+      !Array.isArray(state.dates) ||
+      state.dates.length !== 7;
+
+    if (!needDates) return state;
+
+    const { monday, sunday } = getWeekRangeISO(new Date());
+    state.period.start = toISODate(monday);
+    state.period.end = toISODate(sunday);
+    state.dates = listDatesISO(monday, sunday);
+    return state;
+  }
+
+  function ensureUser(state, nome) {
+    if (!state.byUser) state.byUser = {};
+    if (!state.byUser[nome]) state.byUser[nome] = {};
+    // garante chaves para a semana
+    for (const d of state.dates || []) {
+      if (!state.byUser[nome][d]) state.byUser[nome][d] = { code: "", obs: "" };
+      if (state.byUser[nome][d].code === undefined) state.byUser[nome][d].code = "";
+      if (state.byUser[nome][d].obs === undefined) state.byUser[nome][d].obs = "";
+    }
+    return state;
+  }
+
+  // =========================
+  // 4) Render (blocos por dia)
+  // =========================
+  function render() {
+    const container = $("#semanaContainer");
+    if (!container || !STATE) return;
+
+    const nome = AUTH.nome;
+    if (!nome) {
+      container.innerHTML = "";
+      return;
+    }
+
+    const dates = STATE.dates || [];
+    const codes = Array.isArray(STATE.codes) ? STATE.codes : DEFAULT_STATE.codes;
+
+    let html = "";
+    html += `<div style="margin-bottom:12px;">
+      <div><strong>usuário:</strong> ${escapeHtml(nome)}</div>
+      <div><strong>período:</strong> ${escapeHtml(STATE.period.start)} a ${escapeHtml(STATE.period.end)}</div>
+      ${API_BASE ? `<div><strong>api:</strong> ${escapeHtml(API_BASE)}</div>` : ""}
+    </div>`;
+
+    for (const d of dates) {
+      const entry = (STATE.byUser && STATE.byUser[nome] && STATE.byUser[nome][d]) ? STATE.byUser[nome][d] : { code: "", obs: "" };
+      const code = entry.code || "";
+      const obs = entry.obs || "";
+
+      html += `
+        <div class="dia-bloco" data-date="${escapeHtml(d)}">
+          <h3 style="margin:0 0 10px 0;">${escapeHtml(d)} (${escapeHtml(diaSemanaPt(d))})</h3>
+
+          <label>situação:</label>
+          <select data-field="code">
+            ${codes.map(c => {
+              const label = c === "" ? "(vazio)" : c;
+              return `<option value="${escapeHtml(c)}"${c === code ? " selected" : ""}>${escapeHtml(label)}</option>`;
+            }).join("")}
+          </select>
+
+          <label>observações:</label>
+          <textarea data-field="obs" placeholder="Digite observações do dia...">${escapeHtml(obs)}</textarea>
+        </div>
+      `;
+    }
+
+    container.innerHTML = html;
+
+    // binds
+    container.querySelectorAll('select[data-field], textarea[data-field]').forEach((el) => {
+      el.addEventListener("change", onEntryChange);
+      el.addEventListener("input", onEntryChange);
+    });
+  }
+
+  function onEntryChange(e) {
+    if (!STATE || !AUTH.nome) return;
+
+    const el = e.target;
+    const bloco = el.closest(".dia-bloco");
+    if (!bloco) return;
+
+    const date = bloco.getAttribute("data-date");
+    const field = el.getAttribute("data-field");
+    if (!date || !field) return;
+
+    ensureUser(STATE, AUTH.nome);
+
+    STATE.byUser[AUTH.nome][date][field] = el.value;
+    STATE.updated_at = new Date().toISOString();
+    markDirty(true);
+  }
+
+  // =========================
+  // 5) Load / Save (backend)
+  // =========================
+  async function loadState() {
+    let st = null;
+
+    try {
+      st = await request("/api/state", { method: "GET" });
+    } catch (err) {
+      console.warn("Falha ao carregar /api/state:", err.message);
+    }
+
+    if (!st) st = structuredClone(DEFAULT_STATE);
+
+    st = ensureWeek(st);
+    st = ensureUser(st, AUTH.nome);
+
+    // garante códigos (se vier vazio do backend)
+    if (!Array.isArray(st.codes) || st.codes.length === 0) st.codes = DEFAULT_STATE.codes;
+
+    STATE = st;
+    markDirty(false);
+    render();
+
+    // se o backend ainda não tinha nada, tenta persistir sem incomodar
+    try {
+      await saveState(false);
+    } catch {
+      // ignora
+    }
+  }
+
+  async function saveState(showAlert = true) {
+    if (!STATE) return;
+
+    await request("/api/state", { method: "PUT", body: STATE });
+
+    markDirty(false);
+    if (showAlert) alert("Salvo com sucesso.");
+  }
+
+  // =========================
+  // 6) Login / Logout / PDF
+  // =========================
+  async function doLogin(nome, key) {
+    nome = normalizeName(nome);
+    key = String(key || "").trim();
+
+    if (!nome) throw new Error("Informe seu nome completo.");
+    if (!key) throw new Error("Informe a chave de acesso.");
+
+    // tenta login no backend (se existir). Se não existir, segue apenas com header.
+    try {
+      const r = await request("/api/login", { method: "POST", body: { access_key: key, nome } });
+      setAuth({ key, nome, role: r?.role || "" });
+    } catch {
+      setAuth({ key, nome, role: "" });
+    }
+
+    showApp();
+    await loadState();
+  }
+
+  function doLogout() {
+    clearAuth();
+    STATE = null;
+    markDirty(false);
+    showLogin();
+    // limpa campos
+    const n = $("#nome");
+    const c = $("#chave");
+    if (n) n.value = "";
+    if (c) c.value = "";
+  }
+
+  async function openPdf() {
+    try {
+      const blob = await request("/api/pdf", { method: "GET", isBlob: true });
+      const url = URL.createObjectURL(blob);
+      window.open(url, "_blank", "noopener,noreferrer");
+    } catch (err) {
+      alert(`Não foi possível gerar/abrir o PDF.\n\nDetalhes: ${err.message}`);
+    }
+  }
+
+  // =========================
+  // 7) UI
+  // =========================
+  function showLogin() {
+    const a = $("#loginArea");
+    const b = $("#appArea");
+    if (a) a.style.display = "block";
+    if (b) b.style.display = "none";
+  }
+
+  function showApp() {
+    const a = $("#loginArea");
+    const b = $("#appArea");
+    if (a) a.style.display = "none";
+    if (b) b.style.display = "block";
+  }
+
+  // =========================
+  // 8) Funções globais (index.html usa onclick)
+  // =========================
+  window.login = async function login() {
+    try {
+      const nome = $("#nome")?.value ?? "";
+      const chave = $("#chave")?.value ?? "";
+      await doLogin(nome, chave);
+    } catch (err) {
+      alert(err.message || String(err));
+    }
+  };
+
+  window.logout = function logout() {
+    doLogout();
+  };
+
+  window.gerarPDF = async function gerarPDF() {
+    // antes de gerar PDF, tenta salvar (evita PDF desatualizado)
+    try {
+      if (IS_DIRTY) {
+        await saveState(false);
+      }
+    } catch {
+      // se salvar falhar, ainda assim tenta PDF (dependendo da regra do backend)
+    }
+    await openPdf();
+  };
+
+  // =========================
+  // 9) Boot
+  // =========================
+  async function boot() {
+    // se já tiver sessão salva, entra direto
+    if (AUTH.key && AUTH.nome) {
+      showApp();
+      await loadState();
+    } else {
+      showLogin();
+    }
+
+    // aviso antes de sair se tiver alterações
+    window.addEventListener("beforeunload", (e) => {
+      if (IS_DIRTY) {
+        e.preventDefault();
+        e.returnValue = "";
+      }
     });
 
-    alert("Salvo com sucesso.");
-  } catch (err) {
-    alert("Erro ao salvar.");
-  }
-}
-
-// ===============================
-// PDF FINAL (APENAS ALBERTO E MOSNA)
-// ===============================
-function gerarPDF() {
-  if (
-    usuarioLogado.nome !== "Alberto Franzini Neto" &&
-    usuarioLogado.nome !== "Eduardo Mosna Xavier"
-  ) {
-    alert("PDF final permitido somente para Alberto e Major Mosna.");
-    return;
+    // atalho: Enter no campo chave tenta login
+    const chaveEl = $("#chave");
+    if (chaveEl) {
+      chaveEl.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          window.login();
+        }
+      });
+    }
   }
 
-  window.open(
-    `${API}/api/relatorios/${relatorioAtual.id}/pdf?nome=${encodeURIComponent(
-      usuarioLogado.nome
-    )}`,
-    "_blank"
-  );
-}
+  boot().catch((err) => {
+    console.error(err);
+    alert(`Falha ao iniciar.\n\nDetalhes: ${err.message || err}`);
+  });
+})();
