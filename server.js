@@ -14,44 +14,17 @@ const TZ = process.env.TZ || "America/Sao_Paulo";
 
 const SUPERVISOR_KEY = (process.env.SUPERVISOR_KEY || "supervisor123").trim();
 
-// ===============================
-// DB RESOLUTION (ROBUST FOR RAILWAY)
-// ===============================
-function resolveDbUrl() {
-  const candidates = [
-    process.env.DB_URL,
-    process.env.DATABASE_URL,
-    process.env.MYSQL_URL,
-    process.env.MYSQL_PUBLIC_URL
-  ]
-    .map((v) => (v ? String(v).trim() : ""))
-    .filter(Boolean);
+// DB: Railway (URL) > Docker/local (DB_HOST...)
+const DB_URL = (process.env.DB_URL || process.env.MYSQL_URL || "").trim();
 
-  for (const v of candidates) {
-    // caso 1: já é URL válida
-    if (/^mysql:\/\//i.test(v)) return v;
-
-    // caso 2: veio como nome literal da variável (ex: "MYSQL_PUBLIC_URL")
-    if (process.env[v] && /^mysql:\/\//i.test(String(process.env[v]).trim())) {
-      return String(process.env[v]).trim();
-    }
-  }
-
-  return "";
-}
-
-const DB_URL = resolveDbUrl();
-
-// Fallback para Docker/local
+// Defaults para Docker/local (quando DB_URL não existir)
 const DB_HOST = (process.env.DB_HOST || "db").trim();
 const DB_PORT = Number(process.env.DB_PORT || 3306);
 const DB_USER = (process.env.DB_USER || "app").trim();
 const DB_PASSWORD = (process.env.DB_PASSWORD || "app").trim();
 const DB_NAME = (process.env.DB_NAME || process.env.DB_DATABASE || "escala").trim();
 
-// ===============================
 // PDF: nomes autorizados
-// ===============================
 const PDF_ALLOWED_NAMES = new Set([
   "Alberto Franzini Neto",
   "Eduardo Mosna Xavier"
@@ -67,6 +40,7 @@ app.use(helmet({ contentSecurityPolicy: false }));
 app.use(compression());
 app.use(express.json({ limit: "1mb" }));
 
+// Servir frontend (serviço único)
 app.use(express.static(path.join(__dirname, "public")));
 
 // ===============================
@@ -90,8 +64,9 @@ const pool = DB_URL
 // UTIL
 // ===============================
 function getWeekRangeISO() {
+  // Semana vigente: segunda a domingo, em YYYY-MM-DD
   const now = new Date();
-  const day = now.getDay(); // 0=domingo
+  const day = now.getDay(); // 0=dom
   const diffToMonday = day === 0 ? -6 : 1 - day;
 
   const monday = new Date(now);
@@ -117,7 +92,8 @@ function mustBeSupervisor(req, res, next) {
 }
 
 async function ensureSchema() {
-  const sql = `
+  // Cria tabelas se não existirem (uma query por vez: mais compatível e estável)
+  const sqlRelatorios = `
     CREATE TABLE IF NOT EXISTS relatorios (
       id INT AUTO_INCREMENT PRIMARY KEY,
       titulo VARCHAR(255) NOT NULL,
@@ -125,7 +101,9 @@ async function ensureSchema() {
       period_end DATE NOT NULL,
       created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+  `;
 
+  const sqlLancamentos = `
     CREATE TABLE IF NOT EXISTS lancamentos (
       id INT AUTO_INCREMENT PRIMARY KEY,
       relatorio_id INT NOT NULL,
@@ -140,7 +118,8 @@ async function ensureSchema() {
 
   const conn = await pool.getConnection();
   try {
-    await conn.query(sql);
+    await conn.query(sqlRelatorios);
+    await conn.query(sqlLancamentos);
   } finally {
     conn.release();
   }
@@ -172,25 +151,38 @@ app.get("/api/health", async (req, res) => {
       week: getWeekRangeISO()
     });
   } catch (err) {
-    console.error("[HEALTH][DB] Falha no ping do MySQL:", err);
+    console.error("[HEALTH][DB] Falha no ping do MySQL:", {
+      message: err && err.message,
+      code: err && err.code,
+      errno: err && err.errno,
+      sqlState: err && err.sqlState,
+      using: DB_URL ? "DB_URL/MYSQL_URL" : "DB_HOST",
+      DB_HOST: DB_HOST,
+      DB_PORT: DB_PORT,
+      DB_USER: DB_USER,
+      DB_NAME: DB_NAME
+    });
+
     return res.status(500).json({
       ok: false,
-      error: err?.message || "Falha no health"
+      error: err && err.message ? err.message : "Falha no health",
+      code: err && err.code ? err.code : null
     });
   }
 });
 
 app.post("/api/login", (req, res) => {
-  const key = (req.body?.access_key || "").toString().trim();
+  const key = (req.body && req.body.access_key ? req.body.access_key : "").toString().trim();
   if (key !== SUPERVISOR_KEY) {
     return res.status(403).json({ error: "Acesso negado." });
   }
   return res.json({ ok: true, role: "supervisor" });
 });
 
+// Criar relatório da semana vigente (sempre cria um novo, simples e estável)
 app.post("/api/relatorios", mustBeSupervisor, async (req, res) => {
   try {
-    const titulo = (req.body?.titulo || "Escala Semanal").toString().trim();
+    const titulo = (req.body && req.body.titulo ? req.body.titulo : "Escala Semanal").toString().trim();
     const { start, end } = getWeekRangeISO();
 
     const result = await safeQuery(
@@ -204,44 +196,55 @@ app.post("/api/relatorios", mustBeSupervisor, async (req, res) => {
     return res.json({ ok: true, relatorio: rows[0] });
   } catch (err) {
     console.error("[RELATORIOS][POST] erro:", err);
-    return res.status(500).json({ error: "Erro ao criar relatório." });
+    return res.status(500).json({ error: "Erro ao criar relatório.", details: err.message });
   }
 });
 
+// Inserir lançamento (append-only)
 app.post("/api/relatorios/:id/lancamentos", mustBeSupervisor, async (req, res) => {
   try {
     const relatorioId = Number(req.params.id);
-    const dataISO = (req.body?.data || "").toString().trim();
-    const codigo = (req.body?.codigo || "").toString().trim();
-    const observacao = (req.body?.observacao || "").toString();
-
-    if (!relatorioId || !dataISO || !codigo) {
-      return res.status(400).json({ error: "Campos obrigatórios." });
+    if (!Number.isFinite(relatorioId) || relatorioId <= 0) {
+      return res.status(400).json({ error: "ID inválido." });
     }
 
+    const dataISO = (req.body && req.body.data ? req.body.data : "").toString().trim();
+    const codigo = (req.body && req.body.codigo ? req.body.codigo : "").toString().trim();
+    const observacao = (req.body && req.body.observacao ? req.body.observacao : "").toString();
+
+    if (!dataISO || !codigo) {
+      return res.status(400).json({ error: "Campos obrigatórios: data, codigo." });
+    }
+
+    // data vem como ISO; salvamos só a parte YYYY-MM-DD
     const dataDia = new Date(dataISO);
     if (Number.isNaN(dataDia.getTime())) {
       return res.status(400).json({ error: "Data inválida." });
     }
-
     const dataYYYYMMDD = dataDia.toISOString().slice(0, 10);
 
-    await safeQuery(
+    // Confere se relatório existe
+    const rel = await safeQuery("SELECT id FROM relatorios WHERE id = ?", [relatorioId]);
+    if (!rel.length) {
+      return res.status(404).json({ error: "Relatório não encontrado." });
+    }
+
+    const r = await safeQuery(
       "INSERT INTO lancamentos (relatorio_id, data, codigo, observacao) VALUES (?, ?, ?, ?)",
       [relatorioId, dataYYYYMMDD, codigo, observacao || null]
     );
 
-    return res.json({ ok: true });
+    return res.json({ ok: true, id: r.insertId });
   } catch (err) {
     console.error("[LANCAMENTOS][POST] erro:", err);
-    return res.status(500).json({ error: "Erro ao salvar." });
+    return res.status(500).json({ error: "Erro ao salvar.", details: err.message });
   }
 });
 
+// Listar lançamentos do relatório
 app.get("/api/relatorios/:id", mustBeSupervisor, async (req, res) => {
   try {
     const relatorioId = Number(req.params.id);
-
     const relRows = await safeQuery("SELECT * FROM relatorios WHERE id = ?", [relatorioId]);
     if (!relRows.length) return res.status(404).json({ error: "Relatório não encontrado." });
 
@@ -253,7 +256,68 @@ app.get("/api/relatorios/:id", mustBeSupervisor, async (req, res) => {
     return res.json({ ok: true, relatorio: relRows[0], lancamentos: lancRows });
   } catch (err) {
     console.error("[RELATORIO][GET] erro:", err);
-    return res.status(500).json({ error: "Erro ao carregar." });
+    return res.status(500).json({ error: "Erro ao carregar relatório.", details: err.message });
+  }
+});
+
+// PDF final (somente nomes autorizados)
+app.get("/api/relatorios/:id/pdf", mustBeSupervisor, async (req, res) => {
+  const nome = (req.query.nome || "").toString().trim();
+
+  if (!PDF_ALLOWED_NAMES.has(nome)) {
+    return res.status(403).json({ error: "PDF final permitido somente para Alberto e Major Mosna." });
+  }
+
+  // Implementação simples com PDFKit (se estiver instalado)
+  let PDFDocument;
+  try {
+    PDFDocument = require("pdfkit");
+  } catch (e) {
+    return res.status(501).json({
+      error: "Geração de PDF indisponível (dependência PDFKit não instalada)."
+    });
+  }
+
+  try {
+    const relatorioId = Number(req.params.id);
+    const relRows = await safeQuery("SELECT * FROM relatorios WHERE id = ?", [relatorioId]);
+    if (!relRows.length) return res.status(404).json({ error: "Relatório não encontrado." });
+
+    const lancRows = await safeQuery(
+      "SELECT * FROM lancamentos WHERE relatorio_id = ? ORDER BY data ASC, created_at ASC, id ASC",
+      [relatorioId]
+    );
+
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Content-Disposition", `inline; filename="escala_${relatorioId}.pdf"`);
+
+    const doc = new PDFDocument({ margin: 40 });
+    doc.pipe(res);
+
+    doc.fontSize(16).text(relRows[0].titulo, { align: "center" });
+    doc.moveDown(0.5);
+    doc.fontSize(11).text(`Período: ${relRows[0].period_start} a ${relRows[0].period_end}`, { align: "center" });
+    doc.moveDown(1);
+    doc.fontSize(10).text(`Gerado por: ${nome}`);
+    doc.moveDown(1);
+
+    doc.fontSize(12).text("Lançamentos:", { underline: true });
+    doc.moveDown(0.5);
+
+    if (!lancRows.length) {
+      doc.fontSize(10).text("Nenhum lançamento registrado.");
+    } else {
+      lancRows.forEach((l) => {
+        doc.fontSize(10).text(`${l.data} — ${l.codigo}`);
+        if (l.observacao) doc.fontSize(9).text(`Obs: ${l.observacao}`);
+        doc.moveDown(0.5);
+      });
+    }
+
+    doc.end();
+  } catch (err) {
+    console.error("[PDF] erro:", err);
+    return res.status(500).json({ error: "Erro ao gerar PDF.", details: err.message });
   }
 });
 
@@ -264,6 +328,7 @@ app.get("/api/relatorios/:id", mustBeSupervisor, async (req, res) => {
   try {
     process.env.TZ = TZ;
 
+    // garante schema
     await ensureSchema();
 
     app.listen(PORT, () => {
