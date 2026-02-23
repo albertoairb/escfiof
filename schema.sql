@@ -1,41 +1,18 @@
--- ===============================
--- BANCO: ESCALA SEMANAL
--- ===============================
-
--- (opcional) criar banco se não existir
-CREATE DATABASE IF NOT EXISTS escala
-  DEFAULT CHARACTER SET utf8mb4
-  DEFAULT COLLATE utf8mb4_unicode_ci;
-
-USE escala;
-
--- ===============================
--- TABELA: relatorios
--- ===============================
 CREATE TABLE IF NOT EXISTS relatorios (
-  id INT NOT NULL AUTO_INCREMENT,
+  id INT AUTO_INCREMENT PRIMARY KEY,
   titulo VARCHAR(255) NOT NULL,
-  semana_inicio DATE NOT NULL,
-  semana_fim DATE NOT NULL,
-  criado_em DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  PRIMARY KEY (id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+  period_start DATE NOT NULL,
+  period_end DATE NOT NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
--- ===============================
--- TABELA: lancamentos (append-only)
--- ===============================
 CREATE TABLE IF NOT EXISTS lancamentos (
-  id INT NOT NULL AUTO_INCREMENT,
+  id INT AUTO_INCREMENT PRIMARY KEY,
   relatorio_id INT NOT NULL,
-  data_dia DATETIME NOT NULL,
-  codigo VARCHAR(50) NOT NULL,
+  data DATE NOT NULL,
+  codigo VARCHAR(64) NOT NULL,
   observacao TEXT NULL,
-  criado_em DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  PRIMARY KEY (id),
-  KEY idx_lanc_relatorio (relatorio_id),
-  KEY idx_lanc_data (data_dia),
-  CONSTRAINT fk_lanc_relatorio
-    FOREIGN KEY (relatorio_id) REFERENCES relatorios(id)
-    ON DELETE CASCADE
-    ON UPDATE CASCADE
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (relatorio_id) REFERENCES relatorios(id) ON DELETE CASCADE,
+  INDEX idx_relatorio_data (relatorio_id, data)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

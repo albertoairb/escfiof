@@ -2,81 +2,72 @@
 
 const path = require("path");
 const express = require("express");
-const mysql = require("mysql2/promise");
-const PDFDocument = require("pdfkit");
-
-// libs já presentes no package.json
-const compression = require("compression");
 const helmet = require("helmet");
-const cors = require("cors");
-require("dotenv").config();
-
-const app = express();
-app.set("trust proxy", 1);
-app.use(helmet({ contentSecurityPolicy: false }));
-app.use(compression());
-app.use(cors());
-app.use(express.json({ limit: "1mb" }));
-app.use(express.static(path.join(__dirname, "public")));
+const compression = require("compression");
+const mysql = require("mysql2/promise");
 
 // ===============================
-// CONFIG
+// CONFIG / ENV
 // ===============================
 const PORT = Number(process.env.PORT || 8080);
+const TZ = process.env.TZ || "America/Sao_Paulo";
 
-const DB_HOST = process.env.DB_HOST || "db";
+const SUPERVISOR_KEY = (process.env.SUPERVISOR_KEY || "supervisor123").trim();
+
+// DB: Railway (URL) > Docker/local (DB_HOST...)
+const DB_URL = (process.env.DB_URL || process.env.MYSQL_URL || "").trim();
+
+// Defaults para Docker/local (quando DB_URL não existir)
+const DB_HOST = (process.env.DB_HOST || "db").trim();
 const DB_PORT = Number(process.env.DB_PORT || 3306);
-const DB_USER = process.env.DB_USER || "app";
-const DB_PASSWORD = process.env.DB_PASSWORD || "app";
-// compatibilidade: alguns ambientes usam DB_NAME, outros DB_DATABASE
-const DB_NAME = process.env.DB_NAME || process.env.DB_DATABASE || "escala";
+const DB_USER = (process.env.DB_USER || "app").trim();
+const DB_PASSWORD = (process.env.DB_PASSWORD || "app").trim();
+const DB_NAME = (process.env.DB_NAME || process.env.DB_DATABASE || "escala").trim();
 
-const SUPERVISOR_KEY = process.env.SUPERVISOR_KEY || "supervisor123";
-
-// ===============================
-// NOMES AUTORIZADOS PDF
-// ===============================
+// PDF: nomes autorizados
 const PDF_ALLOWED_NAMES = new Set([
   "Alberto Franzini Neto",
   "Eduardo Mosna Xavier"
 ]);
 
 // ===============================
+// APP
+// ===============================
+const app = express();
+app.set("trust proxy", true);
+
+app.use(helmet({ contentSecurityPolicy: false }));
+app.use(compression());
+app.use(express.json({ limit: "1mb" }));
+
+// Servir frontend (serviço único)
+app.use(express.static(path.join(__dirname, "public")));
+
+// ===============================
 // DB POOL
 // ===============================
-const pool = mysql.createPool({
-  host: DB_HOST,
-  port: DB_PORT,
-  user: DB_USER,
-  password: DB_PASSWORD,
-  database: DB_NAME,
-  waitForConnections: true,
-  connectionLimit: 10,
-  queueLimit: 0,
-  timezone: "Z"
-});
+const pool = DB_URL
+  ? mysql.createPool(DB_URL)
+  : mysql.createPool({
+      host: DB_HOST,
+      port: DB_PORT,
+      user: DB_USER,
+      password: DB_PASSWORD,
+      database: DB_NAME,
+      waitForConnections: true,
+      connectionLimit: 10,
+      queueLimit: 0,
+      timezone: "Z"
+    });
 
 // ===============================
-// AUTENTICAÇÃO
-// ===============================
-function authRequired(req, res, next) {
-  const key = (req.headers["x-access-key"] || "").toString().trim();
-
-  if (key !== SUPERVISOR_KEY) {
-    return res.status(401).json({ error: "Acesso negado." });
-  }
-
-  req.user = { role: "supervisor" };
-  next();
-}
-
-// ===============================
-// SEMANA ATUAL
+// UTIL
 // ===============================
 function getWeekRangeISO() {
+  // Semana vigente: segunda a domingo, em YYYY-MM-DD
   const now = new Date();
-  const day = now.getDay();
-  const diffToMonday = day === 0 ? -6 : (1 - day);
+  const day = now.getDay(); // 0=dom
+  const diffToMonday = day === 0 ? -6 : 1 - day;
 
   const monday = new Date(now);
   monday.setHours(0, 0, 0, 0);
@@ -84,11 +75,61 @@ function getWeekRangeISO() {
 
   const sunday = new Date(monday);
   sunday.setDate(monday.getDate() + 6);
+  sunday.setHours(23, 59, 59, 999);
 
   return {
     start: monday.toISOString().slice(0, 10),
     end: sunday.toISOString().slice(0, 10)
   };
+}
+
+function mustBeSupervisor(req, res, next) {
+  const key = (req.headers["x-access-key"] || "").toString().trim();
+  if (!key || key !== SUPERVISOR_KEY) {
+    return res.status(403).json({ error: "Acesso negado." });
+  }
+  return next();
+}
+
+async function ensureSchema() {
+  // Cria tabelas se não existirem
+  const sql = `
+    CREATE TABLE IF NOT EXISTS relatorios (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      titulo VARCHAR(255) NOT NULL,
+      period_start DATE NOT NULL,
+      period_end DATE NOT NULL,
+      created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+    CREATE TABLE IF NOT EXISTS lancamentos (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      relatorio_id INT NOT NULL,
+      data DATE NOT NULL,
+      codigo VARCHAR(64) NOT NULL,
+      observacao TEXT NULL,
+      created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (relatorio_id) REFERENCES relatorios(id) ON DELETE CASCADE,
+      INDEX idx_relatorio_data (relatorio_id, data)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+  `;
+
+  const conn = await pool.getConnection();
+  try {
+    await conn.query(sql);
+  } finally {
+    conn.release();
+  }
+}
+
+async function safeQuery(sql, params = []) {
+  const conn = await pool.getConnection();
+  try {
+    const [rows] = await conn.query(sql, params);
+    return rows;
+  } finally {
+    conn.release();
+  }
 }
 
 // ===============================
@@ -99,17 +140,24 @@ app.get("/api/health", async (req, res) => {
     const conn = await pool.getConnection();
     await conn.ping();
     conn.release();
-    return res.json({ ok: true });
+
+    return res.json({
+      ok: true,
+      tz: TZ,
+      db_mode: DB_URL ? "url" : "host",
+      week: getWeekRangeISO()
+    });
   } catch (err) {
     console.error("[HEALTH][DB] Falha no ping do MySQL:", {
       message: err && err.message,
       code: err && err.code,
       errno: err && err.errno,
       sqlState: err && err.sqlState,
-      host: DB_HOST,
-      port: DB_PORT,
-      user: DB_USER,
-      db: DB_NAME
+      using: DB_URL ? "DB_URL/MYSQL_URL" : "DB_HOST",
+      DB_HOST: DB_HOST,
+      DB_PORT: DB_PORT,
+      DB_USER: DB_USER,
+      DB_NAME: DB_NAME
     });
 
     return res.status(500).json({
@@ -119,121 +167,173 @@ app.get("/api/health", async (req, res) => {
     });
   }
 });
+
 app.post("/api/login", (req, res) => {
-  const key = (req.body.access_key || "").trim();
-
+  const key = (req.body && req.body.access_key ? req.body.access_key : "").toString().trim();
   if (key !== SUPERVISOR_KEY) {
-    return res.status(403).json({ error: "Forbidden" });
+    return res.status(403).json({ error: "Acesso negado." });
   }
-
-  res.json({ ok: true, role: "supervisor" });
+  return res.json({ ok: true, role: "supervisor" });
 });
 
-app.post("/api/relatorios", authRequired, async (req, res) => {
+// Criar relatório da semana vigente (sempre cria um novo, simples e estável)
+app.post("/api/relatorios", mustBeSupervisor, async (req, res) => {
   try {
-    const titulo = (req.body.titulo || "Escala Semanal").trim();
+    const titulo = (req.body && req.body.titulo ? req.body.titulo : "Escala Semanal").toString().trim();
     const { start, end } = getWeekRangeISO();
 
-    const [result] = await pool.execute(
-      `INSERT INTO relatorios (titulo, semana_inicio, semana_fim, criado_em)
-       VALUES (?, ?, ?, NOW())`,
+    const result = await safeQuery(
+      "INSERT INTO relatorios (titulo, period_start, period_end) VALUES (?, ?, ?)",
       [titulo, start, end]
     );
 
-    res.json({
-      ok: true,
-      relatorio: {
-        id: result.insertId,
-        titulo,
-        semana_inicio: start,
-        semana_fim: end
-      }
-    });
-  } catch {
-    res.status(500).json({ error: "Erro ao criar relatório." });
+    const id = result.insertId;
+    const rows = await safeQuery("SELECT * FROM relatorios WHERE id = ?", [id]);
+
+    return res.json({ ok: true, relatorio: rows[0] });
+  } catch (err) {
+    console.error("[RELATORIOS][POST] erro:", err);
+    return res.status(500).json({ error: "Erro ao criar relatório.", details: err.message });
   }
 });
 
-app.post("/api/relatorios/:id/lancamentos", authRequired, async (req, res) => {
+// Inserir lançamento (append-only)
+app.post("/api/relatorios/:id/lancamentos", mustBeSupervisor, async (req, res) => {
   try {
     const relatorioId = Number(req.params.id);
-    const { data, codigo, observacao } = req.body;
-
-    if (!data || !codigo) {
-      return res.status(400).json({ error: "Campos obrigatórios." });
+    if (!Number.isFinite(relatorioId) || relatorioId <= 0) {
+      return res.status(400).json({ error: "ID inválido." });
     }
 
-    await pool.execute(
-      `INSERT INTO lancamentos (relatorio_id, data_dia, codigo, observacao, criado_em)
-       VALUES (?, ?, ?, ?, NOW())`,
-      [relatorioId, data, codigo, observacao || ""]
-    );
+    const dataISO = (req.body && req.body.data ? req.body.data : "").toString().trim();
+    const codigo = (req.body && req.body.codigo ? req.body.codigo : "").toString().trim();
+    const observacao = (req.body && req.body.observacao ? req.body.observacao : "").toString();
 
-    res.json({ ok: true });
-  } catch {
-    res.status(500).json({ error: "Erro ao salvar." });
-  }
-});
-
-// ===============================
-// PDF PROTEGIDO
-// ===============================
-app.get("/api/relatorios/:id/pdf", authRequired, async (req, res) => {
-  try {
-    const relatorioId = Number(req.params.id);
-    const nome = (req.query.nome || "").trim();
-
-    if (!PDF_ALLOWED_NAMES.has(nome)) {
-      return res.status(403).json({ error: "PDF permitido apenas para Alberto e Major Mosna." });
+    if (!dataISO || !codigo) {
+      return res.status(400).json({ error: "Campos obrigatórios: data, codigo." });
     }
 
-    const [rel] = await pool.execute(
-      `SELECT * FROM relatorios WHERE id = ?`,
-      [relatorioId]
-    );
+    // data vem como ISO; salvamos só a parte YYYY-MM-DD
+    const dataDia = new Date(dataISO);
+    if (Number.isNaN(dataDia.getTime())) {
+      return res.status(400).json({ error: "Data inválida." });
+    }
+    const dataYYYYMMDD = dataDia.toISOString().slice(0, 10);
 
+    // Confere se relatório existe
+    const rel = await safeQuery("SELECT id FROM relatorios WHERE id = ?", [relatorioId]);
     if (!rel.length) {
       return res.status(404).json({ error: "Relatório não encontrado." });
     }
 
-    const [rows] = await pool.execute(
-      `SELECT * FROM lancamentos
-       WHERE relatorio_id = ?
-       ORDER BY data_dia ASC`,
+    const r = await safeQuery(
+      "INSERT INTO lancamentos (relatorio_id, data, codigo, observacao) VALUES (?, ?, ?, ?)",
+      [relatorioId, dataYYYYMMDD, codigo, observacao || null]
+    );
+
+    return res.json({ ok: true, id: r.insertId });
+  } catch (err) {
+    console.error("[LANCAMENTOS][POST] erro:", err);
+    return res.status(500).json({ error: "Erro ao salvar.", details: err.message });
+  }
+});
+
+// Listar lançamentos do relatório
+app.get("/api/relatorios/:id", mustBeSupervisor, async (req, res) => {
+  try {
+    const relatorioId = Number(req.params.id);
+    const relRows = await safeQuery("SELECT * FROM relatorios WHERE id = ?", [relatorioId]);
+    if (!relRows.length) return res.status(404).json({ error: "Relatório não encontrado." });
+
+    const lancRows = await safeQuery(
+      "SELECT * FROM lancamentos WHERE relatorio_id = ? ORDER BY data ASC, created_at ASC, id ASC",
+      [relatorioId]
+    );
+
+    return res.json({ ok: true, relatorio: relRows[0], lancamentos: lancRows });
+  } catch (err) {
+    console.error("[RELATORIO][GET] erro:", err);
+    return res.status(500).json({ error: "Erro ao carregar relatório.", details: err.message });
+  }
+});
+
+// PDF final (somente nomes autorizados)
+app.get("/api/relatorios/:id/pdf", mustBeSupervisor, async (req, res) => {
+  const nome = (req.query.nome || "").toString().trim();
+
+  if (!PDF_ALLOWED_NAMES.has(nome)) {
+    return res.status(403).json({ error: "PDF final permitido somente para Alberto e Major Mosna." });
+  }
+
+  // Implementação simples com PDFKit (se estiver instalado)
+  let PDFDocument;
+  try {
+    PDFDocument = require("pdfkit");
+  } catch (e) {
+    return res.status(501).json({
+      error: "Geração de PDF indisponível (dependência PDFKit não instalada)."
+    });
+  }
+
+  try {
+    const relatorioId = Number(req.params.id);
+    const relRows = await safeQuery("SELECT * FROM relatorios WHERE id = ?", [relatorioId]);
+    if (!relRows.length) return res.status(404).json({ error: "Relatório não encontrado." });
+
+    const lancRows = await safeQuery(
+      "SELECT * FROM lancamentos WHERE relatorio_id = ? ORDER BY data ASC, created_at ASC, id ASC",
       [relatorioId]
     );
 
     res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Content-Disposition", `inline; filename="escala_${relatorioId}.pdf"`);
+
     const doc = new PDFDocument({ margin: 40 });
     doc.pipe(res);
 
-    doc.fontSize(16).text("Escala Semanal de Oficiais", { align: "center" });
-    doc.moveDown();
+    doc.fontSize(16).text(relRows[0].titulo, { align: "center" });
+    doc.moveDown(0.5);
+    doc.fontSize(11).text(`Período: ${relRows[0].period_start} a ${relRows[0].period_end}`, { align: "center" });
+    doc.moveDown(1);
+    doc.fontSize(10).text(`Gerado por: ${nome}`);
+    doc.moveDown(1);
 
-    doc.fontSize(11).text(`Semana: ${rel[0].semana_inicio} a ${rel[0].semana_fim}`);
-    doc.text(`Gerado por: ${nome}`);
-    doc.moveDown();
+    doc.fontSize(12).text("Lançamentos:", { underline: true });
+    doc.moveDown(0.5);
 
-    rows.forEach(r => {
-      doc.text(`${String(r.data_dia).slice(0,10)} - ${r.codigo}`);
-      if (r.observacao) {
-        doc.text(`Observação: ${r.observacao}`);
-      }
-      doc.moveDown(0.5);
-    });
+    if (!lancRows.length) {
+      doc.fontSize(10).text("Nenhum lançamento registrado.");
+    } else {
+      lancRows.forEach((l) => {
+        doc.fontSize(10).text(`${l.data} — ${l.codigo}`);
+        if (l.observacao) doc.fontSize(9).text(`Obs: ${l.observacao}`);
+        doc.moveDown(0.5);
+      });
+    }
 
     doc.end();
-
-  } catch {
-    res.status(500).json({ error: "Erro ao gerar PDF." });
+  } catch (err) {
+    console.error("[PDF] erro:", err);
+    return res.status(500).json({ error: "Erro ao gerar PDF.", details: err.message });
   }
 });
 
-// fallback
-app.get("*", (req, res) => {
-  res.sendFile(path.join(__dirname, "public", "index.html"));
-});
+// ===============================
+// START
+// ===============================
+(async () => {
+  try {
+    process.env.TZ = TZ;
 
-app.listen(PORT, () => {
-  console.log(`OK - Backend rodando na porta ${PORT}`);
-});
+    // garante schema
+    await ensureSchema();
+
+    app.listen(PORT, () => {
+      console.log(`OK - Backend rodando na porta ${PORT}`);
+      console.log(`DB_MODE=${DB_URL ? "url" : "host"} TZ=${TZ}`);
+    });
+  } catch (err) {
+    console.error("FALHA AO INICIALIZAR:", err);
+    process.exit(1);
+  }
+})();
