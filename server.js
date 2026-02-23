@@ -99,12 +99,26 @@ app.get("/api/health", async (req, res) => {
     const conn = await pool.getConnection();
     await conn.ping();
     conn.release();
-    res.json({ ok: true });
-  } catch {
-    res.status(500).json({ ok: false });
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error("[HEALTH][DB] Falha no ping do MySQL:", {
+      message: err && err.message,
+      code: err && err.code,
+      errno: err && err.errno,
+      sqlState: err && err.sqlState,
+      host: DB_HOST,
+      port: DB_PORT,
+      user: DB_USER,
+      db: DB_NAME
+    });
+
+    return res.status(500).json({
+      ok: false,
+      error: err && err.message ? err.message : "Falha no health",
+      code: err && err.code ? err.code : null
+    });
   }
 });
-
 app.post("/api/login", (req, res) => {
   const key = (req.body.access_key || "").trim();
 
