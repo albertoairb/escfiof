@@ -1,26 +1,15 @@
 /* public/app.js
- * Escala Semanal de Oficiais (Railway/local)
- * Compatível com o index.html:
- * - #loginArea, #appArea, #semanaContainer
- * - inputs: #nome, #chave
- * - funções globais: login(), logout()
- *
- * Regras implementadas:
- * 1) semana vigente: segunda a domingo
- * 2) códigos: EXP, SR, FO, MA, VE, LP, FÉRIAS, CFP_DIA, CFP_NOITE, OUTROS
- * 3) salvar automático (debounce) ao editar qualquer dia (situação/observações)
- * 4) PDF: botão só aparece para:
- *    - Alberto Franzini Neto
- *    - Eduardo Mosna Xavier
- *    Observação: o backend precisa ter GET /api/pdf (senão dará 404)
+ * Regras:
+ * - semana vigente: segunda a domingo (datas corretas)
+ * - salvar automático
+ * - Alberto/Mosna: podem editar qualquer oficial (dropdown)
+ * - fechamento: sexta-feira 11h (São Paulo) bloqueia edição para oficiais
+ *   e libera para Alberto/Mosna se marcar "alterar após fechamento"
+ * - PDF: somente Alberto/Mosna, sempre com assinatura, e com todos os oficiais em tabela
  */
 
 (() => {
   "use strict";
-
-  // =========================
-  // Helpers
-  // =========================
   const $ = (sel) => document.querySelector(sel);
 
   function escapeHtml(s) {
@@ -36,17 +25,10 @@
     return String(nome || "").trim().replace(/\s+/g, " ");
   }
 
-  function safeJsonParse(txt) {
-    try { return JSON.parse(txt); } catch { return null; }
-  }
-
-  // Semana vigente: segunda -> domingo
   function getWeekRangeISO(baseDate = new Date()) {
     const d = new Date(baseDate);
     d.setHours(0, 0, 0, 0);
-
-    // JS: 0=domingo..6=sábado
-    const day = d.getDay();
+    const day = d.getDay(); // 0=dom..6=sab
     const diffToMonday = (day === 0 ? -6 : 1) - day;
 
     const monday = new Date(d);
@@ -88,22 +70,16 @@
   }
 
   // =========================
-  // API_BASE resolver
+  // API_BASE
   // =========================
   function resolveApiBase() {
     const url = new URL(location.href);
-
-    // ?api=https://xxxx.up.railway.app
     const apiFromQuery = url.searchParams.get("api");
     if (apiFromQuery) return apiFromQuery.replace(/\/$/, "");
-
     const apiFromStorage = localStorage.getItem("API_BASE");
     if (apiFromStorage) return apiFromStorage.replace(/\/$/, "");
-
-    // mesma origem
     return "";
   }
-
   const API_BASE = resolveApiBase();
 
   // =========================
@@ -119,7 +95,6 @@
     AUTH.key = key || "";
     AUTH.nome = nome || "";
     AUTH.role = role || "";
-
     localStorage.setItem("ACCESS_KEY", AUTH.key);
     localStorage.setItem("USER_NAME", AUTH.nome);
     localStorage.setItem("ROLE", AUTH.role);
@@ -134,14 +109,34 @@
     localStorage.removeItem("ROLE");
   }
 
+  const ADMIN_NAMES = ["Alberto Franzini Neto", "Eduardo Mosna Xavier"];
+  function isAdmin() { return ADMIN_NAMES.includes((AUTH.nome || "").trim()); }
+
+  function getTargetUser() {
+    if (!isAdmin()) return AUTH.nome;
+    const sel = $("#adminTarget");
+    return (sel && sel.value) ? sel.value : AUTH.nome;
+  }
+
+  function getAdminOverride() {
+    if (!isAdmin()) return false;
+    const cb = $("#adminOverride");
+    return !!(cb && cb.checked);
+  }
+
   async function request(path, { method = "GET", body = null, headers = {}, isBlob = false } = {}) {
     const url = API_BASE ? `${API_BASE}${path}` : path;
 
     const h = { ...headers };
     if (AUTH.key) h["x-access-key"] = AUTH.key;
-
-    // útil para o backend decidir permissão do PDF por nome
     if (AUTH.nome) h["x-user-name"] = AUTH.nome;
+
+    // admin pode editar outro oficial
+    const target = getTargetUser();
+    if (target && target !== AUTH.nome) h["x-target-user"] = target;
+
+    // admin override após fechamento
+    if (getAdminOverride()) h["x-admin-override"] = "1";
 
     let payload;
     if (body !== null && body !== undefined) {
@@ -161,11 +156,7 @@
 
     const txt = await resp.text().catch(() => "");
     let data = null;
-    try {
-      data = txt ? JSON.parse(txt) : null;
-    } catch {
-      data = txt ? { raw: txt } : null;
-    }
+    try { data = txt ? JSON.parse(txt) : null; } catch { data = txt ? { raw: txt } : null; }
 
     if (!resp.ok) {
       const msg =
@@ -174,7 +165,6 @@
         `HTTP ${resp.status}`;
       throw new Error(msg);
     }
-
     return data;
   }
 
@@ -184,11 +174,7 @@
   const CODES_CORRETOS = ["", "EXP", "SR", "FO", "MA", "VE", "LP", "FÉRIAS", "CFP_DIA", "CFP_NOITE", "OUTROS"];
 
   const DEFAULT_STATE = {
-    meta: {
-      title: "Escala Semanal de Oficiais",
-      author: "Desenvolvido por Alberto Franzini Neto",
-      created_at: new Date().toISOString(),
-    },
+    meta: { title: "Escala Semanal de Oficiais", author: "Desenvolvido por Alberto Franzini Neto", created_at: new Date().toISOString() },
     period: { start: "", end: "" },
     dates: [],
     codes: CODES_CORRETOS,
@@ -198,21 +184,30 @@
 
   let STATE = null;
   let IS_DIRTY = false;
+  let SAVE_TIMER = null;
+  let SAVE_IN_FLIGHT = false;
 
-  function markDirty(v) {
-    IS_DIRTY = !!v;
-    renderSaveStatus();
+  function renderSaveStatus(text = null) {
+    const el = $("#saveStatus");
+    if (!el) return;
+    if (!AUTH.nome) { el.style.display = "none"; el.textContent = ""; return; }
+    el.style.display = "inline-block";
+    el.textContent = (text !== null) ? text : (IS_DIRTY ? "salvando..." : "salvo");
   }
+
+  function renderLockStatus(isClosed) {
+    const el = $("#lockStatus");
+    if (!el) return;
+    if (!AUTH.nome) { el.style.display = "none"; el.textContent = ""; return; }
+    el.style.display = "inline-block";
+    el.textContent = isClosed ? "fechado (sexta 11h)" : "aberto";
+  }
+
+  function markDirty(v) { IS_DIRTY = !!v; renderSaveStatus(); }
 
   function ensureWeek(state) {
     if (!state.period) state.period = { start: "", end: "" };
-
-    const needDates =
-      !state.period.start ||
-      !state.period.end ||
-      !Array.isArray(state.dates) ||
-      state.dates.length !== 7;
-
+    const needDates = !state.period.start || !state.period.end || !Array.isArray(state.dates) || state.dates.length !== 7;
     if (!needDates) return state;
 
     const { monday, sunday } = getWeekRangeISO(new Date());
@@ -222,10 +217,11 @@
     return state;
   }
 
+  function ensureCodes(state) { state.codes = CODES_CORRETOS.slice(); return state; }
+
   function ensureUser(state, nome) {
     if (!state.byUser) state.byUser = {};
     if (!state.byUser[nome]) state.byUser[nome] = {};
-
     for (const d of state.dates || []) {
       if (!state.byUser[nome][d]) state.byUser[nome][d] = { code: "", obs: "" };
       if (state.byUser[nome][d].code === undefined) state.byUser[nome][d].code = "";
@@ -234,92 +230,58 @@
     return state;
   }
 
-  function ensureCodes(state) {
-    state.codes = CODES_CORRETOS.slice();
-    return state;
-  }
+  function renderAdminBox() {
+    const box = $("#adminBox");
+    const sel = $("#adminTarget");
+    const cb = $("#adminOverride");
+    if (!box || !sel || !cb) return;
 
-  // =========================
-  // Local fallback (se backend falhar)
-  // =========================
-  function localKeyForState(periodStart, periodEnd, nome) {
-    const p = `${periodStart}_${periodEnd}`;
-    const u = nome || "sem_usuario";
-    return `ESCFOF_STATE_${u}_${p}`;
-  }
-
-  function saveLocalFallback() {
-    try {
-      if (!STATE || !AUTH.nome) return;
-      const k = localKeyForState(STATE.period.start, STATE.period.end, AUTH.nome);
-      localStorage.setItem(k, JSON.stringify(STATE));
-    } catch (e) {
-      console.warn("Falha ao salvar fallback local:", e);
-    }
-  }
-
-  function loadLocalFallback(periodStart, periodEnd, nome) {
-    try {
-      const k = localKeyForState(periodStart, periodEnd, nome);
-      const raw = localStorage.getItem(k);
-      if (!raw) return null;
-      return safeJsonParse(raw);
-    } catch {
-      return null;
-    }
-  }
-
-  // =========================
-  // Render
-  // =========================
-  function renderSaveStatus(text = null) {
-    const el = $("#saveStatus");
-    if (!el) return;
-
-    if (!AUTH.nome) {
-      el.style.display = "none";
-      el.textContent = "";
+    if (!isAdmin()) {
+      box.style.display = "none";
+      sel.innerHTML = "";
+      cb.checked = false;
       return;
     }
 
-    el.style.display = "inline-block";
+    box.style.display = "block";
 
-    if (text !== null) {
-      el.textContent = text;
-      return;
-    }
+    const byUser = (STATE && STATE.byUser) ? STATE.byUser : {};
+    const names = Array.from(new Set([AUTH.nome, ...Object.keys(byUser)])).sort((a,b)=>a.localeCompare(b,"pt-BR"));
 
-    el.textContent = IS_DIRTY ? "salvando..." : "salvo";
+    const current = sel.value || AUTH.nome;
+    sel.innerHTML = names.map(n => `<option value="${escapeHtml(n)}"${n===current?" selected":""}>${escapeHtml(n)}</option>`).join("");
+
+    sel.onchange = () => render();
+    cb.onchange = () => {
+      // ao marcar override, tenta salvar novamente se estiver sujo
+      if (IS_DIRTY) scheduleAutoSave();
+    };
   }
 
   function render() {
     const container = $("#semanaContainer");
     if (!container || !STATE) return;
 
-    const nome = AUTH.nome;
-    if (!nome) {
-      container.innerHTML = "";
-      return;
-    }
+    ensureCodes(STATE);
+    ensureWeek(STATE);
+
+    const target = getTargetUser();
+    ensureUser(STATE, target);
+
+    renderAdminBox();
 
     const dates = STATE.dates || [];
-    const codes = Array.isArray(STATE.codes) ? STATE.codes : CODES_CORRETOS;
+    const codes = STATE.codes || CODES_CORRETOS;
 
     let html = "";
     html += `<div style="margin-bottom:12px;">
-      <div><strong>usuário:</strong> ${escapeHtml(nome)}</div>
+      <div><strong>usuário:</strong> ${escapeHtml(AUTH.nome)}</div>
+      <div><strong>editando:</strong> ${escapeHtml(target)}</div>
       <div><strong>período:</strong> ${escapeHtml(STATE.period.start)} a ${escapeHtml(STATE.period.end)}</div>
     </div>`;
 
     for (const d of dates) {
-      const entry =
-        STATE.byUser && STATE.byUser[nome] && STATE.byUser[nome][d]
-          ? STATE.byUser[nome][d]
-          : { code: "", obs: "" };
-
-      const code = entry.code || "";
-      const obs = entry.obs || "";
-
+      const entry = (STATE.byUser && STATE.byUser[target] && STATE.byUser[target][d]) ? STATE.byUser[target][d] : { code:"", obs:"" };
       html += `
         <div class="dia-bloco" data-date="${escapeHtml(d)}">
           <h3 style="margin:0 0 10px 0;">${escapeHtml(d)} (${escapeHtml(diaSemanaPt(d))})</h3>
@@ -328,35 +290,45 @@
           <select data-field="code">
             ${codes.map((c) => {
               const label = c === "" ? "(vazio)" : c;
-              return `<option value="${escapeHtml(c)}"${c === code ? " selected" : ""}>${escapeHtml(label)}</option>`;
+              return `<option value="${escapeHtml(c)}"${c===entry.code ? " selected":""}>${escapeHtml(label)}</option>`;
             }).join("")}
           </select>
 
           <label>observações:</label>
-          <textarea data-field="obs" placeholder="Digite observações do dia...">${escapeHtml(obs)}</textarea>
+          <textarea data-field="obs" placeholder="Digite observações do dia...">${escapeHtml(entry.obs || "")}</textarea>
         </div>
       `;
     }
 
     container.innerHTML = html;
-
     container.querySelectorAll('select[data-field], textarea[data-field]').forEach((el) => {
       el.addEventListener("change", onEntryChange);
       el.addEventListener("input", onEntryChange);
     });
   }
 
-  // =========================
-  // Auto-save (debounce)
-  // =========================
-  let SAVE_TIMER = null;
-  let SAVE_IN_FLIGHT = false;
+  function onEntryChange(e) {
+    if (!STATE || !AUTH.nome) return;
+
+    const el = e.target;
+    const bloco = el.closest(".dia-bloco");
+    if (!bloco) return;
+    const date = bloco.getAttribute("data-date");
+    const field = el.getAttribute("data-field");
+    if (!date || !field) return;
+
+    const target = getTargetUser();
+    ensureUser(STATE, target);
+    STATE.byUser[target][date][field] = el.value;
+    STATE.updated_at = new Date().toISOString();
+
+    markDirty(true);
+    scheduleAutoSave();
+  }
 
   function scheduleAutoSave() {
     if (SAVE_TIMER) clearTimeout(SAVE_TIMER);
-    SAVE_TIMER = setTimeout(() => {
-      autoSave().catch(() => void 0);
-    }, 800);
+    SAVE_TIMER = setTimeout(() => autoSave().catch(()=>{}), 800);
   }
 
   async function autoSave() {
@@ -367,104 +339,50 @@
     renderSaveStatus("salvando...");
 
     try {
-      await saveState(false);
+      await request("/api/state", { method: "PUT", body: STATE });
+      markDirty(false);
       renderSaveStatus("salvo");
     } catch (err) {
-      console.warn("Falha ao salvar no backend; usando fallback local:", err.message || err);
-      saveLocalFallback();
-      renderSaveStatus("salvo local");
-      // mantém IS_DIRTY true? Aqui não: o usuário não pode ficar “preso”.
-      // Se quiser garantir insistência no backend, deixe como true.
-      // Para simplicidade operacional: marca como salvo (local) e segue.
-      IS_DIRTY = false;
+      // se estiver fechado, backend devolve erro; mostra na tela
+      renderSaveStatus("não salvo");
+      alert(`Não foi possível salvar.\n\nDetalhes: ${err.message || err}`);
     } finally {
       SAVE_IN_FLIGHT = false;
     }
   }
 
-  function onEntryChange(e) {
-    if (!STATE || !AUTH.nome) return;
-
-    const el = e.target;
-    const bloco = el.closest(".dia-bloco");
-    if (!bloco) return;
-
-    const date = bloco.getAttribute("data-date");
-    const field = el.getAttribute("data-field");
-    if (!date || !field) return;
-
-    ensureUser(STATE, AUTH.nome);
-
-    STATE.byUser[AUTH.nome][date][field] = el.value;
-    STATE.updated_at = new Date().toISOString();
-
-    markDirty(true);
-    scheduleAutoSave();
-  }
-
-  // =========================
-  // Load / Save
-  // =========================
   async function loadState() {
     let st = null;
-
     try {
       st = await request("/api/state", { method: "GET" });
     } catch (err) {
       console.warn("Falha ao carregar /api/state:", err.message || err);
     }
-
     if (!st) st = structuredClone(DEFAULT_STATE);
-
     st = ensureWeek(st);
     st = ensureCodes(st);
-    st = ensureUser(st, AUTH.nome);
-
-    // Se backend falhou, tenta fallback local específico desse período/usuário
-    if (!st || !st.byUser || !st.byUser[AUTH.nome]) {
-      const local = loadLocalFallback(st.period.start, st.period.end, AUTH.nome);
-      if (local) {
-        st = local;
-        st = ensureWeek(st);
-        st = ensureCodes(st);
-        st = ensureUser(st, AUTH.nome);
-      }
-    }
-
+    // garante que o usuário e (se admin) o alvo existam
+    if (AUTH.nome) ensureUser(st, AUTH.nome);
     STATE = st;
     markDirty(false);
     render();
+    await refreshLockStatus();
+  }
 
-    // tenta persistir estrutura correta
+  async function refreshLockStatus() {
     try {
-      await saveState(false);
+      const r = await request("/api/lock", { method: "GET" });
+      renderLockStatus(!!r.closed);
     } catch {
-      saveLocalFallback();
+      // se não existir /api/lock, não quebra
+      renderLockStatus(false);
     }
   }
 
-  async function saveState(showAlert = true) {
-    if (!STATE) return;
-
-    ensureCodes(STATE);
-    await request("/api/state", { method: "PUT", body: STATE });
-
-    markDirty(false);
-    if (showAlert) alert("Salvo com sucesso.");
-  }
-
   // =========================
-  // PDF visibility (somente 2 nomes)
+  // PDF (somente 2 nomes)
   // =========================
-  const PDF_ALLOWED_NAMES = [
-    "Alberto Franzini Neto",
-    "Eduardo Mosna Xavier"
-  ];
-
-  function canGeneratePdf() {
-    const nome = (AUTH.nome || "").trim();
-    return PDF_ALLOWED_NAMES.includes(nome);
-  }
+  function canGeneratePdf() { return isAdmin(); }
 
   function applyPdfVisibility() {
     const btn = $("#btnPdf");
@@ -472,23 +390,7 @@
     btn.style.display = canGeneratePdf() ? "inline-block" : "none";
   }
 
-  async function gerarPdfSomenteAutorizado() {
-    if (!canGeneratePdf()) {
-      alert("PDF final disponível somente para Alberto Franzini Neto e Eduardo Mosna Xavier.");
-      return;
-    }
-
-    // tenta salvar antes
-    try {
-      if (IS_DIRTY) {
-        await saveState(false);
-      }
-    } catch {
-      // mantém
-      saveLocalFallback();
-    }
-
-    // chama PDF
+  async function gerarPdf() {
     try {
       const blob = await request("/api/pdf", { method: "GET", isBlob: true });
       const url = URL.createObjectURL(blob);
@@ -508,10 +410,9 @@
     if (!nome) throw new Error("Informe seu nome completo.");
     if (!key) throw new Error("Informe a chave de acesso.");
 
-    // tenta login no backend (se existir)
     try {
       const r = await request("/api/login", { method: "POST", body: { access_key: key, nome } });
-      setAuth({ key, nome, role: r?.role || "" });
+      setAuth({ key, nome, role: (r && r.role) ? r.role : "" });
     } catch {
       setAuth({ key, nome, role: "" });
     }
@@ -521,8 +422,8 @@
 
     const btnPdf = $("#btnPdf");
     if (btnPdf) {
-      btnPdf.removeEventListener("click", gerarPdfSomenteAutorizado);
-      btnPdf.addEventListener("click", gerarPdfSomenteAutorizado);
+      btnPdf.removeEventListener("click", gerarPdf);
+      btnPdf.addEventListener("click", gerarPdf);
     }
 
     await loadState();
@@ -533,57 +434,40 @@
     STATE = null;
     markDirty(false);
     showLogin();
-
-    const n = $("#nome");
-    const c = $("#chave");
-    if (n) n.value = "";
-    if (c) c.value = "";
+    const n = $("#nome"); const c = $("#chave");
+    if (n) n.value = ""; if (c) c.value = "";
   }
 
   function showLogin() {
-    const a = $("#loginArea");
-    const b = $("#appArea");
+    const a = $("#loginArea"); const b = $("#appArea");
     if (a) a.style.display = "block";
     if (b) b.style.display = "none";
     renderSaveStatus(null);
+    renderLockStatus(false);
   }
 
   function showApp() {
-    const a = $("#loginArea");
-    const b = $("#appArea");
+    const a = $("#loginArea"); const b = $("#appArea");
     if (a) a.style.display = "none";
     if (b) b.style.display = "block";
     renderSaveStatus(null);
   }
 
-  // =========================
-  // Globais (index.html usa onclick)
-  // =========================
   window.login = async function login() {
     try {
-      const nome = $("#nome")?.value ?? "";
-      const chave = $("#chave")?.value ?? "";
-      await doLogin(nome, chave);
+      await doLogin($("#nome")?.value ?? "", $("#chave")?.value ?? "");
     } catch (err) {
       alert(err.message || String(err));
     }
   };
 
-  window.logout = function logout() {
-    doLogout();
-  };
+  window.logout = function logout() { doLogout(); };
 
-  // =========================
-  // Boot
-  // =========================
   async function boot() {
     const chaveEl = $("#chave");
     if (chaveEl) {
       chaveEl.addEventListener("keydown", (e) => {
-        if (e.key === "Enter") {
-          e.preventDefault();
-          window.login();
-        }
+        if (e.key === "Enter") { e.preventDefault(); window.login(); }
       });
     }
 
@@ -593,8 +477,8 @@
 
       const btnPdf = $("#btnPdf");
       if (btnPdf) {
-        btnPdf.removeEventListener("click", gerarPdfSomenteAutorizado);
-        btnPdf.addEventListener("click", gerarPdfSomenteAutorizado);
+        btnPdf.removeEventListener("click", gerarPdf);
+        btnPdf.addEventListener("click", gerarPdf);
       }
 
       await loadState();
@@ -603,10 +487,7 @@
     }
 
     window.addEventListener("beforeunload", (e) => {
-      if (IS_DIRTY) {
-        e.preventDefault();
-        e.returnValue = "";
-      }
+      if (IS_DIRTY) { e.preventDefault(); e.returnValue = ""; }
     });
   }
 
