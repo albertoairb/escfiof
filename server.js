@@ -218,7 +218,13 @@ async function safeQuery(sql, params = []) {
 
 async function getState() {
   const rows = await safeQuery("SELECT payload FROM state_store WHERE id=1 LIMIT 1");
-  const st = rows.length ? safeJsonParse(rows[0].payload) : null;
+  if (!rows.length) {
+    // Se a linha principal foi apagada, recria automaticamente
+    const initial = normalizeBaseState({});
+    await safeQuery("INSERT INTO state_store (id, payload) VALUES (1, ?)", [JSON.stringify(initial)]);
+    return initial;
+  }
+  const st = safeJsonParse(rows[0].payload);
   return normalizeBaseState(st || {});
 }
 
@@ -236,7 +242,10 @@ async function putStateMergedByUser(editorName, targetName, incomingState) {
   }
 
   current.updated_at = new Date().toISOString();
-  await safeQuery("UPDATE state_store SET payload=? WHERE id=1", [JSON.stringify(current)]);
+  await safeQuery(
+    "INSERT INTO state_store (id, payload) VALUES (1, ?) ON DUPLICATE KEY UPDATE payload=VALUES(payload), updated_at=CURRENT_TIMESTAMP",
+    [JSON.stringify(current)]
+  );
   return current;
 }
 
