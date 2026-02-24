@@ -12,6 +12,10 @@ const mysql = require("mysql2/promise");
 const PORT = Number(process.env.PORT || 8080);
 const TZ = (process.env.TZ || "America/Sao_Paulo").trim();
 
+// Semana mínima (segunda-feira) para iniciar o sistema automaticamente, sem precisar forçar via variável.
+// Ex.: quando a semana anterior já passou, iniciamos diretamente na próxima.
+const CUTOVER_WEEK_START = "2026-03-02";
+
 // Chave única: todos os oficiais usam a mesma chave para editar.
 const SUPERVISOR_KEY = (process.env.SUPERVISOR_KEY || "sr123").trim();
 
@@ -90,14 +94,23 @@ function fmtYYYYMMDD(d) {
 }
 
 // Semana vigente: segunda a domingo, em YYYY-MM-DD (sem usar toISOString para evitar +1 dia)
+// Regra adicional: nunca retornar semana anterior a CUTOVER_WEEK_START (segunda-feira).
 function getWeekRangeISO() {
-  const now = new Date();
-  const day = now.getDay(); // 0=dom
+  const now = new Date(); // respeita TZ no processo
+
+  // data efetiva = max(agora, CUTOVER_WEEK_START)
+  const [cy, cm, cd] = CUTOVER_WEEK_START.split("-").map(Number);
+  const cutover = new Date(cy, cm - 1, cd);
+  cutover.setHours(0, 0, 0, 0);
+
+  const effective = new Date(Math.max(now.getTime(), cutover.getTime()));
+
+  const day = effective.getDay(); // 0=dom
   const diffToMonday = day === 0 ? -6 : 1 - day;
 
-  const monday = new Date(now);
+  const monday = new Date(effective);
   monday.setHours(0, 0, 0, 0);
-  monday.setDate(now.getDate() + diffToMonday);
+  monday.setDate(effective.getDate() + diffToMonday);
 
   const sunday = new Date(monday);
   sunday.setHours(0, 0, 0, 0);
@@ -227,26 +240,27 @@ async function getState() {
     return initial;
   }
 
-  const stRaw = safeJsonParse(rows[0].payload) || {};
-  const storedStart = stRaw && stRaw.period ? stRaw.period.start : null;
-  const storedEnd = stRaw && stRaw.period ? stRaw.period.end : null;
+  const stParsed = safeJsonParse(rows[0].payload);
+  let st = normalizeBaseState(stParsed || {});
 
-  // Renova automaticamente quando virar a semana:
-  // - A semana é segunda->domingo
-  // - Ao chegar na virada (domingo 24:00 -> segunda 00:00), desiredWeek muda e o state é zerado
-  if (storedStart !== desiredWeek.start || storedEnd !== desiredWeek.end) {
-    const meta = stRaw && typeof stRaw.meta === "object" ? stRaw.meta : {};
-    const fresh = normalizeBaseState({ meta, byUser: {} });
+  // Renova automaticamente quando a semana muda (segunda 00:00),
+  // zerando os registros (byUser) e atualizando as datas.
+  if (!st.period || st.period.start !== desiredWeek.start || st.period.end !== desiredWeek.end) {
+    const meta = st.meta && typeof st.meta === "object" ? st.meta : {};
+    st = normalizeBaseState({ meta, byUser: {} });
+
+    st.period = { start: desiredWeek.start, end: desiredWeek.end };
+    st.dates = buildDatesForWeek(desiredWeek.start);
+    st.byUser = {};
+    st.updated_at = new Date().toISOString();
 
     await safeQuery(
       "INSERT INTO state_store (id, payload) VALUES (1, ?) ON DUPLICATE KEY UPDATE payload=VALUES(payload), updated_at=CURRENT_TIMESTAMP",
-      [JSON.stringify(fresh)]
+      [JSON.stringify(st)]
     );
-
-    return fresh;
   }
 
-  return normalizeBaseState(stRaw);
+  return st;
 }
 
 // merge: atualiza apenas um usuário (ou alvo, se admin)
