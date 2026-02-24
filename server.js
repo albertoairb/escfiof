@@ -258,20 +258,16 @@ function requirePdfKitOr501(res) {
   }
 }
 
-// PDF: regra do OUTROS = mostra observação completa
+// PDF: texto de célula
 function cellText(it) {
   const code = safeString(it && it.code ? it.code : "").trim();
   const obs = safeString(it && it.obs ? it.obs : "").trim();
 
   if (!obs) return code;
 
-  if (code === "OUTROS") {
-    if (!obs) return "OUTROS";
-    return `OUTROS - ${obs}`;
-  }
-
-  const short = obs.length > 36 ? obs.slice(0, 35) + "…" : obs;
-  return code ? `${code} - ${short}` : short;
+  // Comportamento único para TODAS as opções: sempre mostrar a observação completa.
+  // (equivalente ao antigo comportamento do OUTROS)
+  return code ? `${code} - ${obs}` : obs;
 }
 
 // ===============================
@@ -375,10 +371,46 @@ app.get("/api/pdf", mustBeKey, async (req, res) => {
     const baseRowH = 26;
     const headerH = 24;
 
+    // Desenha célula com:
+    // - quebra de linha automática (wrap)
+    // - ajuste automático de fonte (reduz até min)
+    // - sem truncar (sem ellipsis)
     function drawCell(x, y, w, h, text, isHeader = false) {
       doc.rect(x, y, w, h).stroke();
-      doc.fontSize(isHeader ? 9 : 8);
-      doc.text(text, x + 4, y + 7, { width: w - 8, height: h - 10, ellipsis: true });
+
+      const paddingX = 4;
+      const paddingTop = isHeader ? 7 : 6;
+      const paddingBottom = 6;
+      const innerW = Math.max(1, w - paddingX * 2);
+      const innerH = Math.max(1, h - paddingTop - paddingBottom);
+
+      if (isHeader) {
+        doc.fontSize(9);
+        doc.text(text, x + paddingX, y + paddingTop, { width: innerW, align: "center" });
+        return;
+      }
+
+      // fonte base e mínimos (para manter legibilidade e evitar linhas gigantes)
+      const baseFont = 8;
+      const minFont = 6;
+
+      let chosen = baseFont;
+      for (let fs = baseFont; fs >= minFont; fs--) {
+        doc.fontSize(fs);
+        const needed = doc.heightOfString(text, { width: innerW, align: "left" });
+        if (needed <= innerH) {
+          chosen = fs;
+          break;
+        }
+        chosen = fs;
+      }
+
+      doc.fontSize(chosen);
+      doc.text(text, x + paddingX, y + paddingTop, {
+        width: innerW,
+        align: "left",
+        lineBreak: true,
+      });
     }
 
     function drawHeader() {
@@ -396,16 +428,34 @@ app.get("/api/pdf", mustBeKey, async (req, res) => {
     for (const offName of officers) {
       const entry = byUser[offName] && typeof byUser[offName] === "object" ? byUser[offName] : {};
 
-      // 1) calcula altura necessária desta linha (para caber OUTROS grande)
+      // 1) calcula altura necessária desta linha (para caber qualquer texto grande)
       let rowHeight = baseRowH;
       for (let i = 0; i < 7; i++) {
         const d = dates[i];
         const it = d ? entry[d] || { code: "", obs: "" } : { code: "", obs: "" };
         const text = cellText(it);
 
-        // altura necessária para este texto na largura da célula
-        const needed = doc.heightOfString(text, { width: colW - 8 });
-        rowHeight = Math.max(rowHeight, needed + 14);
+        // altura necessária para este texto na largura da célula, aplicando o mesmo
+        // critério de autoajuste de fonte usado no drawCell.
+        const paddingX = 4;
+        const paddingTop = 6;
+        const paddingBottom = 6;
+        const innerW = Math.max(1, colW - paddingX * 2);
+
+        const baseFont = 8;
+        const minFont = 6;
+        let bestNeeded = 0;
+        for (let fs = baseFont; fs >= minFont; fs--) {
+          doc.fontSize(fs);
+          const needed = doc.heightOfString(text, { width: innerW, align: "left" });
+          bestNeeded = needed;
+          // tenta caber no mínimo (baseRowH), senão continua reduzindo
+          const innerTarget = Math.max(1, baseRowH - paddingTop - paddingBottom);
+          if (needed <= innerTarget) break;
+        }
+
+        const totalNeeded = bestNeeded + paddingTop + paddingBottom;
+        rowHeight = Math.max(rowHeight, totalNeeded);
       }
 
       // 2) quebra de página se não couber
