@@ -397,8 +397,52 @@ app.get("/api/pdf", mustBeKey, async (req, res) => {
     }
 
     const byUserNormIndex = new Map();
+    const byUserNormKeys = [];
     for (const k of Object.keys(byUser)) {
-      byUserNormIndex.set(normKey(k), k);
+      const nk = normKey(k);
+      byUserNormIndex.set(nk, k);
+      byUserNormKeys.push(nk);
+    }
+
+    function tokenSet(nk) {
+      return new Set(nk.split(" ").filter(Boolean));
+    }
+
+    function similarity(aNk, bNk) {
+      // Jaccard + bônus por primeiro/último token
+      const a = tokenSet(aNk);
+      const b = tokenSet(bNk);
+      const inter = [...a].filter((t) => b.has(t)).length;
+      const union = new Set([...a, ...b]).size || 1;
+      let score = inter / union;
+
+      const aParts = aNk.split(" ").filter(Boolean);
+      const bParts = bNk.split(" ").filter(Boolean);
+      if (aParts.length && bParts.length) {
+        if (aParts[0] === bParts[0]) score += 0.10; // primeiro nome
+        if (aParts[aParts.length - 1] === bParts[bParts.length - 1]) score += 0.15; // último sobrenome
+      }
+      return score;
+    }
+
+    function resolveByUserKey(preferredKey) {
+      const nk = normKey(preferredKey);
+      const exact = byUserNormIndex.get(nk);
+      if (exact) return exact;
+
+      // fallback: melhor aproximação (evita perder preenchimentos por pequenas variações)
+      let bestKey = null;
+      let bestScore = 0;
+      for (const candidateNk of byUserNormKeys) {
+        const sc = similarity(nk, candidateNk);
+        if (sc > bestScore) {
+          bestScore = sc;
+          bestKey = candidateNk;
+        }
+      }
+      // limiar conservador: só aceita se parecer ser a mesma pessoa
+      if (bestKey && bestScore >= 0.62) return byUserNormIndex.get(bestKey);
+      return null;
     }
 
     const officers = OFFICERS_ORDER.slice();
@@ -468,7 +512,7 @@ app.get("/api/pdf", mustBeKey, async (req, res) => {
 
     for (const off of officers) {
       const desiredKey = off && off.key ? off.key : "";
-      const actualKey = byUserNormIndex.get(normKey(desiredKey)) || desiredKey;
+      const actualKey = resolveByUserKey(desiredKey) || desiredKey;
       const entry = byUser[actualKey] && typeof byUser[actualKey] === "object" ? byUser[actualKey] : {};
 
       // 1) calcula altura necessária desta linha (para caber qualquer texto grande)
