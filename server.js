@@ -354,9 +354,53 @@ app.get("/api/pdf", mustBeKey, async (req, res) => {
 
     const dates = Array.isArray(st.dates) ? st.dates : [];
     const byUser = st.byUser && typeof st.byUser === "object" ? st.byUser : {};
-    // Ordem fixa no PDF (sempre igual), independentemente de quem preencheu.
-    // Mantém todos listados, mesmo sem preenchimento (células vazias).
-    const OFFICERS_ORDER = ["Ten Cel PM Helder Antonio de Paula", "Maj PM Eduardo Mosna Xavier", "Maj PM Alessandra Paula Tonolli", "Cap PM Carlos Bordim Neto", "Cap PM Alberto Franzini Neto", "Cap PM Marcio Saito Essaki", "1º Ten PM Daniel Alves de Siqueira", "1º Ten PM Mateus Pedro Teodoro", "2º Ten PM Fernanda Bruno Pomponio Martignago", "2º Ten PM Dayana de Oliveira Silva Almeida", "Cap PM André Santarelli de Paula", "Cap PM Vinicio Augusto Voltarelli Tavares", "Cap PM Jose Antonio Marciano Neto", "1º Ten PM Uri Filipe dos Santos", "1º Ten PM Antônio Ovídio Ferrucio Cardoso", "1º Ten PM Bruno Antão de Oliveira", "1º Ten PM Larissa Amadeu Leite", "1º Ten PM Renato Fernandes Freire", "1º Ten PM Raphael Mecca Sampaio"];
+
+    // ===============================
+    // PDF: ORDEM FIXA + BIND PELO NOME SALVO
+    // ===============================
+    // No sistema, o "byUser" é salvo pelo NOME digitado no login (sem posto).
+    // No PDF, exibimos "posto + nome" em ordem fixa.
+    // Cada linha tem:
+    //   label: como aparece no PDF
+    //   key: como é procurado no state (nome salvo)
+    const OFFICERS_ORDER = [
+      { label: "Ten Cel PM Helder Antonio de Paula", key: "Helder Antonio de Paula" },
+      { label: "Maj PM Eduardo Mosna Xavier", key: "Eduardo Mosna Xavier" },
+      { label: "Maj PM Alessandra Paula Tonolli", key: "Alessandra Paula Tonolli" },
+      { label: "Cap PM Carlos Bordim Neto", key: "Carlos Bordim Neto" },
+      { label: "Cap PM Alberto Franzini Neto", key: "Alberto Franzini Neto" },
+      { label: "Cap PM Marcio Saito Essaki", key: "Marcio Saito Essaki" },
+      { label: "1º Ten PM Daniel Alves de Siqueira", key: "Daniel Alves de Siqueira" },
+      { label: "1º Ten PM Mateus Pedro Teodoro", key: "Mateus Pedro Teodoro" },
+      { label: "2º Ten PM Fernanda Bruno Pomponio Martignago", key: "Fernanda Bruno Pomponio Martignago" },
+      { label: "2º Ten PM Dayana de Oliveira Silva Almeida", key: "Dayana de Oliveira Silva Almeida" },
+
+      { label: "Cap PM André Santarelli de Paula", key: "André Santarelli de Paula" },
+      { label: "Cap PM Vinicio Augusto Voltarelli Tavares", key: "Vinicio Augusto Voltarelli Tavares" },
+      { label: "Cap PM Jose Antonio Marciano Neto", key: "Jose Antonio Marciano Neto" },
+
+      { label: "1º Ten PM Uri Filipe dos Santos", key: "Uri Filipe dos Santos" },
+      { label: "1º Ten PM Antônio Ovídio Ferrucio Cardoso", key: "Antônio Ovídio Ferrucio Cardoso" },
+      { label: "1º Ten PM Bruno Antão de Oliveira", key: "Bruno Antão de Oliveira" },
+      { label: "1º Ten PM Larissa Amadeu Leite", key: "Larissa Amadeu Leite" },
+      { label: "1º Ten PM Renato Fernandes Freire", key: "Renato Fernandes Freire" },
+      { label: "1º Ten PM Raphael Mecca Sampaio", key: "Raphael Mecca Sampaio" },
+    ];
+
+    function normKey(s) {
+      return safeString(s)
+        .normalize("NFD")
+        .replace(/[\u0300-\u036f]/g, "")
+        .toLowerCase()
+        .trim()
+        .replace(/\s+/g, " ");
+    }
+
+    const byUserNormIndex = new Map();
+    for (const k of Object.keys(byUser)) {
+      byUserNormIndex.set(normKey(k), k);
+    }
+
     const officers = OFFICERS_ORDER.slice();
 
     const pageWidth = doc.page.width - doc.page.margins.left - doc.page.margins.right;
@@ -422,8 +466,10 @@ app.get("/api/pdf", mustBeKey, async (req, res) => {
 
     const bottomReserve = 70; // reserva para assinaturas
 
-    for (const offName of officers) {
-      const entry = byUser[offName] && typeof byUser[offName] === "object" ? byUser[offName] : {};
+    for (const off of officers) {
+      const desiredKey = off && off.key ? off.key : "";
+      const actualKey = byUserNormIndex.get(normKey(desiredKey)) || desiredKey;
+      const entry = byUser[actualKey] && typeof byUser[actualKey] === "object" ? byUser[actualKey] : {};
 
       // 1) calcula altura necessária desta linha (para caber qualquer texto grande)
       let rowHeight = baseRowH;
@@ -463,7 +509,7 @@ app.get("/api/pdf", mustBeKey, async (req, res) => {
       }
 
       // 3) desenha linha com a altura calculada
-      drawCell(x0, y, nameColW, rowHeight, offName, false);
+      drawCell(x0, y, nameColW, rowHeight, off && off.label ? off.label : "", false);
 
       for (let i = 0; i < 7; i++) {
         const d = dates[i];
