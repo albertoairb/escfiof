@@ -267,7 +267,7 @@ function cellText(it) {
 
   // Comportamento único para TODAS as opções: sempre mostrar a observação completa.
   // (equivalente ao antigo comportamento do OUTROS)
-  return code ? `${code} - ${obs}` : obs;
+  return code ? `${code}\n${obs}` : obs;
 }
 
 // ===============================
@@ -354,13 +354,10 @@ app.get("/api/pdf", mustBeKey, async (req, res) => {
 
     const dates = Array.isArray(st.dates) ? st.dates : [];
     const byUser = st.byUser && typeof st.byUser === "object" ? st.byUser : {};
-    const officers = Object.keys(byUser).sort((a, b) => a.localeCompare(b, "pt-BR"));
-
-    if (!officers.length) {
-      doc.fontSize(11).text("Nenhum oficial registrado ainda.");
-      doc.end();
-      return;
-    }
+    // Ordem fixa no PDF (sempre igual), independentemente de quem preencheu.
+    // Mantém todos listados, mesmo sem preenchimento (células vazias).
+    const OFFICERS_ORDER = ["Ten Cel PM Helder Antonio de Paula", "Maj PM Eduardo Mosna Xavier", "Maj PM Alessandra Paula Tonolli", "Cap PM Carlos Bordim Neto", "Cap PM Alberto Franzini Neto", "Cap PM Marcio Saito Essaki", "1º Ten PM Daniel Alves de Siqueira", "1º Ten PM Mateus Pedro Teodoro", "2º Ten PM Fernanda Bruno Pomponio Martignago", "2º Ten PM Dayana de Oliveira Silva Almeida", "Cap PM André Santarelli de Paula", "Cap PM Vinicio Augusto Voltarelli Tavares", "Cap PM Jose Antonio Marciano Neto", "1º Ten PM Uri Filipe dos Santos", "1º Ten PM Antônio Ovídio Ferrucio Cardoso", "1º Ten PM Bruno Antão de Oliveira", "1º Ten PM Larissa Amadeu Leite", "1º Ten PM Renato Fernandes Freire", "1º Ten PM Raphael Mecca Sampaio"];
+    const officers = OFFICERS_ORDER.slice();
 
     const pageWidth = doc.page.width - doc.page.margins.left - doc.page.margins.right;
     const x0 = doc.page.margins.left;
