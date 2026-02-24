@@ -218,14 +218,35 @@ async function safeQuery(sql, params = []) {
 
 async function getState() {
   const rows = await safeQuery("SELECT payload FROM state_store WHERE id=1 LIMIT 1");
+  const desiredWeek = getWeekRangeISO();
+
   if (!rows.length) {
     // Se a linha principal foi apagada, recria automaticamente
     const initial = normalizeBaseState({});
     await safeQuery("INSERT INTO state_store (id, payload) VALUES (1, ?)", [JSON.stringify(initial)]);
     return initial;
   }
-  const st = safeJsonParse(rows[0].payload);
-  return normalizeBaseState(st || {});
+
+  const stRaw = safeJsonParse(rows[0].payload) || {};
+  const storedStart = stRaw && stRaw.period ? stRaw.period.start : null;
+  const storedEnd = stRaw && stRaw.period ? stRaw.period.end : null;
+
+  // Renova automaticamente quando virar a semana:
+  // - A semana é segunda->domingo
+  // - Ao chegar na virada (domingo 24:00 -> segunda 00:00), desiredWeek muda e o state é zerado
+  if (storedStart !== desiredWeek.start || storedEnd !== desiredWeek.end) {
+    const meta = stRaw && typeof stRaw.meta === "object" ? stRaw.meta : {};
+    const fresh = normalizeBaseState({ meta, byUser: {} });
+
+    await safeQuery(
+      "INSERT INTO state_store (id, payload) VALUES (1, ?) ON DUPLICATE KEY UPDATE payload=VALUES(payload), updated_at=CURRENT_TIMESTAMP",
+      [JSON.stringify(fresh)]
+    );
+
+    return fresh;
+  }
+
+  return normalizeBaseState(stRaw);
 }
 
 // merge: atualiza apenas um usuário (ou alvo, se admin)
