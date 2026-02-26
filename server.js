@@ -299,6 +299,17 @@ async function ensureSchema() {
       INDEX idx_target (target_name)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;`);
 
+    await conn.query(`CREATE TABLE IF NOT EXISTS escala_lancamentos (
+      id BIGINT AUTO_INCREMENT PRIMARY KEY,
+      data DATE NOT NULL,
+      oficial VARCHAR(255) NOT NULL,
+      codigo VARCHAR(32) NOT NULL,
+      created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      INDEX idx_data (data),
+      INDEX idx_oficial (oficial)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;`);
+
+
     const [rows] = await conn.query("SELECT id FROM state_store WHERE id=1 LIMIT 1");
     if (!rows.length) {
       const initial = buildFreshState();
@@ -364,6 +375,78 @@ async function getStateAutoReset() {
   st.assignments = st.assignments && typeof st.assignments === "object" ? st.assignments : {};
   return { st, didReset: false };
 
+}
+
+
+// ===============================
+// LANCAMENTOS (MySQL) -> mapa de assignments (para PDF)
+// - suporte a tabela "escala_lancamentos" populada manualmente
+// - tenta casar "oficial" (texto) com OFFICERS.canonical_name
+// ===============================
+function bestMatchCanonical(oficialRaw) {
+  const raw = String(oficialRaw || "").trim();
+  if (!raw) return null;
+
+  const nk = normKey(raw);
+
+  // match por "contém" (ex.: "Cap PM Alberto Franzini Neto" contém "Alberto Franzini Neto")
+  for (const off of OFFICERS) {
+    const c = normKey(off.canonical_name);
+    if (nk === c || nk.includes(c)) return off.canonical_name;
+  }
+
+  // tentativa por último token(s) (nome e sobrenome)
+  const parts = nk.split(" ");
+  if (parts.length >= 2) {
+    const tail2 = parts.slice(-2).join(" ");
+    for (const off of OFFICERS) {
+      const c = normKey(off.canonical_name);
+      if (c.endsWith(tail2)) return off.canonical_name;
+    }
+  }
+
+  return null;
+}
+
+function addDaysISO(iso, days) {
+  const [y, m, d] = iso.split("-").map(Number);
+  const dt = new Date(y, m - 1, d);
+  dt.setHours(0, 0, 0, 0);
+  dt.setDate(dt.getDate() + days);
+  return fmtYYYYMMDD(dt);
+}
+
+async function getAssignmentsFromLancamentos(weekStart, weekEnd) {
+  // weekEnd é domingo; para cobrir DATETIME, usamos < (weekEnd+1)
+  const weekEndPlus1 = addDaysISO(weekEnd, 1);
+
+  try {
+    const rows = await safeQuery(
+      "SELECT data, oficial, codigo FROM escala_lancamentos WHERE data >= ? AND data < ?",
+      [weekStart, weekEndPlus1]
+    );
+
+    const map = {};
+    const extras = [];
+
+    for (const r of rows) {
+      // r.data pode vir como Date ou string
+      const iso = (r.data instanceof Date) ? fmtYYYYMMDD(new Date(r.data.getFullYear(), r.data.getMonth(), r.data.getDate())) : String(r.data).slice(0, 10);
+      const canonical = bestMatchCanonical(r.oficial);
+      const code = String(r.codigo || "").trim();
+
+      if (canonical) {
+        map[`${canonical}|${iso}`] = code;
+      } else {
+        extras.push({ iso, oficial: String(r.oficial || "").trim(), codigo: code });
+      }
+    }
+
+    return { map, extras, used: rows.length > 0 };
+  } catch (e) {
+    // tabela inexistente ou coluna diferente -> ignora e cai no state_store
+    return { map: {}, extras: [], used: false, error: e };
+  }
 }
 
 // ===============================
@@ -547,6 +630,14 @@ app.post("/api/change_password", authRequired(true), async (req, res) => {
 app.get("/api/state", authRequired(true), async (req, res) => {
   try {
     const { st } = await getStateAutoReset();
+
+    // Preferir lançamentos do MySQL (escala_lancamentos) quando existirem
+    const week = getWeekRangeISO();
+    const fromLanc = await getAssignmentsFromLancamentos(week.start, week.end);
+
+    const dates = buildDatesForWeek(week.start);
+    const assignments = fromLanc.used ? fromLanc.map : (st.assignments || {});
+
     const holidays = getHolidaysForWeek(st.dates);
 
     const periodLabel = `período: ${fmtDDMMYYYY(st.period.start)} a ${fmtDDMMYYYY(st.period.end)}`;
@@ -578,6 +669,14 @@ app.get("/api/state", authRequired(true), async (req, res) => {
 app.put("/api/assignments", authRequired(false), async (req, res) => {
   try {
     const { st } = await getStateAutoReset();
+
+    // Preferir lançamentos do MySQL (escala_lancamentos) quando existirem
+    const week = getWeekRangeISO();
+    const fromLanc = await getAssignmentsFromLancamentos(week.start, week.end);
+
+    const dates = buildDatesForWeek(week.start);
+    const assignments = fromLanc.used ? fromLanc.map : (st.assignments || {});
+
 
     const updates = Array.isArray(req.body && req.body.updates) ? req.body.updates : [];
     if (!updates.length) return res.status(400).json({ error: "nenhuma alteração enviada" });
@@ -651,6 +750,14 @@ app.get("/api/pdf", authRequired(true), async (req, res) => {
   try {
     const { st } = await getStateAutoReset();
 
+    // Preferir lançamentos do MySQL (escala_lancamentos) quando existirem
+    const week = getWeekRangeISO();
+    const fromLanc = await getAssignmentsFromLancamentos(week.start, week.end);
+
+    const dates = buildDatesForWeek(week.start);
+    const assignments = fromLanc.used ? fromLanc.map : (st.assignments || {});
+
+
     res.setHeader("Content-Type", "application/pdf");
     res.setHeader("Content-Disposition", `inline; filename="escala_semanal.pdf"`);
 
@@ -660,11 +767,9 @@ app.get("/api/pdf", authRequired(true), async (req, res) => {
     // cabeçalho
     doc.fontSize(16).text(SYSTEM_NAME, { align: "center" });
     doc.moveDown(0.2);
-    doc.fontSize(10).text(`Período: ${fmtDDMMYYYY(st.period.start)} a ${fmtDDMMYYYY(st.period.end)}`, { align: "center" });
+    doc.fontSize(10).text(`Período: ${fmtDDMMYYYY(week.start)} a ${fmtDDMMYYYY(week.end)}`, { align: "center" });
     doc.moveDown(0.6);
 
-    const dates = st.dates || [];
-    const assignments = st.assignments || {};
 
     // tabela
     const left = doc.page.margins.left;
@@ -722,6 +827,30 @@ app.get("/api/pdf", authRequired(true), async (req, res) => {
       }
       doc.moveDown(0.4);
     }
+
+    
+    // assinaturas (final)
+    doc.moveDown(0.8);
+    const pageW = doc.page.width;
+    const marginL = doc.page.margins.left;
+    const marginR = doc.page.margins.right;
+    const usableW = pageW - marginL - marginR;
+
+    const colW = usableW / 2;
+    const ySig = doc.y + 18;
+
+    // linhas
+    doc.moveTo(marginL + 10, ySig).lineTo(marginL + colW - 10, ySig).stroke();
+    doc.moveTo(marginL + colW + 10, ySig).lineTo(marginL + 2 * colW - 10, ySig).stroke();
+
+    doc.fontSize(10);
+    doc.text("ALBERTO FRANZINI NETO", marginL, ySig + 6, { width: colW, align: "center" });
+    doc.text("CH P1/P5", marginL, ySig + 20, { width: colW, align: "center" });
+
+    doc.text("EDUARDO MOSNA XAVIER", marginL + colW, ySig + 6, { width: colW, align: "center" });
+    doc.text("SUBCMT BTL", marginL + colW, ySig + 20, { width: colW, align: "center" });
+
+    doc.moveDown(3.2);
 
     // rodapé
     doc.fontSize(9).text(`© ${COPYRIGHT_YEAR} - ${AUTHOR}`, { align: "center" });

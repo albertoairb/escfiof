@@ -27,3 +27,14 @@ CREATE TABLE IF NOT EXISTS action_logs (
   INDEX idx_actor (actor_name),
   INDEX idx_target (target_name)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+
+CREATE TABLE IF NOT EXISTS escala_lancamentos (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  data DATE NOT NULL,
+  oficial VARCHAR(255) NOT NULL,
+  codigo VARCHAR(32) NOT NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  INDEX idx_data (data),
+  INDEX idx_oficial (oficial)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

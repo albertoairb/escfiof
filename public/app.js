@@ -281,8 +281,30 @@
   }
 
   async function openPdf() {
-    // abre em nova aba
-    window.open("/api/pdf", "_blank");
+    try {
+      if (!state.token) {
+        $("loginMsg").textContent = "sessão expirada. faça login novamente.";
+        logout();
+        return;
+      }
+
+      const res = await fetch("/api/pdf", {
+        method: "GET",
+        headers: { "Authorization": `Bearer ${state.token}` }
+      });
+
+      if (!res.ok) {
+        const txt = await res.text();
+        alert(`erro ao gerar PDF: ${txt}`);
+        return;
+      }
+
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      window.open(url, "_blank");
+    } catch (e) {
+      alert("falha ao abrir PDF: " + (e?.message || e));
+    }
   }
 
   $("btnLogin").addEventListener("click", doLogin);
