@@ -29,13 +29,12 @@ CREATE TABLE IF NOT EXISTS action_logs (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 
+-- lançamentos manuais (opcional)
 CREATE TABLE IF NOT EXISTS escala_lancamentos (
-  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  id INT AUTO_INCREMENT PRIMARY KEY,
   data DATE NOT NULL,
   oficial VARCHAR(255) NOT NULL,
-  codigo VARCHAR(32) NOT NULL,
+  codigo VARCHAR(40) NOT NULL,
   observacao TEXT NULL,
-  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  INDEX idx_data (data),
-  INDEX idx_oficial (oficial)
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

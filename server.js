@@ -107,11 +107,11 @@ const pool = DB_URL
       waitForConnections: true,
       connectionLimit: 10,
       queueLimit: 0,
-      timezone: "Z",
-      dateStrings: true, // evita shift de DATE por timezone (ex.: -03)
+      // evita deslocamento de fuso em campos DATE (MySQL) e mantém datas como string YYYY-MM-DD
+      dateStrings: true,
     })
   : mysql.createPool({
-      host: DB_HOST,
+host: DB_HOST,
       port: DB_PORT,
       user: DB_USER,
       password: DB_PASSWORD,
@@ -120,7 +120,8 @@ const pool = DB_URL
       connectionLimit: 10,
       queueLimit: 0,
       timezone: "Z",
-      dateStrings: true, // mantém DATE como string (YYYY-MM-DD)
+      // evita deslocamento de fuso em campos DATE (MySQL) e mantém datas como string YYYY-MM-DD
+      dateStrings: true,
     });
 
 // ===============================
@@ -278,7 +279,7 @@ function getHolidaysForWeek(weekDates) {
 // SCHEMA / STATE
 // ===============================
 async function ensureSchema() {
-  const conn = await pool.getConnection();
+const conn = await pool.getConnection();
   try {
     await conn.query(`CREATE TABLE IF NOT EXISTS state_store (
       id INT PRIMARY KEY,
@@ -307,21 +308,6 @@ async function ensureSchema() {
       INDEX idx_target (target_name)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;`);
 
-    await conn.query(`CREATE TABLE IF NOT EXISTS escala_lancamentos (
-      id BIGINT AUTO_INCREMENT PRIMARY KEY,
-      data DATE NOT NULL,
-      oficial VARCHAR(255) NOT NULL,
-      codigo VARCHAR(32) NOT NULL,
-      observacao TEXT NULL,
-      created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-      INDEX idx_data (data),
-      INDEX idx_oficial (oficial)
-    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;`);
-
-    // compatibilidade: adicionar coluna observacao quando atualizar versões
-    try { await conn.query("ALTER TABLE escala_lancamentos ADD COLUMN observacao TEXT NULL"); } catch (_e) {}
-
-
     const [rows] = await conn.query("SELECT id FROM state_store WHERE id=1 LIMIT 1");
     if (!rows.length) {
       const initial = buildFreshState();
@@ -330,6 +316,21 @@ async function ensureSchema() {
   } finally {
     conn.release();
   }
+  // lançamentos manuais (opcional) - usado para alimentar PDF/tela quando houver
+  await safeQuery(`
+    CREATE TABLE IF NOT EXISTS escala_lancamentos (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      data DATE NOT NULL,
+      oficial VARCHAR(255) NOT NULL,
+      codigo VARCHAR(40) NOT NULL,
+      observacao TEXT NULL,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+  `);
+
+  // compatibilidade: adiciona coluna observacao caso a tabela exista sem ela
+  await safeQuery(`ALTER TABLE escala_lancamentos ADD COLUMN observacao TEXT NULL`);
+
 }
 
 function buildFreshState() {
@@ -346,7 +347,6 @@ function buildFreshState() {
     codes: CODES.slice(),
     officers: OFFICERS.slice(),
     assignments: {},
-    notes: {},
     updated_at: new Date().toISOString(),
   };
 }
@@ -388,84 +388,6 @@ async function getStateAutoReset() {
   st.assignments = st.assignments && typeof st.assignments === "object" ? st.assignments : {};
   return { st, didReset: false };
 
-}
-
-
-// ===============================
-// LANCAMENTOS (MySQL) -> mapa de assignments (para PDF)
-// - suporte a tabela "escala_lancamentos" populada manualmente
-// - tenta casar "oficial" (texto) com OFFICERS.canonical_name
-// ===============================
-function bestMatchCanonical(oficialRaw) {
-  const raw = String(oficialRaw || "").trim();
-  if (!raw) return null;
-
-  const nk = normKey(raw);
-
-  // match por "contém" (ex.: "Cap PM Alberto Franzini Neto" contém "Alberto Franzini Neto")
-  for (const off of OFFICERS) {
-    const c = normKey(off.canonical_name);
-    if (nk === c || nk.includes(c)) return off.canonical_name;
-  }
-
-  // tentativa por último token(s) (nome e sobrenome)
-  const parts = nk.split(" ");
-  if (parts.length >= 2) {
-    const tail2 = parts.slice(-2).join(" ");
-    for (const off of OFFICERS) {
-      const c = normKey(off.canonical_name);
-      if (c.endsWith(tail2)) return off.canonical_name;
-    }
-  }
-
-  return null;
-}
-
-function addDaysISO(iso, days) {
-  const [y, m, d] = iso.split("-").map(Number);
-  const dt = new Date(y, m - 1, d);
-  dt.setHours(0, 0, 0, 0);
-  dt.setDate(dt.getDate() + days);
-  return fmtYYYYMMDD(dt);
-}
-
-async function getAssignmentsFromLancamentos(weekStart, weekEnd) {
-  // weekEnd é domingo; para cobrir DATETIME, usamos < (weekEnd+1)
-  const weekEndPlus1 = addDaysISO(weekEnd, 1);
-
-  try {
-    const rows = await safeQuery(
-      "SELECT data, oficial, codigo, observacao FROM escala_lancamentos WHERE data >= ? AND data < ?",
-      [weekStart, weekEndPlus1]
-    );
-
-    const map = {};
-    const notes = {};
-    const extras = [];
-
-    for (const r of rows) {
-      // r.data pode vir como Date ou string.
-      // Importante: se vier como Date, usar ISO UTC para NÃO deslocar por timezone local.
-      const iso = (r.data instanceof Date)
-        ? r.data.toISOString().slice(0, 10)
-        : String(r.data).slice(0, 10);
-      const canonical = bestMatchCanonical(r.oficial);
-      const code = String(r.codigo || "").trim();
-
-      if (canonical) {
-        map[`${canonical}|${iso}`] = code;
-        const obs = (r.observacao !== undefined && r.observacao !== null) ? String(r.observacao) : "";
-        if (obs.trim()) notes[`${canonical}|${iso}`] = obs;
-      } else {
-        extras.push({ iso, oficial: String(r.oficial || "").trim(), codigo: code });
-      }
-    }
-
-    return { map, notes, extras, used: rows.length > 0 };
-  } catch (e) {
-    // tabela inexistente ou coluna diferente -> ignora e cai no state_store
-    return { map: {}, notes: {}, extras: [], used: false, error: e };
-  }
 }
 
 // ===============================
@@ -574,6 +496,76 @@ async function logAction(actor, target, action, details = "") {
 // ===============================
 // PDF
 // ===============================
+
+// ===============================
+// LANÇAMENTOS (MySQL) -> mapa de escala
+// ===============================
+function officerCanonicalFromDbName(dbName) {
+  const n = normKey(dbName);
+  for (const o of OFFICERS) {
+    const a = normKey(`${o.rank} ${o.name}`);
+    const b = normKey(o.canonical_name);
+    const c = normKey(o.name);
+    if (n === a || n === b || n === c) return o.canonical_name;
+  }
+  return null;
+}
+
+async function getAssignmentsFromLancamentos(startISO, endISO) {
+  // retorna { used: boolean, map: {}, notes: {} }
+  try {
+    const [rows] = await pool.query(
+      `SELECT data, oficial, codigo, observacao
+       FROM escala_lancamentos
+       WHERE data BETWEEN ? AND ?
+       ORDER BY data ASC, oficial ASC`,
+      [startISO, endISO]
+    );
+
+    if (!rows || !rows.length) return { used: false, map: {}, notes: {} };
+
+    const map = {};
+    const notes = {};
+
+    for (const r of rows) {
+      const dateISO = typeof r.data === "string" ? r.data : fmtYYYYMMDD(new Date(r.data));
+      const canon = officerCanonicalFromDbName(r.oficial);
+      if (!canon) continue;
+
+      const code = String(r.codigo || "").trim();
+      if (!code) continue;
+
+      const key = `${canon}|${dateISO}`;
+      map[key] = code;
+
+      if (code === "OUTROS") {
+        const obs = String(r.observacao || "").trim();
+        if (obs) notes[key] = obs;
+      }
+    }
+
+    return { used: Object.keys(map).length > 0, map, notes };
+  } catch (e) {
+    // se a tabela não existir ainda em algum ambiente, cai no state_store
+    return { used: false, map: {}, notes: {} };
+  }
+}
+
+function buildOutrosList(dates, assignments, notes) {
+  const items = [];
+  for (const off of OFFICERS) {
+    for (const iso of dates) {
+      const k = `${off.canonical_name}|${iso}`;
+      const code = assignments[k] ? String(assignments[k]) : "";
+      if (code !== "OUTROS") continue;
+      const note = notes && notes[k] ? String(notes[k]) : "";
+      if (!note) continue;
+      items.push({ officer: `${off.rank} ${off.name}`, date: iso, note });
+    }
+  }
+  return items;
+}
+
 function requirePdfKitOr501(res) {
   try {
     return require("pdfkit");
@@ -649,15 +641,6 @@ app.post("/api/change_password", authRequired(true), async (req, res) => {
 app.get("/api/state", authRequired(true), async (req, res) => {
   try {
     const { st } = await getStateAutoReset();
-
-    // Preferir lançamentos do MySQL (escala_lancamentos) quando existirem
-    const week = getWeekRangeISO();
-    const fromLanc = await getAssignmentsFromLancamentos(week.start, week.end);
-
-    const dates = buildDatesForWeek(week.start);
-    const assignments = fromLanc.used ? fromLanc.map : (st.assignments || {});
-    const notes = fromLanc.used ? (fromLanc.notes || {}) : (st.notes || {});
-
     const holidays = getHolidaysForWeek(st.dates);
 
     const periodLabel = `período: ${fmtDDMMYYYY(st.period.start)} a ${fmtDDMMYYYY(st.period.end)}`;
@@ -678,8 +661,8 @@ app.get("/api/state", authRequired(true), async (req, res) => {
       officers: OFFICERS,
       dates: st.dates,
       codes: CODES,
-      assignments,
-      notes: fromLanc.used ? (fromLanc.notes || {}) : (st.notes || {}),
+      assignments: st.assignments || {},
+      notes: st.notes || {},
     });
   } catch (err) {
     return res.status(500).json({ error: "erro ao carregar", details: err.message });
@@ -690,15 +673,6 @@ app.get("/api/state", authRequired(true), async (req, res) => {
 app.put("/api/assignments", authRequired(false), async (req, res) => {
   try {
     const { st } = await getStateAutoReset();
-
-    // Preferir lançamentos do MySQL (escala_lancamentos) quando existirem
-    const week = getWeekRangeISO();
-    const fromLanc = await getAssignmentsFromLancamentos(week.start, week.end);
-
-    const dates = buildDatesForWeek(week.start);
-    const assignments = fromLanc.used ? fromLanc.map : (st.assignments || {});
-    const notes = fromLanc.used ? (fromLanc.notes || {}) : (st.notes || {});
-
 
     const updates = Array.isArray(req.body && req.body.updates) ? req.body.updates : [];
     if (!updates.length) return res.status(400).json({ error: "nenhuma alteração enviada" });
@@ -721,7 +695,7 @@ app.put("/api/assignments", authRequired(false), async (req, res) => {
       const target = String(u.canonical_name || "").trim();
       const date = String(u.date || "").trim();
       const code = String(u.code || "").trim();
-      const note = (u.note !== undefined && u.note !== null) ? String(u.note) : "";
+      const note = String(u.note || "").trim();
 
       if (!validOfficers.has(target)) return res.status(400).json({ error: "oficial inválido" });
       if (!validDates.has(date)) return res.status(400).json({ error: "data inválida" });
@@ -738,12 +712,6 @@ app.put("/api/assignments", authRequired(false), async (req, res) => {
 
       if (code && !validCodes.has(code)) return res.status(400).json({ error: "código inválido" });
 
-      // Regra: quando for OUTROS, exige observação
-      if (code === "OUTROS") {
-        const t = String(note || "").trim();
-        if (!t) return res.status(400).json({ error: "OUTROS exige observação" });
-      }
-
       const key = `${target}|${date}`;
       const before = st.assignments && st.assignments[key] ? String(st.assignments[key]) : "";
 
@@ -759,7 +727,9 @@ app.put("/api/assignments", authRequired(false), async (req, res) => {
       } else {
         st.assignments[key] = code;
         if (code === "OUTROS") {
-          st.notes[key] = String(note || "").trim();
+          // exige descrição para OUTROS
+          if (!note) return res.status(400).json({ error: "OUTROS exige descrição" });
+          st.notes[key] = note;
         } else {
           delete st.notes[key];
         }
@@ -790,15 +760,6 @@ app.get("/api/pdf", authRequired(true), async (req, res) => {
   try {
     const { st } = await getStateAutoReset();
 
-    // Preferir lançamentos do MySQL (escala_lancamentos) quando existirem
-    const week = getWeekRangeISO();
-    const fromLanc = await getAssignmentsFromLancamentos(week.start, week.end);
-
-    const dates = buildDatesForWeek(week.start);
-    const assignments = fromLanc.used ? fromLanc.map : (st.assignments || {});
-    const notes = fromLanc.used ? (fromLanc.notes || {}) : (st.notes || {});
-
-
     res.setHeader("Content-Type", "application/pdf");
     res.setHeader("Content-Disposition", `inline; filename="escala_semanal.pdf"`);
 
@@ -808,9 +769,14 @@ app.get("/api/pdf", authRequired(true), async (req, res) => {
     // cabeçalho
     doc.fontSize(16).text(SYSTEM_NAME, { align: "center" });
     doc.moveDown(0.2);
-    doc.fontSize(10).text(`Período: ${fmtDDMMYYYY(week.start)} a ${fmtDDMMYYYY(week.end)}`, { align: "center" });
+    doc.fontSize(10).text(`Período: ${fmtDDMMYYYY(st.period.start)} a ${fmtDDMMYYYY(st.period.end)}`, { align: "center" });
     doc.moveDown(0.6);
 
+    const dates = st.dates || [];
+    // Preferir lançamentos do MySQL (escala_lancamentos) quando existirem
+    const fromLanc = await getAssignmentsFromLancamentos(st.period.start, st.period.end);
+    const assignments = fromLanc.used ? fromLanc.map : (st.assignments || {});
+    const notes = fromLanc.used ? fromLanc.notes : (st.notes || {});
 
     // tabela
     const left = doc.page.margins.left;
@@ -834,10 +800,9 @@ app.get("/api/pdf", authRequired(true), async (req, res) => {
 
       for (let i = 0; i < dates.length; i++) {
         const k = `${off.canonical_name}|${dates[i]}`;
-        const code = assignments[k] ? String(assignments[k]) : "";
-        const hasNote = (code === "OUTROS" && notes[k] && String(notes[k]).trim());
-        const display = hasNote ? "OUTROS*" : (code || "-");
-        doc.text(display, left + colWName + i * colWDay, y, { width: colWDay, align: "center" });
+        let code = assignments[k] ? String(assignments[k]) : "";
+        if (code === "OUTROS" && notes && notes[k]) code = "OUTROS*";
+        doc.text(code || "-", left + colWName + i * colWDay, y, { width: colWDay, align: "center" });
       }
 
       y += 14;
@@ -847,950 +812,49 @@ app.get("/api/pdf", authRequired(true), async (req, res) => {
       }
     }
 
-    
-    // assinaturas (fim da escala)
-    (function drawSignaturesAfterScale() {
-      const pageW = doc.page.width;
-      const marginL = doc.page.margins.left;
-      const marginR = doc.page.margins.right;
-      const usableW = pageW - marginL - marginR;
-      const colW = usableW / 2;
 
-      // se não houver espaço, cria nova página landscape para assinar
-      let ySig = y + 18;
-      if (ySig > doc.page.height - 80) {
-        doc.addPage({ margin: 28, size: "A4", layout: "landscape" });
-        ySig = doc.y + 120;
-      }
-
-      doc.moveTo(marginL + 10, ySig).lineTo(marginL + colW - 10, ySig).stroke();
-      doc.moveTo(marginL + colW + 10, ySig).lineTo(marginL + 2 * colW - 10, ySig).stroke();
-
-      doc.fontSize(10);
-      doc.text("ALBERTO FRANZINI NETO", marginL, ySig + 6, { width: colW, align: "center" });
-      doc.text("CH P1/P5", marginL, ySig + 20, { width: colW, align: "center" });
-
-      doc.text("EDUARDO MOSNA XAVIER", marginL + colW, ySig + 6, { width: colW, align: "center" });
-      doc.text("SUBCMT BTL", marginL + colW, ySig + 20, { width: colW, align: "center" });
-
-      y = ySig + 42;
-    })();
-
-// seção alterações operacionais (para impressão)
-    doc.addPage({ margin: 28, size: "A4", layout: "portrait" });
-
-    // OUTROS: detalhamento (texto integral)
-    const outrosItems = [];
-    for (const off of OFFICERS) {
-      for (const iso of dates) {
-        const k = `${off.canonical_name}|${iso}`;
-        const code = assignments[k] ? String(assignments[k]) : "";
-        const obs = notes[k] ? String(notes[k]).trim() : "";
-        if (code === "OUTROS" && obs) {
-          outrosItems.push({ iso, label: `${off.rank} ${off.name}`, obs });
-        }
-      }
+    // assinaturas no fim da escala (mesma página da tabela)
+    const sigY = doc.page.height - 70;
+    // se não couber, abre página nova landscape só para assinaturas
+    if (doc.y > sigY - 20) {
+      doc.addPage({ margin: 28, size: "A4", layout: "landscape" });
     }
+    const pageW = doc.page.width;
+    const mL = doc.page.margins.left;
+    const mR = doc.page.margins.right;
+    const usableW = pageW - mL - mR;
+    const half = usableW / 2;
+    const lineY = doc.page.height - 55;
 
-    doc.fontSize(14).text("OUTROS - detalhamento", { align: "center" });
-    doc.moveDown(0.4);
+    // linhas
+    doc.moveTo(mL + 20, lineY).lineTo(mL + half - 20, lineY).stroke();
+    doc.moveTo(mL + half + 20, lineY).lineTo(mL + usableW - 20, lineY).stroke();
 
-    if (!outrosItems.length) {
-      doc.fontSize(10).text("sem registros do tipo OUTROS nesta semana.", { align: "center" });
-      doc.moveDown(0.8);
-    } else {
+    // textos
+    doc.fontSize(10);
+    doc.text("ALBERTO FRANZINI NETO", mL, lineY + 6, { width: half, align: "center" });
+    doc.text("CH P1/P5", mL, lineY + 20, { width: half, align: "center" });
+
+    doc.text("EDUARDO MOSNA XAVIER", mL + half, lineY + 6, { width: half, align: "center" });
+    doc.text("SUBCMT BTL", mL + half, lineY + 20, { width: half, align: "center" });
+
+    // OUTROS - detalhamento (texto integral)
+    const outrosItems = buildOutrosList(dates, assignments, notes);
+    if (outrosItems.length) {
+      doc.addPage({ margin: 28, size: "A4", layout: "portrait" });
+      doc.fontSize(14).text("OUTROS - DETALHAMENTO", { align: "center" });
+      doc.moveDown(0.6);
+
       doc.fontSize(10);
       for (const it of outrosItems) {
-        doc.fontSize(10).text(`${fmtDDMMYYYY(it.iso)} - ${it.label}`, { continued: false });
-        doc.moveDown(0.2);
-        doc.fontSize(10).text(it.obs, { width: doc.page.width - doc.page.margins.left - doc.page.margins.right });
+        doc.font("Helvetica-Bold").text(`${it.officer} — ${fmtDDMMYYYY(it.date)}`);
+        doc.font("Helvetica").text(it.note, { width: doc.page.width - doc.page.margins.left - doc.page.margins.right });
         doc.moveDown(0.6);
-        if (doc.y > doc.page.height - 80) {
-          doc.addPage({ margin: 28, size: "A4", layout: "portrait" });
-          doc.fontSize(14).text("OUTROS - detalhamento (continuação)", { align: "center" });
-          doc.moveDown(0.6);
-        }
+        if (doc.y > doc.page.height - 80) doc.addPage({ margin: 28, size: "A4", layout: "portrait" });
       }
-      doc.moveDown(0.6);
     }
 
     // seção alterações operacionais (para impressão)
-xpress = require("express");
-const helmet = require("helmet");
-const compression = require("compression");
-const mysql = require("mysql2/promise");
-const bcrypt = require("bcryptjs");
-const jwt = require("jsonwebtoken");
-
-// ===============================
-// CONFIG / ENV
-// ===============================
-const PORT = Number(process.env.PORT || 8080);
-process.env.TZ = (process.env.TZ || "America/Sao_Paulo").trim();
-
-// Semana mínima (segunda-feira) para iniciar o sistema automaticamente, sem precisar forçar via variável.
-// Ex.: quando a semana anterior já passou, iniciamos diretamente na próxima.
-const CUTOVER_WEEK_START = "2026-03-02";
-
-const JWT_SECRET = (process.env.JWT_SECRET || "troque-este-segredo").trim();
-const DEFAULT_PASSWORD = (process.env.DEFAULT_PASSWORD || "sr123").trim();
-
-const CLOSE_FRIDAY_HOUR = Number(process.env.CLOSE_FRIDAY_HOUR || 11);
-
-const SYSTEM_NAME = (process.env.SYSTEM_NAME || "Escala Semanal de Oficiais do 4º BPM/M").trim();
-const AUTHOR = (process.env.AUTHOR || "Desenvolvido por Alberto Franzini Neto").trim();
-const COPYRIGHT_YEAR = (process.env.COPYRIGHT_YEAR || "2026").toString().trim();
-
-
-// DB: Railway (URL) > Docker/local (DB_HOST...)
-const DB_URL = (process.env.DB_URL || process.env.MYSQL_URL || process.env.MYSQL_PUBLIC_URL || "").trim();
-
-// Defaults para Docker/local (quando DB_URL não existir)
-const DB_HOST = (process.env.DB_HOST || "db").trim();
-const DB_PORT = Number(process.env.DB_PORT || 3306);
-const DB_USER = (process.env.DB_USER || "app").trim();
-const DB_PASSWORD = (process.env.DB_PASSWORD || "app").trim();
-const DB_NAME = (process.env.DB_NAME || process.env.DB_DATABASE || "escala").trim();
-
-// ===============================
-// OFICIAIS (lista fixa)
-// - canonical_name: chave única do oficial (sem posto)
-// - rank: posto/graduação a exibir
-// - name: nome completo a exibir
-// ===============================
-const OFFICERS = [
-  { canonical_name: "Helder Antônio de Paula", rank: "Tenente-Coronel PM", name: "Helder Antônio de Paula" },
-  { canonical_name: "Eduardo Mosna Xavier", rank: "Major PM", name: "Eduardo Mosna Xavier" },
-  { canonical_name: "Alessandra Paula Tonolli", rank: "Major PM", name: "Alessandra Paula Tonolli" },
-  { canonical_name: "Carlos Bordim Neto", rank: "Capitão PM", name: "Carlos Bordim Neto" },
-  { canonical_name: "Alberto Franzini Neto", rank: "Capitão PM", name: "Alberto Franzini Neto" },
-  { canonical_name: "Marcio Saito Essaki", rank: "Capitão PM", name: "Marcio Saito Essaki" },
-  { canonical_name: "Daniel Alves de Siqueira", rank: "1º Tenente PM", name: "Daniel Alves de Siqueira" },
-  { canonical_name: "Mateus Pedro Teodoro", rank: "1º Tenente PM", name: "Mateus Pedro Teodoro" },
-  { canonical_name: "Fernanda Bruno Pomponio Martignago", rank: "2º Tenente PM", name: "Fernanda Bruno Pomponio Martignago" },
-  { canonical_name: "Dayana de Oliveira Silva Almeida", rank: "2º Tenente PM", name: "Dayana de Oliveira Silva Almeida" },
-
-  { canonical_name: "André Santarelli de Paula", rank: "Capitão PM", name: "André Santarelli de Paula" },
-  { canonical_name: "Vinicio Augusto Voltarelli Tavares", rank: "Capitão PM", name: "Vinicio Augusto Voltarelli Tavares" },
-  { canonical_name: "Jose Antonio Marciano Neto", rank: "Capitão PM", name: "Jose Antonio Marciano Neto" },
-
-  { canonical_name: "Uri Filipe dos Santos", rank: "1º Tenente PM", name: "Uri Filipe dos Santos" },
-  { canonical_name: "Antônio Ovídio Ferrucio Cardoso", rank: "1º Tenente PM", name: "Antônio Ovídio Ferrucio Cardoso" },
-  { canonical_name: "Bruno Antão de Oliveira", rank: "1º Tenente PM", name: "Bruno Antão de Oliveira" },
-  { canonical_name: "Larissa Amadeu Leite", rank: "1º Tenente PM", name: "Larissa Amadeu Leite" },
-  { canonical_name: "Renato Fernandes Freire", rank: "1º Tenente PM", name: "Renato Fernandes Freire" },
-  { canonical_name: "Raphael Mecca Sampaio", rank: "1º Tenente PM", name: "Raphael Mecca Sampaio" },
-];
-
-// Após fechamento (sexta 11h+), somente estes podem alterar (qualquer oficial)
-const ADMIN_NAMES = new Set([
-  "Alberto Franzini Neto",
-  "Eduardo Mosna Xavier",
-  "Helder Antônio de Paula",
-]);
-
-// Códigos válidos (tudo em MAIÚSCULO, conforme regra)
-const CODES = ["EXP", "SR", "FO", "MA", "VE", "LP", "FÉRIAS", "CFP_DIA", "CFP_NOITE", "OUTROS"];
-
-// ===============================
-// APP
-// ===============================
-const app = express();
-app.set("trust proxy", true);
-
-app.use(helmet({ contentSecurityPolicy: false }));
-app.use(compression());
-app.use(express.json({ limit: "3mb" }));
-
-app.use(express.static(path.join(__dirname, "public"), {
-  setHeaders(res, filePath) {
-    if (/\.(html|js|css)$/i.test(filePath)) {
-      res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
-      res.setHeader("Pragma", "no-cache");
-      res.setHeader("Expires", "0");
-    }
-  }
-}));
-
-// ===============================
-// DB POOL
-// ===============================
-const pool = DB_URL
-  ? mysql.createPool({
-      uri: DB_URL,
-      waitForConnections: true,
-      connectionLimit: 10,
-      queueLimit: 0,
-      timezone: "Z",
-      dateStrings: true, // evita shift de DATE por timezone (ex.: -03)
-    })
-  : mysql.createPool({
-      host: DB_HOST,
-      port: DB_PORT,
-      user: DB_USER,
-      password: DB_PASSWORD,
-      database: DB_NAME,
-      waitForConnections: true,
-      connectionLimit: 10,
-      queueLimit: 0,
-      timezone: "Z",
-      dateStrings: true, // mantém DATE como string (YYYY-MM-DD)
-    });
-
-// ===============================
-// UTIL
-// ===============================
-function safeJsonParse(s) {
-  try { return JSON.parse(s); } catch { return null; }
-}
-
-function normKey(s) {
-  return String(s || "")
-    .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
-    .toLowerCase().trim().replace(/\s+/g, " ");
-}
-
-function fmtYYYYMMDD(d) {
-  const yyyy = d.getFullYear();
-  const mm = String(d.getMonth() + 1).padStart(2, "0");
-  const dd = String(d.getDate()).padStart(2, "0");
-  return `${yyyy}-${mm}-${dd}`;
-}
-
-function fmtDDMMYYYY(iso) {
-  const [y, m, d] = String(iso || "").split("-");
-  if (!y || !m || !d) return String(iso || "");
-  return `${d}/${m}/${y}`;
-}
-
-// Semana vigente: segunda a domingo, em YYYY-MM-DD (sem usar toISOString para evitar +1 dia)
-// Regra adicional: nunca retornar semana anterior a CUTOVER_WEEK_START (segunda-feira).
-
-function getWeekRangeISO() {
-  const now = new Date(); // respeita TZ no processo
-
-  // data efetiva = max(agora, CUTOVER_WEEK_START)
-  const [cy, cm, cd] = CUTOVER_WEEK_START.split("-").map(Number);
-  const cutover = new Date(cy, cm - 1, cd);
-  cutover.setHours(0, 0, 0, 0);
-
-  const effective = new Date(Math.max(now.getTime(), cutover.getTime()));
-
-  const day = effective.getDay(); // 0=dom
-  const diffToMonday = day === 0 ? -6 : 1 - day;
-
-  const monday = new Date(effective);
-  monday.setHours(0, 0, 0, 0);
-  monday.setDate(effective.getDate() + diffToMonday);
-
-  const sunday = new Date(monday);
-  sunday.setHours(0, 0, 0, 0);
-  sunday.setDate(monday.getDate() + 6);
-
-  return { start: fmtYYYYMMDD(monday), end: fmtYYYYMMDD(sunday) };
-}
-
-function buildDatesForWeek(startYYYYMMDD) {
-  const dates = [];
-  const [y, m, d] = startYYYYMMDD.split("-").map(Number);
-  const base = new Date(y, m - 1, d);
-  base.setHours(0, 0, 0, 0);
-
-  for (let i = 0; i < 7; i++) {
-    const cur = new Date(base);
-    cur.setDate(base.getDate() + i);
-    dates.push(fmtYYYYMMDD(cur));
-  }
-  return dates;
-}
-
-// Fechamento: sexta-feira às 11h (São Paulo) até domingo
-function isClosedNow() {
-  const now = new Date();
-  const day = now.getDay(); // 5=sexta
-  const hour = now.getHours();
-
-  if (day < 5) return false;
-  if (day === 5) return hour >= CLOSE_FRIDAY_HOUR;
-  return true; // sábado/domingo
-}
-
-function isAdminName(canonicalName) {
-  return ADMIN_NAMES.has(String(canonicalName || "").trim());
-}
-
-// ===============================
-// FERIADOS (Brasil - nacionais + móveis)
-// ===============================
-function easterDate(year) {
-  // Computus (Meeus/Jones/Butcher)
-  const a = year % 19;
-  const b = Math.floor(year / 100);
-  const c = year % 100;
-  const d = Math.floor(b / 4);
-  const e = b % 4;
-  const f = Math.floor((b + 8) / 25);
-  const g = Math.floor((b - f + 1) / 3);
-  const h = (19 * a + b - d - g + 15) % 30;
-  const i = Math.floor(c / 4);
-  const k = c % 4;
-  const l = (32 + 2 * e + 2 * i - h - k) % 7;
-  const m = Math.floor((a + 11 * h + 22 * l) / 451);
-  const month = Math.floor((h + l - 7 * m + 114) / 31); // 3=março,4=abril
-  const day = ((h + l - 7 * m + 114) % 31) + 1;
-  return new Date(year, month - 1, day);
-}
-
-function addDays(d, n) {
-  const x = new Date(d);
-  x.setDate(x.getDate() + n);
-  return x;
-}
-
-function isoFromDate(d) {
-  return fmtYYYYMMDD(d);
-}
-
-function getHolidaysForWeek(weekDates) {
-  if (!Array.isArray(weekDates) || !weekDates.length) return [];
-  const year = Number(weekDates[0].slice(0,4));
-  const set = new Map();
-
-  // Fixos
-  const fixed = [
-    ["01-01", "Confraternização Universal"],
-    ["21-04", "Tiradentes"],
-    ["01-05", "Dia do Trabalhador"],
-    ["07-09", "Independência do Brasil"],
-    ["12-10", "Nossa Senhora Aparecida"],
-    ["02-11", "Finados"],
-    ["15-11", "Proclamação da República"],
-    ["25-12", "Natal"],
-  ];
-  for (const [md, name] of fixed) {
-    set.set(`${year}-${md}`, name);
-  }
-
-  // Móveis (referência nacional)
-  const easter = easterDate(year);
-  const carnaval = addDays(easter, -47); // terça de carnaval (aprox)
-  const sextaSanta = addDays(easter, -2);
-  const corpusChristi = addDays(easter, 60);
-
-  set.set(isoFromDate(carnaval), "Carnaval");
-  set.set(isoFromDate(sextaSanta), "Paixão de Cristo");
-  set.set(isoFromDate(corpusChristi), "Corpus Christi");
-
-  const out = [];
-  for (const iso of weekDates) {
-    if (set.has(iso)) out.push({ date: iso, name: set.get(iso) });
-  }
-  return out;
-}
-
-// ===============================
-// SCHEMA / STATE
-// ===============================
-async function ensureSchema() {
-  const conn = await pool.getConnection();
-  try {
-    await conn.query(`CREATE TABLE IF NOT EXISTS state_store (
-      id INT PRIMARY KEY,
-      payload LONGTEXT NOT NULL,
-      updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
-    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;`);
-
-    await conn.query(`CREATE TABLE IF NOT EXISTS users (
-      id INT AUTO_INCREMENT PRIMARY KEY,
-      canonical_name VARCHAR(255) NOT NULL UNIQUE,
-      password_hash VARCHAR(255) NOT NULL,
-      must_change TINYINT(1) NOT NULL DEFAULT 1,
-      created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-      updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
-    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;`);
-
-    await conn.query(`CREATE TABLE IF NOT EXISTS action_logs (
-      id BIGINT AUTO_INCREMENT PRIMARY KEY,
-      at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-      actor_name VARCHAR(255) NOT NULL,
-      target_name VARCHAR(255) NOT NULL,
-      action VARCHAR(64) NOT NULL,
-      details TEXT NULL,
-      INDEX idx_at (at),
-      INDEX idx_actor (actor_name),
-      INDEX idx_target (target_name)
-    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;`);
-
-    await conn.query(`CREATE TABLE IF NOT EXISTS escala_lancamentos (
-      id BIGINT AUTO_INCREMENT PRIMARY KEY,
-      data DATE NOT NULL,
-      oficial VARCHAR(255) NOT NULL,
-      codigo VARCHAR(32) NOT NULL,
-      observacao TEXT NULL,
-      created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-      INDEX idx_data (data),
-      INDEX idx_oficial (oficial)
-    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;`);
-
-    // compatibilidade: adicionar coluna observacao quando atualizar versões
-    try { await conn.query("ALTER TABLE escala_lancamentos ADD COLUMN observacao TEXT NULL"); } catch (_e) {}
-
-
-    const [rows] = await conn.query("SELECT id FROM state_store WHERE id=1 LIMIT 1");
-    if (!rows.length) {
-      const initial = buildFreshState();
-      await conn.query("INSERT INTO state_store (id, payload) VALUES (1, ?)", [JSON.stringify(initial)]);
-    }
-  } finally {
-    conn.release();
-  }
-}
-
-function buildFreshState() {
-  const w = getWeekRangeISO();
-  const dates = buildDatesForWeek(w.start);
-
-  return {
-    meta: {
-      system_name: SYSTEM_NAME,
-      footer_mark: `© ${COPYRIGHT_YEAR} - ${AUTHOR}`,
-    },
-    period: { start: w.start, end: w.end },
-    dates,
-    codes: CODES.slice(),
-    officers: OFFICERS.slice(),
-    assignments: {},
-    notes: {},
-    updated_at: new Date().toISOString(),
-  };
-}
-
-async function safeQuery(sql, params = []) {
-  const conn = await pool.getConnection();
-  try {
-    const [rows] = await conn.query(sql, params);
-    return rows;
-  } finally {
-    conn.release();
-  }
-}
-
-async function getStateAutoReset() {
-  const rows = await safeQuery("SELECT payload FROM state_store WHERE id=1 LIMIT 1");
-  let st = rows.length ? safeJsonParse(rows[0].payload) : null;
-
-  const currentWeek = getWeekRangeISO();
-  const needReset = !st || !st.period || st.period.start !== currentWeek.start || st.period.end !== currentWeek.end;
-
-  if (needReset) {
-    st = buildFreshState();
-    await safeQuery(
-      "INSERT INTO state_store (id, payload) VALUES (1, ?) ON DUPLICATE KEY UPDATE payload=VALUES(payload), updated_at=CURRENT_TIMESTAMP",
-      [JSON.stringify(st)]
-    );
-    return { st, didReset: true };
-  }
-
-  // garante campos
-  st.meta = st.meta || {};
-  st.meta.system_name = SYSTEM_NAME;
-  st.meta.footer_mark = `© ${COPYRIGHT_YEAR} - ${AUTHOR}`;
-  st.codes = CODES.slice();
-  st.officers = OFFICERS.slice();
-  st.period = { start: currentWeek.start, end: currentWeek.end };
-  st.dates = buildDatesForWeek(currentWeek.start);
-  st.assignments = st.assignments && typeof st.assignments === "object" ? st.assignments : {};
-  return { st, didReset: false };
-
-}
-
-
-// ===============================
-// LANCAMENTOS (MySQL) -> mapa de assignments (para PDF)
-// - suporte a tabela "escala_lancamentos" populada manualmente
-// - tenta casar "oficial" (texto) com OFFICERS.canonical_name
-// ===============================
-function bestMatchCanonical(oficialRaw) {
-  const raw = String(oficialRaw || "").trim();
-  if (!raw) return null;
-
-  const nk = normKey(raw);
-
-  // match por "contém" (ex.: "Cap PM Alberto Franzini Neto" contém "Alberto Franzini Neto")
-  for (const off of OFFICERS) {
-    const c = normKey(off.canonical_name);
-    if (nk === c || nk.includes(c)) return off.canonical_name;
-  }
-
-  // tentativa por último token(s) (nome e sobrenome)
-  const parts = nk.split(" ");
-  if (parts.length >= 2) {
-    const tail2 = parts.slice(-2).join(" ");
-    for (const off of OFFICERS) {
-      const c = normKey(off.canonical_name);
-      if (c.endsWith(tail2)) return off.canonical_name;
-    }
-  }
-
-  return null;
-}
-
-function addDaysISO(iso, days) {
-  const [y, m, d] = iso.split("-").map(Number);
-  const dt = new Date(y, m - 1, d);
-  dt.setHours(0, 0, 0, 0);
-  dt.setDate(dt.getDate() + days);
-  return fmtYYYYMMDD(dt);
-}
-
-async function getAssignmentsFromLancamentos(weekStart, weekEnd) {
-  // weekEnd é domingo; para cobrir DATETIME, usamos < (weekEnd+1)
-  const weekEndPlus1 = addDaysISO(weekEnd, 1);
-
-  try {
-    const rows = await safeQuery(
-      "SELECT data, oficial, codigo, observacao FROM escala_lancamentos WHERE data >= ? AND data < ?",
-      [weekStart, weekEndPlus1]
-    );
-
-    const map = {};
-    const notes = {};
-    const extras = [];
-
-    for (const r of rows) {
-      // r.data pode vir como Date ou string.
-      // Importante: se vier como Date, usar ISO UTC para NÃO deslocar por timezone local.
-      const iso = (r.data instanceof Date)
-        ? r.data.toISOString().slice(0, 10)
-        : String(r.data).slice(0, 10);
-      const canonical = bestMatchCanonical(r.oficial);
-      const code = String(r.codigo || "").trim();
-
-      if (canonical) {
-        map[`${canonical}|${iso}`] = code;
-        const obs = (r.observacao !== undefined && r.observacao !== null) ? String(r.observacao) : "";
-        if (obs.trim()) notes[`${canonical}|${iso}`] = obs;
-      } else {
-        extras.push({ iso, oficial: String(r.oficial || "").trim(), codigo: code });
-      }
-    }
-
-    return { map, notes, extras, used: rows.length > 0 };
-  } catch (e) {
-    // tabela inexistente ou coluna diferente -> ignora e cai no state_store
-    return { map: {}, notes: {}, extras: [], used: false, error: e };
-  }
-}
-
-// ===============================
-// AUTH
-// ===============================
-function signToken(me) {
-  return jwt.sign(
-    { canonical_name: me.canonical_name, is_admin: !!me.is_admin, must_change: !!me.must_change },
-    JWT_SECRET,
-    { expiresIn: "14d" }
-  );
-}
-
-function authRequired(allowMustChange = false) {
-  return (req, res, next) => {
-    const auth = (req.headers["authorization"] || "").toString();
-    const m = auth.match(/^Bearer\s+(.+)$/i);
-    if (!m) return res.status(401).json({ error: "não autenticado" });
-
-    try {
-      const payload = jwt.verify(m[1], JWT_SECRET);
-      req.user = {
-        canonical_name: String(payload.canonical_name || "").trim(),
-        is_admin: !!payload.is_admin,
-        must_change: !!payload.must_change,
-      };
-      if (!allowMustChange && req.user.must_change) {
-        return res.status(403).json({ error: "troca de senha obrigatória" });
-      }
-      return next();
-    } catch (e) {
-      return res.status(401).json({ error: "token inválido" });
-    }
-  };
-}
-
-async function findOrCreateUser(canonical_name) {
-  const rows = await safeQuery("SELECT id, canonical_name, password_hash, must_change FROM users WHERE canonical_name=? LIMIT 1", [canonical_name]);
-  if (rows.length) return rows[0];
-
-  // cria com senha padrão e must_change=1
-  const hash = await bcrypt.hash(DEFAULT_PASSWORD, 10);
-  await safeQuery("INSERT INTO users (canonical_name, password_hash, must_change) VALUES (?, ?, 1)", [canonical_name, hash]);
-  const created = await safeQuery("SELECT id, canonical_name, password_hash, must_change FROM users WHERE canonical_name=? LIMIT 1", [canonical_name]);
-  return created[0];
-}
-
-function resolveOfficerFromInput(nameInput) {
-  const nk = normKey(nameInput);
-  if (!nk) return null;
-
-  // aceita "posto + nome" ou só "nome"
-  // remove posto do início se bater com algum rank
-  const stripped = nk
-    .replace(/^tenente\-coronel pm\s+/, "")
-    .replace(/^tenente coronel pm\s+/, "")
-    .replace(/^major pm\s+/, "")
-    .replace(/^capit(ao|ão) pm\s+/, "")
-    .replace(/^1º tenente pm\s+/, "")
-    .replace(/^2º tenente pm\s+/, "")
-    .replace(/\s+/g, " ")
-    .trim();
-
-  const targetNk = stripped || nk;
-
-  let best = null;
-  let bestScore = 0;
-
-  for (const off of OFFICERS) {
-    const ok = normKey(off.canonical_name);
-    // score: tokens em comum
-    const a = new Set(targetNk.split(" ").filter(Boolean));
-    const b = new Set(ok.split(" ").filter(Boolean));
-    const inter = [...a].filter(t => b.has(t)).length;
-    const union = new Set([...a, ...b]).size || 1;
-    let score = inter / union;
-
-    const aParts = targetNk.split(" ").filter(Boolean);
-    const bParts = ok.split(" ").filter(Boolean);
-    if (aParts.length && bParts.length) {
-      if (aParts[0] === bParts[0]) score += 0.10;
-      if (aParts[aParts.length-1] === bParts[bParts.length-1]) score += 0.15;
-    }
-
-    if (score > bestScore) {
-      bestScore = score;
-      best = off;
-    }
-  }
-
-  // exige mínimo razoável para evitar erro de pessoa
-  if (!best || bestScore < 0.65) return null;
-  return best;
-}
-
-// ===============================
-// LOG
-// ===============================
-async function logAction(actor, target, action, details = "") {
-  await safeQuery(
-    "INSERT INTO action_logs (actor_name, target_name, action, details) VALUES (?, ?, ?, ?)",
-    [actor, target, action, details || ""]
-  );
-}
-
-// ===============================
-// PDF
-// ===============================
-function requirePdfKitOr501(res) {
-  try {
-    return require("pdfkit");
-  } catch {
-    res.status(501).json({ error: "geração de PDF indisponível" });
-    return null;
-  }
-}
-
-// ===============================
-// ROTAS
-// ===============================
-app.get("/api/health", async (_req, res) => {
-  try {
-    const conn = await pool.getConnection();
-    await conn.ping();
-    conn.release();
-    return res.json({ ok: true, tz: process.env.TZ, db_mode: DB_URL ? "url" : "host", week: getWeekRangeISO() });
-  } catch (err) {
-    return res.status(500).json({ ok: false, error: err && err.message ? err.message : "falha no health" });
-  }
-});
-
-// login: nome + senha
-app.post("/api/login", async (req, res) => {
-  try {
-    const name = (req.body && req.body.name ? req.body.name : "").toString().trim();
-    const password = (req.body && req.body.password ? req.body.password : "").toString();
-
-    const off = resolveOfficerFromInput(name);
-    if (!off) return res.status(403).json({ error: "nome não reconhecido. use posto + nome completo." });
-
-    const userRow = await findOrCreateUser(off.canonical_name);
-
-    const ok = await bcrypt.compare(password, userRow.password_hash);
-    if (!ok) return res.status(403).json({ error: "senha inválida" });
-
-    const me = {
-      canonical_name: off.canonical_name,
-      is_admin: isAdminName(off.canonical_name),
-      must_change: !!userRow.must_change,
-    };
-
-    const token = signToken(me);
-
-    // log
-    await logAction(me.canonical_name, me.canonical_name, "login", "");
-
-    return res.json({ ok: true, token, me, must_change: me.must_change });
-  } catch (err) {
-    return res.status(500).json({ error: "erro no login", details: err.message });
-  }
-});
-
-// troca obrigatória de senha
-app.post("/api/change_password", authRequired(true), async (req, res) => {
-  try {
-    const newPass = (req.body && req.body.new_password ? req.body.new_password : "").toString();
-    if (!newPass || newPass.length < 6) return res.status(400).json({ error: "senha muito curta (mínimo 6)" });
-
-    const hash = await bcrypt.hash(newPass, 10);
-    await safeQuery("UPDATE users SET password_hash=?, must_change=0 WHERE canonical_name=?", [hash, req.user.canonical_name]);
-
-    await logAction(req.user.canonical_name, req.user.canonical_name, "change_password", "");
-
-    return res.json({ ok: true });
-  } catch (err) {
-    return res.status(500).json({ error: "erro ao trocar senha", details: err.message });
-  }
-});
-
-// estado: todos autenticados podem ver (mesmo com must_change)
-app.get("/api/state", authRequired(true), async (req, res) => {
-  try {
-    const { st } = await getStateAutoReset();
-
-    // Preferir lançamentos do MySQL (escala_lancamentos) quando existirem
-    const week = getWeekRangeISO();
-    const fromLanc = await getAssignmentsFromLancamentos(week.start, week.end);
-
-    const dates = buildDatesForWeek(week.start);
-    const assignments = fromLanc.used ? fromLanc.map : (st.assignments || {});
-    const notes = fromLanc.used ? (fromLanc.notes || {}) : (st.notes || {});
-
-    const holidays = getHolidaysForWeek(st.dates);
-
-    const periodLabel = `período: ${fmtDDMMYYYY(st.period.start)} a ${fmtDDMMYYYY(st.period.end)}`;
-
-    return res.json({
-      ok: true,
-      me: {
-        canonical_name: req.user.canonical_name,
-        is_admin: req.user.is_admin,
-      },
-      meta: {
-        system_name: SYSTEM_NAME,
-        footer_mark: `© ${COPYRIGHT_YEAR} - ${AUTHOR}`,
-        period_label: periodLabel,
-      },
-      locked: isClosedNow(),
-      holidays,
-      officers: OFFICERS,
-      dates: st.dates,
-      codes: CODES,
-      assignments,
-      notes: fromLanc.used ? (fromLanc.notes || {}) : (st.notes || {}),
-    });
-  } catch (err) {
-    return res.status(500).json({ error: "erro ao carregar", details: err.message });
-  }
-});
-
-// salvar alterações (somente após troca de senha)
-app.put("/api/assignments", authRequired(false), async (req, res) => {
-  try {
-    const { st } = await getStateAutoReset();
-
-    // Preferir lançamentos do MySQL (escala_lancamentos) quando existirem
-    const week = getWeekRangeISO();
-    const fromLanc = await getAssignmentsFromLancamentos(week.start, week.end);
-
-    const dates = buildDatesForWeek(week.start);
-    const assignments = fromLanc.used ? fromLanc.map : (st.assignments || {});
-    const notes = fromLanc.used ? (fromLanc.notes || {}) : (st.notes || {});
-
-
-    const updates = Array.isArray(req.body && req.body.updates) ? req.body.updates : [];
-    if (!updates.length) return res.status(400).json({ error: "nenhuma alteração enviada" });
-
-    const locked = isClosedNow();
-    const actor = req.user.canonical_name;
-
-    // regra de permissão
-    if (locked && !req.user.is_admin) {
-      return res.status(423).json({ error: "edição fechada (sexta 11h até domingo)" });
-    }
-
-    const validCodes = new Set(CODES);
-    const validDates = new Set(st.dates);
-    const validOfficers = new Set(OFFICERS.map(o => o.canonical_name));
-
-    let applied = 0;
-
-    for (const u of updates) {
-      const target = String(u.canonical_name || "").trim();
-      const date = String(u.date || "").trim();
-      const code = String(u.code || "").trim();
-      const note = (u.note !== undefined && u.note !== null) ? String(u.note) : "";
-
-      if (!validOfficers.has(target)) return res.status(400).json({ error: "oficial inválido" });
-      if (!validDates.has(date)) return res.status(400).json({ error: "data inválida" });
-
-      // antes do fechamento: só altera o próprio
-      if (!locked && !req.user.is_admin && target !== actor) {
-        return res.status(403).json({ error: "você só pode alterar o seu próprio registro até sexta 11h" });
-      }
-
-      // depois do fechamento: só admin altera (já passou pelo check)
-      if (locked && req.user.is_admin !== true) {
-        return res.status(423).json({ error: "edição fechada" });
-      }
-
-      if (code && !validCodes.has(code)) return res.status(400).json({ error: "código inválido" });
-
-      // Regra: quando for OUTROS, exige observação
-      if (code === "OUTROS") {
-        const t = String(note || "").trim();
-        if (!t) return res.status(400).json({ error: "OUTROS exige observação" });
-      }
-
-      const key = `${target}|${date}`;
-      const before = st.assignments && st.assignments[key] ? String(st.assignments[key]) : "";
-
-      if (before === code) continue;
-
-      // salva (permite limpar com "")
-      st.assignments = st.assignments || {};
-      st.notes = st.notes || {};
-
-      if (!code) {
-        delete st.assignments[key];
-        delete st.notes[key];
-      } else {
-        st.assignments[key] = code;
-        if (code === "OUTROS") {
-          st.notes[key] = String(note || "").trim();
-        } else {
-          delete st.notes[key];
-        }
-      }
-
-      await logAction(actor, target, "update_day", `${date}: ${before || "-"} -> ${code || "-"}`);
-      applied++;
-    }
-
-    st.updated_at = new Date().toISOString();
-
-    await safeQuery(
-      "INSERT INTO state_store (id, payload) VALUES (1, ?) ON DUPLICATE KEY UPDATE payload=VALUES(payload), updated_at=CURRENT_TIMESTAMP",
-      [JSON.stringify(st)]
-    );
-
-    return res.json({ ok: true, applied });
-  } catch (err) {
-    return res.status(500).json({ error: "erro ao salvar", details: err.message });
-  }
-});
-
-// PDF: todos autenticados podem ler
-app.get("/api/pdf", authRequired(true), async (req, res) => {
-  const PDFDocument = requirePdfKitOr501(res);
-  if (!PDFDocument) return;
-
-  try {
-    const { st } = await getStateAutoReset();
-
-    // Preferir lançamentos do MySQL (escala_lancamentos) quando existirem
-    const week = getWeekRangeISO();
-    const fromLanc = await getAssignmentsFromLancamentos(week.start, week.end);
-
-    const dates = buildDatesForWeek(week.start);
-    const assignments = fromLanc.used ? fromLanc.map : (st.assignments || {});
-    const notes = fromLanc.used ? (fromLanc.notes || {}) : (st.notes || {});
-
-
-    res.setHeader("Content-Type", "application/pdf");
-    res.setHeader("Content-Disposition", `inline; filename="escala_semanal.pdf"`);
-
-    const doc = new PDFDocument({ margin: 28, size: "A4", layout: "landscape" });
-    doc.pipe(res);
-
-    // cabeçalho
-    doc.fontSize(16).text(SYSTEM_NAME, { align: "center" });
-    doc.moveDown(0.2);
-    doc.fontSize(10).text(`Período: ${fmtDDMMYYYY(week.start)} a ${fmtDDMMYYYY(week.end)}`, { align: "center" });
-    doc.moveDown(0.6);
-
-
-    // tabela
-    const left = doc.page.margins.left;
-    const top = doc.y;
-    const colWName = 220;
-    const colWDay = 80;
-
-    // header row
-    doc.fontSize(9).text("OFICIAL", left, top, { width: colWName, align: "left" });
-    for (let i = 0; i < dates.length; i++) {
-      doc.text(fmtDDMMYYYY(dates[i]), left + colWName + i * colWDay, top, { width: colWDay, align: "center" });
-    }
-    doc.moveTo(left, top + 14).lineTo(left + colWName + colWDay * dates.length, top + 14).stroke();
-
-    let y = top + 18;
-
-    doc.fontSize(8);
-    for (const off of OFFICERS) {
-      const label = `${off.rank} ${off.name}`;
-      doc.text(label, left, y, { width: colWName, align: "left" });
-
-      for (let i = 0; i < dates.length; i++) {
-        const k = `${off.canonical_name}|${dates[i]}`;
-        const code = assignments[k] ? String(assignments[k]) : "";
-        const hasNote = (code === "OUTROS" && notes[k] && String(notes[k]).trim());
-        const display = hasNote ? "OUTROS*" : (code || "-");
-        doc.text(display, left + colWName + i * colWDay, y, { width: colWDay, align: "center" });
-      }
-
-      y += 14;
-      if (y > doc.page.height - 140) {
-        doc.addPage({ margin: 28, size: "A4", layout: "landscape" });
-        y = doc.y;
-      }
-    }
-
-    
-    // assinaturas (fim da escala)
-    (function drawSignaturesAfterScale() {
-      const pageW = doc.page.width;
-      const marginL = doc.page.margins.left;
-      const marginR = doc.page.margins.right;
-      const usableW = pageW - marginL - marginR;
-      const colW = usableW / 2;
-
-      // se não houver espaço, cria nova página landscape para assinar
-      let ySig = y + 18;
-      if (ySig > doc.page.height - 80) {
-        doc.addPage({ margin: 28, size: "A4", layout: "landscape" });
-        ySig = doc.y + 120;
-      }
-
-      doc.moveTo(marginL + 10, ySig).lineTo(marginL + colW - 10, ySig).stroke();
-      doc.moveTo(marginL + colW + 10, ySig).lineTo(marginL + 2 * colW - 10, ySig).stroke();
-
-      doc.fontSize(10);
-      doc.text("ALBERTO FRANZINI NETO", marginL, ySig + 6, { width: colW, align: "center" });
-      doc.text("CH P1/P5", marginL, ySig + 20, { width: colW, align: "center" });
-
-      doc.text("EDUARDO MOSNA XAVIER", marginL + colW, ySig + 6, { width: colW, align: "center" });
-      doc.text("SUBCMT BTL", marginL + colW, ySig + 20, { width: colW, align: "center" });
-
-      y = ySig + 42;
-    })();
-
-// seção alterações operacionais (para impressão)
     doc.addPage({ margin: 28, size: "A4", layout: "portrait" });
     doc.fontSize(14).text("ALTERAÇÕES OPERACIONAIS (para impressão)", { align: "center" });
     doc.moveDown(0.4);

@@ -12,9 +12,9 @@
     dates: [],
     codes: [],
     assignments: {},
-    notes: {},
     pending: new Map(), // key -> code
-    pendingNotes: new Map() // key -> note
+    notes: {},
+    pendingNotes: new Map() // key -> note (para OUTROS)
   };
 
   function ddmmyyyy(iso) {
@@ -39,6 +39,55 @@
   function show(el, yes) {
     $(el).style.display = yes ? "" : "none";
   }
+
+  // ===============================
+  // MODAL OUTROS
+  // ===============================
+  let outrosResolve = null;
+  function openOutrosModal(prefill) {
+    const modal = $("outrosModal");
+    const ta = $("outrosText");
+    const msg = $("outrosMsg");
+    ta.value = prefill || "";
+    msg.textContent = "";
+    modal.style.display = "flex";
+
+    return new Promise((resolve) => {
+      outrosResolve = resolve;
+      ta.focus();
+    });
+  }
+
+  function closeOutrosModal(ok) {
+    const modal = $("outrosModal");
+    const ta = $("outrosText");
+    const msg = $("outrosMsg");
+
+    if (!outrosResolve) {
+      modal.style.display = "none";
+      return;
+    }
+
+    if (ok) {
+      const v = (ta.value || "").trim();
+      if (!v) {
+        msg.textContent = "OUTROS exige descrição.";
+        ta.focus();
+        return;
+      }
+      modal.style.display = "none";
+      const r = outrosResolve;
+      outrosResolve = null;
+      r({ ok: true, text: v });
+      return;
+    }
+
+    modal.style.display = "none";
+    const r = outrosResolve;
+    outrosResolve = null;
+    r({ ok: false, text: "" });
+  }
+
 
   function setHolidayBar(holidays) {
     const bar = $("holidayBar");
@@ -94,44 +143,7 @@
     return officerCanonical === state.me.canonical_name && !state.locked;
   }
 
-  
-  // ===============================
-  // MODAL OUTROS
-  // ===============================
-  function openOutrosModal(initialText) {
-    return new Promise((resolve) => {
-      const modal = $("outrosModal");
-      const ta = $("outrosText");
-      const btnSave = $("btnOutrosSave");
-      const btnCancel = $("btnOutrosCancel");
-
-      ta.value = initialText || "";
-      modal.style.display = "";
-
-      const cleanup = () => {
-        modal.style.display = "none";
-        btnSave.onclick = null;
-        btnCancel.onclick = null;
-      };
-
-      btnCancel.onclick = () => {
-        cleanup();
-        resolve({ ok: false, text: initialText || "" });
-      };
-
-      btnSave.onclick = () => {
-        const t = (ta.value || "").trim();
-        if (!t) {
-          alert("OUTROS exige observação.");
-          return;
-        }
-        cleanup();
-        resolve({ ok: true, text: t });
-      };
-    });
-  }
-
-function buildTable() {
+  function buildTable() {
     const table = $("table");
     table.innerHTML = "";
 
@@ -195,27 +207,20 @@ function buildTable() {
         sel.addEventListener("change", async () => {
           const v = sel.value;
 
-          // Se OUTROS, exigir observação via modal
+          // se OUTROS, pede descrição
           if (v === "OUTROS") {
-            const keyNote = `${off.canonical_name}|${iso}`;
-            const currentNote = state.pendingNotes.has(keyNote)
-              ? state.pendingNotes.get(keyNote)
-              : (state.notes[keyNote] || "");
-
-            const r = await openOutrosModal(currentNote);
-            if (!r.ok) {
-              // usuário cancelou: volta para valor anterior
-              sel.value = pending !== null ? pending : cur;
+            const prefill = state.pendingNotes.has(key)
+              ? state.pendingNotes.get(key)
+              : (state.notes[key] || "");
+            const ans = await openOutrosModal(prefill);
+            if (!ans.ok) {
+              // cancelou: volta ao valor anterior
+              sel.value = (state.pending.has(key) ? state.pending.get(key) : cur) || "";
               return;
             }
-
-            state.pendingNotes.set(keyNote, r.text);
-            state.notes[keyNote] = r.text;
+            state.pendingNotes.set(key, ans.text);
           } else {
-            // se sair de OUTROS, limpa observação
-            const keyNote = `${off.canonical_name}|${iso}`;
-            state.pendingNotes.delete(keyNote);
-            delete state.notes[keyNote];
+            state.pendingNotes.delete(key);
           }
 
           if (v === cur) {
@@ -225,10 +230,10 @@ function buildTable() {
             state.pending.set(key, v);
             td.classList.add("changed");
           }
-          $("saveMsg").textContent = `${state.pending.size} alteração(ões) pendente(s).`;
-        });
 
-        td.appendChild(sel);
+          const pend = state.pending.size;
+          $("saveMsg").textContent = `${pend} alteração(ões) pendente(s).`;
+        });td.appendChild(sel);
         tr.appendChild(td);
       }
 
@@ -320,20 +325,10 @@ function buildTable() {
     const updates = [];
     for (const [key, code] of state.pending.entries()) {
       const [canonical_name, date] = key.split("|");
-      const noteKey = `${canonical_name}|${date}`;
-      const note = (code === "OUTROS") ? (state.pendingNotes.get(noteKey) || state.notes[noteKey] || "") : "";
-      updates.push({ canonical_name, date, code, note });
+      updates.push({ canonical_name, date, code });
     }
 
-    
-    for (const u of updates) {
-      if (u.code === "OUTROS" && !String(u.note || "").trim()) {
-        $("saveMsg").textContent = "OUTROS exige observação.";
-        return;
-      }
-    }
-
-const r = await api("/api/assignments", { method: "PUT", body: JSON.stringify({ updates }) });
+    const r = await api("/api/assignments", { method: "PUT", body: JSON.stringify({ updates }) });
     if (!r.ok) {
       $("saveMsg").textContent = (r.data && (r.data.error || r.data.details)) ? (r.data.error || r.data.details) : "erro ao salvar";
       return;
@@ -356,33 +351,38 @@ const r = await api("/api/assignments", { method: "PUT", body: JSON.stringify({ 
   }
 
   async function openPdf() {
-    try {
-      if (!state.token) {
-        $("loginMsg").textContent = "sessão expirada. faça login novamente.";
-        logout();
-        return;
-      }
-
-      const res = await fetch("/api/pdf", {
-        method: "GET",
-        headers: { "Authorization": `Bearer ${state.token}` }
-      });
-
-      if (!res.ok) {
-        const txt = await res.text();
-        alert(`erro ao gerar PDF: ${txt}`);
-        return;
-      }
-
-      const blob = await res.blob();
-      const url = URL.createObjectURL(blob);
-      window.open(url, "_blank");
-    } catch (e) {
-      alert("falha ao abrir PDF: " + (e?.message || e));
+    if (!state.token) {
+      alert("Faça login novamente.");
+      return;
     }
+
+    const r = await fetch("/api/pdf", {
+      method: "GET",
+      headers: {
+        "Authorization": `Bearer ${state.token}`
+      }
+    });
+
+    if (!r.ok) {
+      const t = await r.text();
+      alert("Erro ao gerar PDF: " + t);
+      return;
+    }
+
+    const blob = await r.blob();
+    const url = URL.createObjectURL(blob);
+    window.open(url, "_blank");
   }
 
-  $("btnLogin").addEventListener("click", doLogin);
+  
+  // modal OUTROS
+  $("outrosCancel").addEventListener("click", () => closeOutrosModal(false));
+  $("outrosSave").addEventListener("click", () => closeOutrosModal(true));
+  $("outrosModal").addEventListener("click", (e) => {
+    if (e.target && e.target.id === "outrosModal") closeOutrosModal(false);
+  });
+
+$("btnLogin").addEventListener("click", doLogin);
   $("btnChange").addEventListener("click", changePassword);
   $("btnSave").addEventListener("click", save);
   $("btnLogout").addEventListener("click", logout);

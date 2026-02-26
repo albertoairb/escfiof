@@ -75,21 +75,21 @@
     </section>
   </main>
 
-  <script src="./app.js"></script>
 
-  <!-- modal OUTROS -->
+  <!-- modal: OUTROS -->
   <div id="outrosModal" class="modal" style="display:none;">
-    <div class="modal__backdrop"></div>
     <div class="modal__card">
-      <div class="modal__title">OUTROS - observação</div>
-      <div class="muted">digite livremente (o texto será exibido integralmente no PDF).</div>
-      <textarea id="outrosText" rows="6" class="textarea" placeholder="descreva aqui..."></textarea>
+      <h3>OUTROS</h3>
+      <div class="muted">digite a descrição (aparecerá integralmente no PDF).</div>
+      <textarea id="outrosText" rows="6" placeholder="descreva aqui..."></textarea>
+      <div class="muted" id="outrosMsg"></div>
       <div class="modal__actions">
-        <button id="btnOutrosCancel" class="btn btn--ghost">cancelar</button>
-        <button id="btnOutrosSave" class="btn btn--primary">salvar</button>
+        <button id="outrosCancel" class="btn btn--ghost">cancelar</button>
+        <button id="outrosSave" class="btn btn--primary">salvar</button>
       </div>
     </div>
   </div>
 
+  <script src="./app.js"></script>
 </body>
 </html>
