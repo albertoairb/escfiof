@@ -1,508 +1,298 @@
-/* public/app.js (v6)
- * Correções:
- * - login agora é OBRIGATÓRIO: se /api/login falhar, não entra no sistema (evita "parece logado" mas dá 403).
- * - se /api/state ou /api/lock retornarem 403, o sistema força logout e pede a chave novamente.
- * - mantém envio consistente de x-access-key e x-user-name.
- */
-
 (() => {
   "use strict";
-  const $ = (sel) => document.querySelector(sel);
 
-  function escapeHtml(s) {
-    return String(s ?? "")
-      .replaceAll("&", "&amp;")
-      .replaceAll("<", "&lt;")
-      .replaceAll(">", "&gt;")
-      .replaceAll('"', "&quot;")
-      .replaceAll("'", "&#039;");
-  }
+  const $ = (id) => document.getElementById(id);
 
-  function normalizeName(nome) {
-    return String(nome || "").trim().replace(/\s+/g, " ");
-  }
-
-  function getWeekRangeISO(baseDate = new Date()) {
-    const d = new Date(baseDate);
-    d.setHours(0, 0, 0, 0);
-    const day = d.getDay(); // 0=dom..6=sáb
-    const diffToMonday = (day === 0 ? -6 : 1) - day;
-    const monday = new Date(d);
-    monday.setDate(d.getDate() + diffToMonday);
-    const sunday = new Date(monday);
-    sunday.setDate(monday.getDate() + 6);
-    return { monday, sunday };
-  }
-
-  function toISODate(d) {
-    const yyyy = d.getFullYear();
-    const mm = String(d.getMonth() + 1).padStart(2, "0");
-    const dd = String(d.getDate()).padStart(2, "0");
-    return `${yyyy}-${mm}-${dd}`;
-  }
-
-  function listDatesISO(fromDate, toDate) {
-    const out = [];
-    const cur = new Date(fromDate);
-    cur.setHours(0, 0, 0, 0);
-    const end = new Date(toDate);
-    end.setHours(0, 0, 0, 0);
-    while (cur <= end) {
-      out.push(toISODate(cur));
-      cur.setDate(cur.getDate() + 1);
-    }
-    return out;
-  }
-
-  function diaSemanaPt(isoDate) {
-    const [y, m, d] = isoDate.split("-").map(Number);
-    const dt = new Date(y, m - 1, d);
-    const dias = ["domingo", "segunda-feira", "terça-feira", "quarta-feira", "quinta-feira", "sexta-feira", "sábado"];
-    return dias[dt.getDay()];
-  }
-
-  function resolveApiBase() {
-    const url = new URL(location.href);
-    const apiFromQuery = url.searchParams.get("api");
-    if (apiFromQuery) return apiFromQuery.replace(/\/$/, "");
-    const apiFromStorage = localStorage.getItem("API_BASE");
-    if (apiFromStorage) return apiFromStorage.replace(/\/$/, "");
-    return "";
-  }
-  const API_BASE = resolveApiBase();
-
-  // Auth
-  const AUTH = {
-    key: localStorage.getItem("ACCESS_KEY") || "",
-    nome: localStorage.getItem("USER_NAME") || "",
-    role: localStorage.getItem("ROLE") || "",
-  };
-
-  function currentKey() {
-    return (AUTH.key || localStorage.getItem("ACCESS_KEY") || "").toString().trim();
-  }
-
-  function setAuth({ key, nome, role = "" }) {
-    AUTH.key = (key || "").toString().trim();
-    AUTH.nome = (nome || "").toString();
-    AUTH.role = role || "";
-    localStorage.setItem("ACCESS_KEY", AUTH.key);
-    localStorage.setItem("USER_NAME", AUTH.nome);
-    localStorage.setItem("ROLE", AUTH.role);
-  }
-
-  function clearAuth() {
-    AUTH.key = "";
-    AUTH.nome = "";
-    AUTH.role = "";
-    localStorage.removeItem("ACCESS_KEY");
-    localStorage.removeItem("USER_NAME");
-    localStorage.removeItem("ROLE");
-  }
-
-  const ADMIN_NAMES = ["Alberto Franzini Neto", "Eduardo Mosna Xavier"];
-  function isAdmin() {
-    return ADMIN_NAMES.includes((AUTH.nome || "").trim());
-  }
-
-  function getTargetUser() {
-    if (!isAdmin()) return AUTH.nome;
-    const sel = $("#adminTarget");
-    return sel && sel.value ? sel.value : AUTH.nome;
-  }
-
-  function getAdminOverride() {
-    if (!isAdmin()) return false;
-    const cb = $("#adminOverride");
-    return !!(cb && cb.checked);
-  }
-
-  async function request(path, { method = "GET", body = null, headers = {}, isBlob = false } = {}) {
-    const url = API_BASE ? `${API_BASE}${path}` : path;
-    const h = { ...headers };
-
-    const k = currentKey();
-    if (k) h["x-access-key"] = k;
-    if (AUTH.nome) h["x-user-name"] = AUTH.nome;
-
-    const target = getTargetUser();
-    if (target && target !== AUTH.nome) h["x-target-user"] = target;
-    if (getAdminOverride()) h["x-admin-override"] = "1";
-
-    let payload;
-    if (body !== null && body !== undefined) {
-      h["Content-Type"] = "application/json";
-      payload = JSON.stringify(body);
-    }
-
-    const resp = await fetch(url, { method, headers: h, body: payload });
-
-    // blob
-    if (isBlob) {
-      if (!resp.ok) {
-        const txt = await resp.text().catch(() => "");
-        const err = new Error(txt || `HTTP ${resp.status}`);
-        err.status = resp.status;
-        throw err;
-      }
-      return await resp.blob();
-    }
-
-    const txt = await resp.text().catch(() => "");
-    let data = null;
-    try {
-      data = txt ? JSON.parse(txt) : null;
-    } catch {
-      data = txt ? { raw: txt } : null;
-    }
-
-    if (!resp.ok) {
-      const msg =
-        (data && (data.error || data.message || data.details)) ||
-        (data && data.raw) ||
-        `HTTP ${resp.status}`;
-      const err = new Error(msg);
-      err.status = resp.status;
-      throw err;
-    }
-
-    return data;
-  }
-
-  // State
-  const CODES_CORRETOS = ["", "EXP", "SR", "FO", "MA", "VE", "LP", "FÉRIAS", "CFP_DIA", "CFP_NOITE", "OUTROS"];
-
-  const DEFAULT_STATE = {
-    meta: { title: "Escala Semanal de Oficiais", author: "Desenvolvido por Alberto Franzini Neto", created_at: new Date().toISOString() },
-    period: { start: "", end: "" },
+  const state = {
+    token: null,
+    me: null,
+    meta: null,
+    locked: false,
+    officers: [],
     dates: [],
-    codes: CODES_CORRETOS,
-    byUser: {},
-    updated_at: new Date().toISOString(),
+    codes: [],
+    assignments: {},
+    pending: new Map() // key -> code
   };
 
-  let STATE = null;
-  let IS_DIRTY = false;
-  let SAVE_TIMER = null;
-  let SAVE_IN_FLIGHT = false;
-
-  function renderSaveStatus(text = null) {
-    const el = $("#saveStatus");
-    if (!el) return;
-    if (!AUTH.nome) { el.style.display = "none"; el.textContent = ""; return; }
-    el.style.display = "inline-block";
-    el.textContent = (text !== null) ? text : (IS_DIRTY ? "salvando..." : "salvo");
+  function ddmmyyyy(iso) {
+    const [y,m,d] = iso.split("-");
+    return `${d}/${m}/${y}`;
   }
 
-  function renderLockStatus(isClosed) {
-    const el = $("#lockStatus");
-    if (!el) return;
-    if (!AUTH.nome) { el.style.display = "none"; el.textContent = ""; return; }
-    el.style.display = "inline-block";
-    el.textContent = isClosed ? "fechado (sexta 11h)" : "aberto";
+  function dayNameBR(idx) {
+    const names = ["DOMINGO","SEGUNDA","TERÇA","QUARTA","QUINTA","SEXTA","SÁBADO"];
+    return names[idx] || "";
   }
 
-  function markDirty(v) { IS_DIRTY = !!v; renderSaveStatus(); }
-
-  function ensureWeek(state) {
-    if (!state.period) state.period = { start: "", end: "" };
-    const needDates = !state.period.start || !state.period.end || !Array.isArray(state.dates) || state.dates.length !== 7;
-    if (!needDates) return state;
-
-    const { monday, sunday } = getWeekRangeISO(new Date());
-    state.period.start = toISODate(monday);
-    state.period.end = toISODate(sunday);
-    state.dates = listDatesISO(monday, sunday);
-    return state;
+  async function api(path, opts = {}) {
+    const headers = opts.headers || {};
+    if (state.token) headers["Authorization"] = `Bearer ${state.token}`;
+    headers["Content-Type"] = "application/json";
+    const res = await fetch(path, { ...opts, headers });
+    const data = await res.json().catch(() => ({}));
+    return { ok: res.ok, status: res.status, data };
   }
 
-  function ensureCodes(state) { state.codes = CODES_CORRETOS.slice(); return state; }
-
-  function ensureUser(state, nome) {
-    if (!state.byUser) state.byUser = {};
-    if (!state.byUser[nome]) state.byUser[nome] = {};
-    for (const d of state.dates || []) {
-      if (!state.byUser[nome][d]) state.byUser[nome][d] = { code: "", obs: "" };
-      if (state.byUser[nome][d].code === undefined) state.byUser[nome][d].code = "";
-      if (state.byUser[nome][d].obs === undefined) state.byUser[nome][d].obs = "";
-    }
-    return state;
+  function show(el, yes) {
+    $(el).style.display = yes ? "" : "none";
   }
 
-  function renderAdminBox() {
-    const box = $("#adminBox");
-    const sel = $("#adminTarget");
-    const cb = $("#adminOverride");
-    if (!box || !sel || !cb) return;
-
-    if (!isAdmin()) {
-      box.style.display = "none";
-      sel.innerHTML = "";
-      cb.checked = false;
+  function setHolidayBar(holidays) {
+    const bar = $("holidayBar");
+    if (!holidays || !holidays.length) {
+      bar.style.display = "none";
+      bar.textContent = "";
       return;
     }
-
-    box.style.display = "block";
-
-    const byUser = (STATE && STATE.byUser) ? STATE.byUser : {};
-    const names = Array.from(new Set([AUTH.nome, ...Object.keys(byUser)])).sort((a,b)=>a.localeCompare(b,"pt-BR"));
-
-    const current = sel.value || AUTH.nome;
-    sel.innerHTML = names.map(n => `<option value="${escapeHtml(n)}"${n===current?" selected":""}>${escapeHtml(n)}</option>`).join("");
-
-    sel.onchange = () => render();
-    cb.onchange = () => { if (IS_DIRTY) scheduleAutoSave(); };
+    bar.style.display = "";
+    bar.textContent = `ALERTA DE FERIADO NA SEMANA: ${holidays.map(h => `${ddmmyyyy(h.date)} - ${h.name}`).join(" | ")}`;
   }
 
-  function render() {
-    const container = $("#semanaContainer");
-    if (!container || !STATE) return;
+  function setHeader() {
+    $("systemName").textContent = (state.meta && state.meta.system_name) ? state.meta.system_name : "Escala";
+    $("period").textContent = (state.meta && state.meta.period_label) ? state.meta.period_label : "";
+    $("footerMark").textContent = (state.meta && state.meta.footer_mark) ? state.meta.footer_mark : "";
+  }
 
-    ensureCodes(STATE);
-    ensureWeek(STATE);
-
-    const target = getTargetUser();
-    ensureUser(STATE, target);
-
-    renderAdminBox();
-
-    const dates = STATE.dates || [];
-    const codes = STATE.codes || CODES_CORRETOS;
-
-    let html = "";
-    html += `<div style="margin-bottom:12px;">
-      <div><strong>usuário:</strong> ${escapeHtml(AUTH.nome)}</div>
-      <div><strong>editando:</strong> ${escapeHtml(target)}</div>
-      <div><strong>período:</strong> ${escapeHtml(STATE.period.start)} a ${escapeHtml(STATE.period.end)}</div>
-    </div>`;
-
-    for (const d of dates) {
-      const entry = (STATE.byUser && STATE.byUser[target] && STATE.byUser[target][d]) ? STATE.byUser[target][d] : { code:"", obs:"" };
-      html += `
-        <div class="dia-bloco" data-date="${escapeHtml(d)}">
-          <h3 style="margin:0 0 10px 0;">${escapeHtml(d)} (${escapeHtml(diaSemanaPt(d))})</h3>
-
-          <label>situação:</label>
-          <select data-field="code">
-            ${codes.map((c) => {
-              const label = c === "" ? "(vazio)" : c;
-              return `<option value="${escapeHtml(c)}"${c===entry.code ? " selected":""}>${escapeHtml(label)}</option>`;
-            }).join("")}
-          </select>
-
-          <label>observações:</label>
-          <textarea data-field="obs" placeholder="Digite observações do dia...">${escapeHtml(entry.obs || "")}</textarea>
-        </div>
-      `;
+  function setLockMsg() {
+    if (state.locked) {
+      $("lockMsg").textContent = "edição fechada (sexta 11h até domingo). após isso, somente responsáveis autorizados.";
+    } else {
+      $("lockMsg").textContent = "edição liberada.";
     }
-
-    container.innerHTML = html;
-    container.querySelectorAll('select[data-field], textarea[data-field]').forEach((el) => {
-      el.addEventListener("change", onEntryChange);
-      el.addEventListener("input", onEntryChange);
-    });
   }
 
-  function onEntryChange(e) {
-    if (!STATE || !AUTH.nome) return;
-
-    const el = e.target;
-    const bloco = el.closest(".dia-bloco");
-    if (!bloco) return;
-    const date = bloco.getAttribute("data-date");
-    const field = el.getAttribute("data-field");
-    if (!date || !field) return;
-
-    const target = getTargetUser();
-    ensureUser(STATE, target);
-    STATE.byUser[target][date][field] = el.value;
-    STATE.updated_at = new Date().toISOString();
-
-    markDirty(true);
-    scheduleAutoSave();
+  function setUserMsg() {
+    if (!state.me) return;
+    $("userMsg").textContent = `usuário: ${state.me.canonical_name}`;
   }
 
-  function scheduleAutoSave() {
-    if (SAVE_TIMER) clearTimeout(SAVE_TIMER);
-    SAVE_TIMER = setTimeout(() => autoSave().catch(()=>{}), 800);
+  function buildOpsNotes() {
+    const box = $("opsNotes");
+    box.innerHTML = "";
+    for (let i = 0; i < state.dates.length; i++) {
+      const iso = state.dates[i];
+      const d = new Date(iso + "T00:00:00");
+      const day = dayNameBR(d.getDay());
+      const div = document.createElement("div");
+      div.className = "opsDay";
+      div.innerHTML = `<b>${day} - ${ddmmyyyy(iso)}</b>
+        <div class="line"></div>
+        <div class="line"></div>
+        <div class="line"></div>
+        <div class="line"></div>`;
+      box.appendChild(div);
+    }
   }
 
-  function forceLogoutWithMessage(msg) {
-    clearAuth();
-    STATE = null;
-    IS_DIRTY = false;
-    showLogin();
-    alert(msg);
+  function canEditOfficer(officerCanonical) {
+    if (!state.me) return false;
+    if (state.me.is_admin) return true;
+    return officerCanonical === state.me.canonical_name && !state.locked;
   }
 
-  async function autoSave() {
-    if (!STATE || !IS_DIRTY) return;
-    if (SAVE_IN_FLIGHT) return;
+  function buildTable() {
+    const table = $("table");
+    table.innerHTML = "";
 
-    SAVE_IN_FLIGHT = true;
-    renderSaveStatus("salvando...");
+    const thead = document.createElement("thead");
+    const trh = document.createElement("tr");
 
-    try {
-      await request("/api/state", { method: "PUT", body: STATE });
-      markDirty(false);
-      renderSaveStatus("salvo");
-    } catch (err) {
-      renderSaveStatus("não salvo");
+    const thP = document.createElement("th");
+    thP.textContent = "posto";
+    trh.appendChild(thP);
 
-      if (err && err.status === 403) {
-        forceLogoutWithMessage("Acesso negado. Sua chave pode estar incorreta. Entre novamente com a chave correta.");
-        return;
+    const thN = document.createElement("th");
+    thN.textContent = "nome";
+    trh.appendChild(thN);
+
+    for (const iso of state.dates) {
+      const th = document.createElement("th");
+      th.textContent = ddmmyyyy(iso);
+      trh.appendChild(th);
+    }
+    thead.appendChild(trh);
+    table.appendChild(thead);
+
+    const tbody = document.createElement("tbody");
+
+    for (const off of state.officers) {
+      const tr = document.createElement("tr");
+
+      const tdRank = document.createElement("td");
+      tdRank.textContent = off.rank;
+      tr.appendChild(tdRank);
+
+      const tdName = document.createElement("td");
+      tdName.innerHTML = `<b>${off.name}</b>`;
+      tr.appendChild(tdName);
+
+      const editable = canEditOfficer(off.canonical_name);
+
+      for (const iso of state.dates) {
+        const td = document.createElement("td");
+        const sel = document.createElement("select");
+        sel.disabled = !editable;
+
+        const optEmpty = document.createElement("option");
+        optEmpty.value = "";
+        optEmpty.textContent = "-";
+        sel.appendChild(optEmpty);
+
+        for (const code of state.codes) {
+          if (!code) continue;
+          const opt = document.createElement("option");
+          opt.value = code;
+          opt.textContent = code;
+          sel.appendChild(opt);
+        }
+
+        const key = `${off.canonical_name}|${iso}`;
+        const cur = state.assignments[key] || "";
+        const pending = state.pending.has(key) ? state.pending.get(key) : null;
+        sel.value = pending !== null ? pending : cur;
+
+        sel.addEventListener("change", () => {
+          const v = sel.value;
+          if (v === cur) {
+            state.pending.delete(key);
+            td.classList.remove("changed");
+          } else {
+            state.pending.set(key, v);
+            td.classList.add("changed");
+          }
+          $("saveMsg").textContent = `${state.pending.size} alteração(ões) pendente(s).`;
+        });
+
+        td.appendChild(sel);
+        tr.appendChild(td);
       }
 
-      alert(`Não foi possível salvar.\n\nDetalhes: ${err.message || err}`);
-    } finally {
-      SAVE_IN_FLIGHT = false;
+      tbody.appendChild(tr);
     }
+
+    table.appendChild(tbody);
   }
 
   async function loadState() {
-    let st = null;
-    try {
-      st = await request("/api/state", { method: "GET" });
-    } catch (err) {
-      if (err && err.status === 403) {
-        forceLogoutWithMessage("Acesso negado. Sua chave pode estar incorreta. Entre novamente com a chave correta.");
-        return;
-      }
-      console.warn("Falha ao carregar /api/state:", err.message || err);
+    const r = await api("/api/state", { method: "GET" });
+    if (!r.ok) {
+      $("saveMsg").textContent = (r.data && (r.data.error || r.data.details)) ? (r.data.error || r.data.details) : "erro ao carregar";
+      return;
     }
 
-    if (!st) st = structuredClone(DEFAULT_STATE);
-    st = ensureWeek(st);
-    st = ensureCodes(st);
-    if (AUTH.nome) ensureUser(st, AUTH.nome);
-    STATE = st;
-    markDirty(false);
-    render();
-    await refreshLockStatus();
+    state.me = r.data.me;
+    state.meta = r.data.meta;
+    state.locked = !!r.data.locked;
+    state.officers = r.data.officers || [];
+    state.dates = r.data.dates || [];
+    state.codes = r.data.codes || [];
+    state.assignments = r.data.assignments || {};
+    state.pending.clear();
+
+    setHeader();
+    setHolidayBar(r.data.holidays || []);
+    setLockMsg();
+    setUserMsg();
+    buildTable();
+    buildOpsNotes();
+    $("saveMsg").textContent = "";
   }
 
-  async function refreshLockStatus() {
-    try {
-      const r = await request("/api/lock", { method: "GET" });
-      renderLockStatus(!!r.closed);
-    } catch (err) {
-      if (err && err.status === 403) {
-        forceLogoutWithMessage("Acesso negado. Sua chave pode estar incorreta. Entre novamente com a chave correta.");
-        return;
-      }
-      renderLockStatus(false);
+  async function doLogin() {
+    $("loginMsg").textContent = "";
+    const name = $("loginName").value.trim();
+    const password = $("loginPass").value;
+
+    const r = await api("/api/login", { method: "POST", body: JSON.stringify({ name, password }) });
+    if (!r.ok) {
+      $("loginMsg").textContent = (r.data && (r.data.error || r.data.details)) ? (r.data.error || r.data.details) : "falha no login";
+      return;
     }
-  }
 
-  function canGeneratePdf() { return isAdmin(); }
+    state.token = r.data.token;
+    state.me = r.data.me;
 
-  function applyPdfVisibility() {
-    const btn = $("#btnPdf");
-    if (!btn) return;
-    btn.style.display = canGeneratePdf() ? "inline-block" : "none";
-  }
-
-  async function gerarPdf() {
-    try {
-      const blob = await request("/api/pdf", { method: "GET", isBlob: true });
-      const url = URL.createObjectURL(blob);
-      window.open(url, "_blank", "noopener,noreferrer");
-    } catch (err) {
-      if (err && err.status === 403) {
-        forceLogoutWithMessage("Acesso negado. Sua chave pode estar incorreta. Entre novamente com a chave correta.");
-        return;
-      }
-      alert(`Não foi possível gerar/abrir o PDF.\n\nDetalhes: ${err.message || err}`);
+    // força troca de senha
+    if (r.data.must_change) {
+      show("loginBox", false);
+      show("changeBox", true);
+      show("appBox", false);
+      $("changeMsg").textContent = "";
+      return;
     }
-  }
 
-  async function doLogin(nome, key) {
-    nome = normalizeName(nome);
-    key = String(key || "").trim();
-
-    if (!nome) throw new Error("Informe seu nome completo.");
-    if (!key) throw new Error("Informe a chave de acesso.");
-
-    // salva antes para garantir header em /api/login
-    setAuth({ key, nome, role: "" });
-
-    // >>> LOGIN OBRIGATÓRIO (sem fallback)
-    const r = await request("/api/login", { method: "POST", body: { access_key: key, nome } });
-    setAuth({ key, nome, role: (r && r.role) ? r.role : "" });
-
-    showApp();
-    applyPdfVisibility();
-
-    const btnPdf = $("#btnPdf");
-    if (btnPdf) btnPdf.onclick = gerarPdf;
-
+    show("loginBox", false);
+    show("changeBox", false);
+    show("appBox", true);
     await loadState();
   }
 
-  function doLogout() {
-    clearAuth();
-    STATE = null;
-    markDirty(false);
-    showLogin();
-    const n = $("#nome"); const c = $("#chave");
-    if (n) n.value = ""; if (c) c.value = "";
-  }
+  async function changePassword() {
+    $("changeMsg").textContent = "";
+    const p1 = $("newPass1").value;
+    const p2 = $("newPass2").value;
 
-  function showLogin() {
-    const a = $("#loginArea"); const b = $("#appArea");
-    if (a) a.style.display = "block";
-    if (b) b.style.display = "none";
-    renderSaveStatus(null);
-    renderLockStatus(false);
-  }
+    if (!p1 || p1.length < 6) { $("changeMsg").textContent = "a nova senha deve ter pelo menos 6 caracteres."; return; }
+    if (p1 !== p2) { $("changeMsg").textContent = "as senhas não conferem."; return; }
 
-  function showApp() {
-    const a = $("#loginArea"); const b = $("#appArea");
-    if (a) a.style.display = "none";
-    if (b) b.style.display = "block";
-    renderSaveStatus(null);
-  }
-
-  window.login = async function login() {
-    try {
-      await doLogin($("#nome")?.value ?? "", $("#chave")?.value ?? "");
-    } catch (err) {
-      // se falhar login, limpa e fica na tela
-      clearAuth();
-      showLogin();
-      alert(err.message || String(err));
-    }
-  };
-
-  window.logout = function logout() { doLogout(); };
-
-  async function boot() {
-    const chaveEl = $("#chave");
-    if (chaveEl) {
-      chaveEl.addEventListener("keydown", (e) => {
-        if (e.key === "Enter") { e.preventDefault(); window.login(); }
-      });
+    const r = await api("/api/change_password", { method: "POST", body: JSON.stringify({ new_password: p1 }) });
+    if (!r.ok) {
+      $("changeMsg").textContent = (r.data && (r.data.error || r.data.details)) ? (r.data.error || r.data.details) : "erro ao trocar senha";
+      return;
     }
 
-    const btnPdf = $("#btnPdf");
-    if (btnPdf) btnPdf.onclick = gerarPdf;
-
-    if (currentKey() && AUTH.nome) {
-      showApp();
-      applyPdfVisibility();
-      await loadState();
-    } else {
-      showLogin();
-    }
-
-    window.addEventListener("beforeunload", (e) => {
-      if (IS_DIRTY) { e.preventDefault(); e.returnValue = ""; }
-    });
+    show("loginBox", false);
+    show("changeBox", false);
+    show("appBox", true);
+    await loadState();
   }
 
-  boot().catch((err) => {
-    console.error(err);
-    alert(`Falha ao iniciar.\n\nDetalhes: ${err.message || err}`);
-  });
+  async function save() {
+    if (!state.pending.size) { $("saveMsg").textContent = "nenhuma alteração pendente."; return; }
+
+    const updates = [];
+    for (const [key, code] of state.pending.entries()) {
+      const [canonical_name, date] = key.split("|");
+      updates.push({ canonical_name, date, code });
+    }
+
+    const r = await api("/api/assignments", { method: "PUT", body: JSON.stringify({ updates }) });
+    if (!r.ok) {
+      $("saveMsg").textContent = (r.data && (r.data.error || r.data.details)) ? (r.data.error || r.data.details) : "erro ao salvar";
+      return;
+    }
+
+    await loadState();
+    $("saveMsg").textContent = "salvo.";
+  }
+
+  function logout() {
+    state.token = null;
+    state.me = null;
+    state.meta = null;
+    state.pending.clear();
+    show("loginBox", true);
+    show("changeBox", false);
+    show("appBox", false);
+    $("loginPass").value = "";
+    $("loginMsg").textContent = "";
+  }
+
+  async function openPdf() {
+    // abre em nova aba
+    window.open("/api/pdf", "_blank");
+  }
+
+  $("btnLogin").addEventListener("click", doLogin);
+  $("btnChange").addEventListener("click", changePassword);
+  $("btnSave").addEventListener("click", save);
+  $("btnLogout").addEventListener("click", logout);
+  $("btnPdf").addEventListener("click", openPdf);
+
+  // start: mostra login
+  show("loginBox", true);
+  show("changeBox", false);
+  show("appBox", false);
 })();

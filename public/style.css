@@ -1,33 +1,30 @@
-:root { color-scheme: light; }
-* { box-sizing: border-box; }
-body { margin: 0; font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; background: #f5f6f8; color: #111; }
-.top { display:flex; justify-content:space-between; align-items:flex-start; padding: 16px 18px; background:#fff; border-bottom:1px solid #e6e8ee; gap:12px; }
-.top h1 { margin:0; font-size: 18px; }
-.sub { font-size: 12px; color:#555; margin-top:4px; }
-.right { display:flex; gap:8px; align-items:center; }
-.badge { padding: 6px 10px; border-radius: 999px; font-size: 12px; background:#eef2ff; border:1px solid #dbe3ff; }
-.wrap { max-width: 1200px; margin: 0 auto; padding: 16px; display:flex; flex-direction:column; gap: 14px; }
-.card { background:#fff; border:1px solid #e6e8ee; border-radius: 12px; padding: 14px; box-shadow: 0 1px 2px rgba(0,0,0,.04); }
-.card h2 { margin:0 0 10px 0; font-size: 14px; text-transform: lowercase; }
-.grid { display:grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
-label { display:flex; flex-direction:column; gap:6px; font-size: 12px; color:#333; text-transform: lowercase; }
-input, select { padding: 10px; border-radius: 10px; border:1px solid #d7dbe6; outline:none; background:#fff; }
-input:focus, select:focus { border-color:#7aa2ff; box-shadow: 0 0 0 3px rgba(122,162,255,.2); }
-.actions { display:flex; gap: 10px; align-items:center; margin-top: 10px; }
-.actions.between { justify-content:space-between; }
-button { border:1px solid #2c2c2c; background:#111; color:#fff; padding: 10px 12px; border-radius: 10px; cursor:pointer; font-weight:600; }
-button.secondary { background:#fff; color:#111; border-color:#cfd5e4; }
-button:disabled { opacity:.6; cursor:not-allowed; }
-.msg { font-size: 12px; color:#0f5132; }
-.hint { margin:10px 0 0 0; font-size: 12px; color:#666; }
-.table-wrap { overflow:auto; border:1px solid #e6e8ee; border-radius: 12px; }
-table { width:100%; border-collapse: collapse; min-width: 900px; }
-th, td { border-bottom:1px solid #eef0f6; padding: 8px; font-size: 12px; vertical-align: top; }
-th { position: sticky; top: 0; background:#fafbff; z-index: 1; text-align:left; }
-tr:hover td { background:#fcfdff; }
-.small { font-size: 11px; color:#666; }
-.cell { display:flex; flex-direction:column; gap:6px; }
-.cell select { padding: 7px; border-radius: 9px; }
-.cell textarea { width: 100%; min-height: 52px; resize: vertical; padding: 8px; border-radius: 9px; border:1px solid #d7dbe6; }
-.foot { padding: 16px; text-align:center; color:#666; font-size:12px; }
-@media (max-width: 900px) { .grid { grid-template-columns: 1fr; } }
+:root{font-family:Arial,Helvetica,sans-serif}
+body{margin:0;background:#f6f7f9;color:#111}
+.top{display:flex;justify-content:space-between;align-items:center;padding:14px 16px;background:#1f2a44;color:#fff}
+.brand{font-weight:700}
+.sub{font-size:13px;opacity:.9;margin-top:2px}
+.wrap{max-width:1200px;margin:0 auto;padding:16px}
+.card{background:#fff;border:1px solid #e6e6e6;border-radius:12px;padding:14px}
+.card h1{margin:0 0 10px 0;font-size:16px}
+label{display:grid;gap:6px;font-size:13px;margin-bottom:10px}
+input{padding:10px;border:1px solid #d8d8d8;border-radius:10px;font-size:14px}
+.btn{padding:10px 12px;border:1px solid rgba(255,255,255,.35);background:#fff;border-radius:10px;cursor:pointer}
+.btn--ghost{background:transparent;color:#fff}
+.btn--primary{background:#1f2a44;color:#fff;border:1px solid #1f2a44}
+.muted{font-size:13px;color:#444}
+.holiday{background:#fff3cd;border-bottom:1px solid #ffe69c;color:#664d03;padding:10px 16px;font-size:13px}
+.tablewrap{overflow:auto;border:1px solid #eee;border-radius:12px;margin-top:12px}
+table{width:100%;border-collapse:collapse;min-width:980px}
+th,td{border-bottom:1px solid #eee;padding:8px;font-size:13px;text-align:left;vertical-align:top}
+th{position:sticky;top:0;background:#fafafa;z-index:1}
+select{padding:7px;border-radius:10px;border:1px solid #d8d8d8}
+.changed{outline:2px solid #ffcc00;outline-offset:-2px;background:#fffbe6}
+.row{display:flex;justify-content:space-between;gap:12px;align-items:center}
+.row--actions{margin-top:10px}
+hr{border:none;border-top:1px solid #eee;margin:14px 0}
+h2{margin:0 0 8px 0;font-size:15px}
+.ops{display:grid;gap:10px;margin-top:10px}
+.opsDay{border:1px solid #eee;border-radius:12px;padding:10px;background:#fafafa}
+.opsDay b{display:block;margin-bottom:6px}
+.line{height:18px;border-bottom:1px solid #cfcfcf;margin:6px 0}
+.foot{margin-top:14px;text-align:center;font-size:12px;color:#444}

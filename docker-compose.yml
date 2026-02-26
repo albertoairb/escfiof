@@ -19,10 +19,17 @@ services:
 
   app:
     build: .
+    env_file:
+      - .env
     environment:
       PORT: ${PORT:-8080}
       TZ: ${TZ:-America/Sao_Paulo}
-      SUPERVISOR_KEY: ${SUPERVISOR_KEY:-supervisor123}
+      JWT_SECRET: ${JWT_SECRET:-troque-este-segredo}
+      DEFAULT_PASSWORD: ${DEFAULT_PASSWORD:-sr123}
+      CLOSE_FRIDAY_HOUR: ${CLOSE_FRIDAY_HOUR:-11}
+      SYSTEM_NAME: ${SYSTEM_NAME:-Escala Semanal de Oficiais do 4º BPM/M}
+      COPYRIGHT_YEAR: ${COPYRIGHT_YEAR:-2026}
+      AUTHOR: ${AUTHOR:-Desenvolvido por Alberto Franzini Neto}
       DB_HOST: ${DB_HOST:-db}
       DB_PORT: ${DB_PORT:-3306}
       DB_USER: ${DB_USER:-app}

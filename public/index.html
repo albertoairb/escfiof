@@ -1,78 +1,80 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="pt-BR">
 <head>
   <meta charset="UTF-8" />
-  <title>Escala Semanal de Oficiais</title>
-
-  <style>
-    body { font-family: Arial, sans-serif; margin: 0; background-color: #f4f4f4; }
-    header { background-color: #1f2a44; color: white; padding: 15px; text-align: center; }
-    .container { padding: 20px; }
-    .login-box { max-width: 420px; margin: 40px auto; background: white; padding: 25px; border-radius: 8px; box-shadow: 0 0 10px rgba(0,0,0,0.1); }
-    input { width: 100%; padding: 8px; margin-bottom: 10px; font-size: 14px; }
-    button { padding: 8px 15px; margin-top: 5px; cursor: pointer; }
-    .dia-bloco { background: white; padding: 15px; margin-bottom: 15px; border-radius: 6px; box-shadow: 0 0 5px rgba(0,0,0,0.08); }
-    select, textarea { width: 100%; margin-top: 5px; margin-bottom: 10px; padding: 6px; }
-    textarea { height: 60px; resize: vertical; }
-    .top-actions { margin-bottom: 20px; text-align: right; display: flex; gap: 10px; justify-content: flex-end; align-items: center; flex-wrap: wrap; }
-    .pill { background: #eef2ff; color: #1f2a44; border: 1px solid #c7d2fe; padding: 6px 10px; border-radius: 999px; font-size: 12px; white-space: nowrap; }
-    .muted { color: #666; font-size: 12px; }
-    .admin-box{ display:none; background:#fff; border:1px solid #e5e7eb; border-radius:8px; padding:10px 12px; margin-bottom:12px; box-shadow: 0 0 5px rgba(0,0,0,0.04); }
-    .admin-row{ display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
-    .admin-row select{ width:auto; min-width:260px; margin:0; }
-    .admin-row label{ font-size:12px; color:#111827; }
-    .admin-row input[type="checkbox"]{ transform: scale(1.1); }
-  </style>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Escala</title>
+  <link rel="stylesheet" href="./style.css" />
 </head>
 <body>
-
-  <header>
-    <h2>Escala Semanal de Oficiais</h2>
-    <div class="muted" style="color:#cbd5e1;">v9</div>
-    <div style="font-size:12px; margin-top:6px; color:#e2e8f0;">Desenvolvido por Alberto Franzini Neto</div>
+  <header class="top">
+    <div class="top__left">
+      <div class="brand" id="systemName">Escala Semanal de Oficiais do 4º BPM/M</div>
+      <div class="sub" id="period"></div>
+    </div>
+    <div class="top__right">
+      <button id="btnPdf" class="btn">PDF</button>
+      <button id="btnLogout" class="btn btn--ghost">sair</button>
+    </div>
   </header>
 
-  <!-- LOGIN -->
-  <div id="loginArea" class="login-box">
-    <h3>Acesso ao Sistema</h3>
+  <div id="holidayBar" class="holiday" style="display:none;"></div>
 
-    <label>Nome:</label>
-    <input type="text" id="nome" placeholder="Digite seu nome completo" />
+  <main class="wrap">
+    <section id="loginBox" class="card">
+      <h1>acesso</h1>
+      <label>
+        nome (posto + nome completo)
+        <input id="loginName" placeholder="ex.: Tenente-Coronel PM Helder Antônio de Paula" />
+      </label>
+      <label>
+        senha
+        <input id="loginPass" type="password" placeholder="sr123" />
+      </label>
+      <button id="btnLogin" class="btn btn--primary">entrar</button>
+      <div class="muted" id="loginMsg"></div>
+    </section>
 
-    <label>Chave de acesso:</label>
-    <input type="password" id="chave" placeholder="Digite sua chave" />
+    <section id="changeBox" class="card" style="display:none;">
+      <h1>troca obrigatória de senha</h1>
+      <div class="muted">primeiro acesso: defina uma nova senha para continuar.</div>
+      <label>
+        nova senha
+        <input id="newPass1" type="password" />
+      </label>
+      <label>
+        confirmar nova senha
+        <input id="newPass2" type="password" />
+      </label>
+      <button id="btnChange" class="btn btn--primary">salvar e continuar</button>
+      <div class="muted" id="changeMsg"></div>
+    </section>
 
-    <button onclick="login()">Entrar</button>
-    <div class="muted" style="margin-top:10px;">O sistema salva automaticamente ao editar.</div>
-  </div>
-
-  <!-- APLICAÇÃO -->
-  <div id="appArea" class="container" style="display:none;">
-
-    <div class="top-actions">
-      <span id="saveStatus" class="pill" style="display:none;"></span>
-      <span id="lockStatus" class="pill" style="display:none;"></span>
-      <button id="btnPdf" style="display:none;">Gerar PDF Final</button>
-      <button onclick="logout()">Sair</button>
-    </div>
-
-    <!-- ADMIN -->
-    <div id="adminBox" class="admin-box">
-      <div class="admin-row">
-        <label><strong>modo administrador:</strong></label>
-        <select id="adminTarget"></select>
-        <label class="muted" style="display:flex;gap:8px;align-items:center;">
-          <input id="adminOverride" type="checkbox" />
-          alterar após fechamento
-        </label>
+    <section id="appBox" class="card" style="display:none;">
+      <div class="row">
+        <div class="muted" id="lockMsg"></div>
+        <div class="muted" id="userMsg"></div>
       </div>
-      <div class="muted" style="margin-top:6px;">o fechamento ocorre na sexta-feira às 11h (São Paulo)</div>
-    </div>
 
-    <div id="semanaContainer"></div>
+      <div class="tablewrap">
+        <table id="table"></table>
+      </div>
 
-  </div>
+      <div class="row row--actions">
+        <button id="btnSave" class="btn btn--primary">salvar</button>
+        <div class="muted" id="saveMsg"></div>
+      </div>
 
-  <script src="app.js?v=9"></script>
+      <hr />
+
+      <h2>alterações operacionais (para impressão)</h2>
+      <div class="muted">use este espaço no impresso quando a escala já estiver fechada (texto livre, 4 linhas por dia).</div>
+      <div id="opsNotes" class="ops"></div>
+
+      <footer class="foot" id="footerMark"></footer>
+    </section>
+  </main>
+
+  <script src="./app.js"></script>
 </body>
 </html>
