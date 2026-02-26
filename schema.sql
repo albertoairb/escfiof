@@ -34,6 +34,7 @@ CREATE TABLE IF NOT EXISTS escala_lancamentos (
   data DATE NOT NULL,
   oficial VARCHAR(255) NOT NULL,
   codigo VARCHAR(32) NOT NULL,
+  observacao TEXT NULL,
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   INDEX idx_data (data),
   INDEX idx_oficial (oficial)

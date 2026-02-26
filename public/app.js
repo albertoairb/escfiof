@@ -12,7 +12,9 @@
     dates: [],
     codes: [],
     assignments: {},
-    pending: new Map() // key -> code
+    notes: {},
+    pending: new Map(), // key -> code
+    pendingNotes: new Map() // key -> note
   };
 
   function ddmmyyyy(iso) {
@@ -92,7 +94,44 @@
     return officerCanonical === state.me.canonical_name && !state.locked;
   }
 
-  function buildTable() {
+  
+  // ===============================
+  // MODAL OUTROS
+  // ===============================
+  function openOutrosModal(initialText) {
+    return new Promise((resolve) => {
+      const modal = $("outrosModal");
+      const ta = $("outrosText");
+      const btnSave = $("btnOutrosSave");
+      const btnCancel = $("btnOutrosCancel");
+
+      ta.value = initialText || "";
+      modal.style.display = "";
+
+      const cleanup = () => {
+        modal.style.display = "none";
+        btnSave.onclick = null;
+        btnCancel.onclick = null;
+      };
+
+      btnCancel.onclick = () => {
+        cleanup();
+        resolve({ ok: false, text: initialText || "" });
+      };
+
+      btnSave.onclick = () => {
+        const t = (ta.value || "").trim();
+        if (!t) {
+          alert("OUTROS exige observação.");
+          return;
+        }
+        cleanup();
+        resolve({ ok: true, text: t });
+      };
+    });
+  }
+
+function buildTable() {
     const table = $("table");
     table.innerHTML = "";
 
@@ -153,8 +192,32 @@
         const pending = state.pending.has(key) ? state.pending.get(key) : null;
         sel.value = pending !== null ? pending : cur;
 
-        sel.addEventListener("change", () => {
+        sel.addEventListener("change", async () => {
           const v = sel.value;
+
+          // Se OUTROS, exigir observação via modal
+          if (v === "OUTROS") {
+            const keyNote = `${off.canonical_name}|${iso}`;
+            const currentNote = state.pendingNotes.has(keyNote)
+              ? state.pendingNotes.get(keyNote)
+              : (state.notes[keyNote] || "");
+
+            const r = await openOutrosModal(currentNote);
+            if (!r.ok) {
+              // usuário cancelou: volta para valor anterior
+              sel.value = pending !== null ? pending : cur;
+              return;
+            }
+
+            state.pendingNotes.set(keyNote, r.text);
+            state.notes[keyNote] = r.text;
+          } else {
+            // se sair de OUTROS, limpa observação
+            const keyNote = `${off.canonical_name}|${iso}`;
+            state.pendingNotes.delete(keyNote);
+            delete state.notes[keyNote];
+          }
+
           if (v === cur) {
             state.pending.delete(key);
             td.classList.remove("changed");
@@ -189,7 +252,9 @@
     state.dates = r.data.dates || [];
     state.codes = r.data.codes || [];
     state.assignments = r.data.assignments || {};
+    state.notes = r.data.notes || {};
     state.pending.clear();
+    state.pendingNotes.clear();
 
     setHeader();
     setHolidayBar(r.data.holidays || []);
@@ -255,10 +320,20 @@
     const updates = [];
     for (const [key, code] of state.pending.entries()) {
       const [canonical_name, date] = key.split("|");
-      updates.push({ canonical_name, date, code });
+      const noteKey = `${canonical_name}|${date}`;
+      const note = (code === "OUTROS") ? (state.pendingNotes.get(noteKey) || state.notes[noteKey] || "") : "";
+      updates.push({ canonical_name, date, code, note });
     }
 
-    const r = await api("/api/assignments", { method: "PUT", body: JSON.stringify({ updates }) });
+    
+    for (const u of updates) {
+      if (u.code === "OUTROS" && !String(u.note || "").trim()) {
+        $("saveMsg").textContent = "OUTROS exige observação.";
+        return;
+      }
+    }
+
+const r = await api("/api/assignments", { method: "PUT", body: JSON.stringify({ updates }) });
     if (!r.ok) {
       $("saveMsg").textContent = (r.data && (r.data.error || r.data.details)) ? (r.data.error || r.data.details) : "erro ao salvar";
       return;
