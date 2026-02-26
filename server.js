@@ -137,27 +137,32 @@ function normKey(s) {
     .toLowerCase().trim().replace(/\s+/g, " ");
 }
 
-function toISODate(v) {
-  // Converte DATE/DATETIME do MySQL para YYYY-MM-DD (evita mismatch com st.dates)
-  if (!v) return "";
-  if (typeof v === "string") {
-    const m = v.match(/\d{4}-\d{2}-\d{2}/);
-    return m ? m[0] : "";
-  }
-  try {
-    return v.toISOString().slice(0, 10);
-  } catch {
-    const d = new Date(v);
-    return isNaN(d.getTime()) ? "" : d.toISOString().slice(0, 10);
-  }
-}
-
 function fmtYYYYMMDD(d) {
   const yyyy = d.getFullYear();
   const mm = String(d.getMonth() + 1).padStart(2, "0");
   const dd = String(d.getDate()).padStart(2, "0");
   return `${yyyy}-${mm}-${dd}`;
 }
+
+
+function normalizeDateISO(v) {
+  // Aceita Date, "YYYY-MM-DD", "YYYY-MM-DD HH:MM:SS", "YYYY-MM-DDTHH:MM:SSZ"
+  if (!v) return "";
+  if (typeof v === "string") {
+    const s = v.trim();
+    // pega sempre os 10 primeiros chars quando começar com YYYY-MM-DD
+    if (/^\d{4}-\d{2}-\d{2}/.test(s)) return s.slice(0, 10);
+    return s;
+  }
+  if (v instanceof Date) return v.toISOString().slice(0, 10);
+  // fallback (mysql2 pode devolver objeto)
+  try {
+    return new Date(v).toISOString().slice(0, 10);
+  } catch {
+    return "";
+  }
+}
+
 
 function fmtDDMMYYYY(iso) {
   const [y, m, d] = String(iso || "").split("-");
@@ -343,8 +348,31 @@ const conn = await pool.getConnection();
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
   `);
 
-  // compatibilidade: adiciona coluna observacao caso a tabela exista sem ela
-  await safeQuery(`ALTER TABLE escala_lancamentos ADD COLUMN observacao TEXT NULL`);
+  // compatibilidade: adiciona coluna observacao somente se ainda não existir
+  try {
+    const [cols] = await pool.query(
+      `SELECT COUNT(*) AS c
+       FROM INFORMATION_SCHEMA.COLUMNS
+       WHERE TABLE_SCHEMA = DATABASE()
+         AND TABLE_NAME = 'escala_lancamentos'
+         AND COLUMN_NAME = 'observacao'`
+    );
+    const exists = cols && cols[0] && Number(cols[0].c) > 0;
+    if (!exists) {
+      await safeQuery(`ALTER TABLE escala_lancamentos ADD COLUMN observacao TEXT NULL`);
+    }
+  } catch (e) {
+    // se não conseguir checar por algum motivo, tente o ALTER e ignore duplicidade
+    try {
+      await safeQuery(`ALTER TABLE escala_lancamentos ADD COLUMN observacao TEXT NULL`);
+    } catch (e2) {
+      if (e2 && (e2.code === "ER_DUP_FIELDNAME" || String(e2.sqlMessage || "").includes("Duplicate column name"))) {
+        // ok: já existe
+      } else {
+        throw e2;
+      }
+    }
+  }
 
 }
 
@@ -567,7 +595,7 @@ async function getAssignmentsFromLancamentos(startISO, endISO) {
     const notes = {};
 
     for (const r of rows) {
-      const dateISO = toISODate(r.data);
+      const dateISO = normalizeDateISO(r.data);
       const canon = officerCanonicalFromDbName(r.oficial);
       if (!canon) continue;
 
