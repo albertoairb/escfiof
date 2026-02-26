@@ -137,6 +137,21 @@ function normKey(s) {
     .toLowerCase().trim().replace(/\s+/g, " ");
 }
 
+function toISODate(v) {
+  // Converte DATE/DATETIME do MySQL para YYYY-MM-DD (evita mismatch com st.dates)
+  if (!v) return "";
+  if (typeof v === "string") {
+    const m = v.match(/\d{4}-\d{2}-\d{2}/);
+    return m ? m[0] : "";
+  }
+  try {
+    return v.toISOString().slice(0, 10);
+  } catch {
+    const d = new Date(v);
+    return isNaN(d.getTime()) ? "" : d.toISOString().slice(0, 10);
+  }
+}
+
 function fmtYYYYMMDD(d) {
   const yyyy = d.getFullYear();
   const mm = String(d.getMonth() + 1).padStart(2, "0");
@@ -329,20 +344,8 @@ const conn = await pool.getConnection();
   `);
 
   // compatibilidade: adiciona coluna observacao caso a tabela exista sem ela
-// compatibilidade: adiciona coluna observacao somente se ainda não existir
-try {
   await safeQuery(`ALTER TABLE escala_lancamentos ADD COLUMN observacao TEXT NULL`);
-} catch (e) {
-  if (
-    e &&
-    (e.code === "ER_DUP_FIELDNAME" ||
-     String(e.sqlMessage || "").includes("Duplicate column name"))
-  ) {
-    console.log("[schema] coluna 'observacao' já existe, seguindo...");
-  } else {
-    throw e;
-  }
-}
+
 }
 
 function buildFreshState() {
@@ -564,7 +567,7 @@ async function getAssignmentsFromLancamentos(startISO, endISO) {
     const notes = {};
 
     for (const r of rows) {
-      const dateISO = typeof r.data === "string" ? r.data : fmtYYYYMMDD(new Date(r.data));
+      const dateISO = toISODate(r.data);
       const canon = officerCanonicalFromDbName(r.oficial);
       if (!canon) continue;
 
