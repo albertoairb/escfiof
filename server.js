@@ -501,12 +501,36 @@ async function logAction(actor, target, action, details = "") {
 // LANÇAMENTOS (MySQL) -> mapa de escala
 // ===============================
 function officerCanonicalFromDbName(dbName) {
-  const n = normKey(dbName);
+  // No banco, o campo "oficial" pode vir com posto abreviado (ex.: "Cap PM")
+  // enquanto a lista fixa usa grafias completas (ex.: "Capitão PM").
+  // Para garantir o match, normalizamos removendo posto/"PM" e aceitando comparação por inclusão.
+
+  const raw = String(dbName || "");
+  let n = normKey(raw);
+
+  // remove tokens de posto/abreviações comuns
+  n = n
+    .replace(/\b(pm)\b/g, " ")
+    .replace(/\b(ten\s*cel|tenente\s*coronel|tenente-coronel|coronel|cel)\b/g, " ")
+    .replace(/\b(maj|major)\b/g, " ")
+    .replace(/\b(cap|capitao|capit[aã]o)\b/g, " ")
+    .replace(/\b(1o|1º|2o|2º)\b/g, " ")
+    .replace(/\b(ten|tenente)\b/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
   for (const o of OFFICERS) {
     const a = normKey(`${o.rank} ${o.name}`);
     const b = normKey(o.canonical_name);
     const c = normKey(o.name);
+
+    // igualdade estrita (caso ideal)
     if (n === a || n === b || n === c) return o.canonical_name;
+
+    // inclusão (caso venha com/ou sem partes do posto)
+    if (n && (a.includes(n) || b.includes(n) || c.includes(n) || n.includes(b) || n.includes(c))) {
+      return o.canonical_name;
+    }
   }
   return null;
 }
@@ -814,17 +838,28 @@ app.get("/api/pdf", authRequired(true), async (req, res) => {
 
 
     // assinaturas no fim da escala (mesma página da tabela)
-    const sigY = doc.page.height - 70;
-    // se não couber, abre página nova landscape só para assinaturas
-    if (doc.y > sigY - 20) {
-      doc.addPage({ margin: 28, size: "A4", layout: "landscape" });
-    }
-    const pageW = doc.page.width;
+    // IMPORTANTÍSSIMO: manter dentro da área útil (acima da margem inferior) para evitar quebra automática
+    // que estava separando nome/cargo em páginas diferentes.
+
+    // "cursor" real ao final da tabela
+    doc.y = y;
+
     const mL = doc.page.margins.left;
     const mR = doc.page.margins.right;
-    const usableW = pageW - mL - mR;
+    const mB = doc.page.margins.bottom;
+    const usableW = doc.page.width - mL - mR;
     const half = usableW / 2;
-    const lineY = doc.page.height - 55;
+
+    const bottomLimit = doc.page.height - mB;
+    const blockH = 44; // linha + 2 linhas de texto
+    const minTopForSigs = bottomLimit - blockH;
+
+    // se não couber abaixo do conteúdo atual, abre página nova landscape só para assinaturas
+    if (doc.y > minTopForSigs - 10) {
+      doc.addPage({ margin: 28, size: "A4", layout: "landscape" });
+    }
+
+    const lineY = (doc.page.height - doc.page.margins.bottom) - 32;
 
     // linhas
     doc.moveTo(mL + 20, lineY).lineTo(mL + half - 20, lineY).stroke();
@@ -833,10 +868,10 @@ app.get("/api/pdf", authRequired(true), async (req, res) => {
     // textos
     doc.fontSize(10);
     doc.text("ALBERTO FRANZINI NETO", mL, lineY + 6, { width: half, align: "center" });
-    doc.text("CH P1/P5", mL, lineY + 20, { width: half, align: "center" });
+    doc.text("CH P1/P5", mL, lineY + 18, { width: half, align: "center" });
 
     doc.text("EDUARDO MOSNA XAVIER", mL + half, lineY + 6, { width: half, align: "center" });
-    doc.text("SUBCMT BTL", mL + half, lineY + 20, { width: half, align: "center" });
+    doc.text("SUBCMT BTL", mL + half, lineY + 18, { width: half, align: "center" });
 
     // OUTROS - detalhamento (texto integral)
     const outrosItems = buildOutrosList(dates, assignments, notes);
