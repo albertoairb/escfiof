@@ -329,8 +329,20 @@ const conn = await pool.getConnection();
   `);
 
   // compatibilidade: adiciona coluna observacao caso a tabela exista sem ela
+// compatibilidade: adiciona coluna observacao somente se ainda não existir
+try {
   await safeQuery(`ALTER TABLE escala_lancamentos ADD COLUMN observacao TEXT NULL`);
-
+} catch (e) {
+  if (
+    e &&
+    (e.code === "ER_DUP_FIELDNAME" ||
+     String(e.sqlMessage || "").includes("Duplicate column name"))
+  ) {
+    console.log("[schema] coluna 'observacao' já existe, seguindo...");
+  } else {
+    throw e;
+  }
+}
 }
 
 function buildFreshState() {
