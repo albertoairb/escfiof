@@ -78,7 +78,7 @@ const ADMIN_NAMES = new Set([
 // Códigos válidos (tudo em MAIÚSCULO, conforme regra)
 // - FO*: permite descrição
 // - FOJ: sem descrição
-const CODES = ["EXP", "SR", "FO", "FO*", "FOJ", "MA", "VE", "LP", "FÉRIAS", "CFP_DIA", "CFP_NOITE", "OUTROS"];
+const CODES = ["EXP", "SR",  "FO*", "FOJ", "MA", "VE", "LP", "FÉRIAS", "CFP_DIA", "CFP_NOITE", "OUTROS"];
 
 // ===============================
 // APP
