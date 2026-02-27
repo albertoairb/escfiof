@@ -373,8 +373,27 @@ function isoFromDbDate(v) {
     const d = String(v.getDate()).padStart(2, "0");
     return `${y}-${m}-${d}`;
   }
-  const s = String(v);
-  return s.length >= 10 ? s.slice(0, 10) : s;
+
+  // strings: aceita 'YYYY-MM-DD', 'YYYY/MM/DD', e valores com hora/offset
+  let s = String(v).trim();
+  if (!s) return "";
+
+  // pega só a parte de data se vier com hora
+  if (s.length >= 10) s = s.slice(0, 10);
+
+  // normaliza separador
+  if (s.includes("/")) s = s.replaceAll("/", "-");
+
+  // se vier no formato DD-MM-YYYY por algum motivo, converte
+  const m = /^(\d{2})-(\d{2})-(\d{4})$/.exec(s);
+  if (m) {
+    const dd = m[1];
+    const mm = m[2];
+    const yy = m[3];
+    return `${yy}-${mm}-${dd}`;
+  }
+
+  return s;
 }
 
 function resolveCanonicalFromDbOfficer(oficialStr) {
@@ -389,10 +408,19 @@ function resolveCanonicalFromDbOfficer(oficialStr) {
 
 async function fetchLancamentosForPeriod(periodStartISO, periodEndISO) {
   // periodStartISO / periodEndISO são YYYY-MM-DD
-  return safeQuery(
-    "SELECT data, oficial, codigo, observacao FROM escala_lancamentos WHERE data BETWEEN ? AND ?",
-    [periodStartISO, periodEndISO]
-  );
+  // Compatível com coluna 'data' como DATE ou como string (ex.: 'YYYY/MM/DD')
+  const sql = `
+    SELECT data, oficial, codigo, observacao
+      FROM escala_lancamentos
+     WHERE (
+       CASE
+         WHEN CAST(data AS CHAR) LIKE '%/%'
+           THEN STR_TO_DATE(CAST(data AS CHAR), '%Y/%m/%d')
+         ELSE STR_TO_DATE(SUBSTRING(CAST(data AS CHAR), 1, 10), '%Y-%m-%d')
+       END
+     ) BETWEEN ? AND ?
+  `;
+  return safeQuery(sql, [periodStartISO, periodEndISO]);
 }
 
 function buildAssignmentsAndNotesFromLancamentos(rows, validDates) {
