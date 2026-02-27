@@ -316,7 +316,25 @@
 
   async function openPdf() {
     // abre em nova aba
-    window.open("/api/pdf", "_blank");
+// Busca o PDF autenticado (envia x-access-key) e abre em nova aba
+if (!usuarioLogado || !usuarioLogado.access_key) {
+  alert("Você precisa estar logado para abrir o PDF.");
+  return;
+}
+const resp = await fetch(`${API}/api/pdf`, {
+  method: "GET",
+  headers: { "x-access-key": usuarioLogado.access_key }
+});
+if (!resp.ok) {
+  let msg = "Erro ao gerar PDF";
+  try { const j = await resp.json(); msg = j.error || msg; } catch (_) {}
+  throw new Error(msg);
+}
+const blob = await resp.blob();
+const url = URL.createObjectURL(blob);
+window.open(url, "_blank", "noopener,noreferrer");
+setTimeout(() => URL.revokeObjectURL(url), 60000);
+
   }
 
   $("btnLogin").addEventListener("click", doLogin);
