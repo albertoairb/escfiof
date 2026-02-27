@@ -326,37 +326,22 @@ async function ensureSchema() {
       INDEX idx_oficial (oficial)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;`);
 
-    // migração defensiva: alguns bancos antigos podem não ter a coluna 'observacao'
-    // (no MySQL, não existe ADD COLUMN IF NOT EXISTS em todas as versões; então tratamos duplicidade.)
+    // migração defensiva: colunas faltantes em 'escala_lancamentos' (ambientes antigos)
+    // (usa information_schema para evitar erro de coluna duplicada)
     try {
-      const [hasObsRows] = await conn.query(
-        `SELECT COUNT(*) AS c
-           FROM information_schema.COLUMNS
-          WHERE table_schema = DATABASE()
-            AND table_name = 'escala_lancamentos'
-            AND column_name = 'observacao'`
+      const [cols] = await conn.query(
+        "SELECT column_name FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = 'escala_lancamentos'"
       );
-      const c = hasObsRows && hasObsRows[0] ? Number(hasObsRows[0].c) : 0;
-      if (!c) {
-        await conn.query("ALTER TABLE escala_lancamentos ADD COLUMN observacao TEXT NULL");
-      }
+      const names = new Set((cols || []).map(c => String(c.column_name || c.COLUMN_NAME || "").toLowerCase()));
+      if (!names.has("observacao")) await conn.query("ALTER TABLE escala_lancamentos ADD COLUMN observacao TEXT NULL");
+      if (!names.has("created_by")) await conn.query("ALTER TABLE escala_lancamentos ADD COLUMN created_by VARCHAR(255) NULL");
+      if (!names.has("updated_by")) await conn.query("ALTER TABLE escala_lancamentos ADD COLUMN updated_by VARCHAR(255) NULL");
     } catch (e) {
-      // se der ER_DUP_FIELDNAME por corrida de inicialização, ignorar
-      if (!String((e && e.code) || "").includes("ER_DUP_FIELDNAME")) throw e;
+      // tolera corrida/duplicidade em inicialização concorrente
+      const code = String((e && e.code) || "");
+      const msg = String((e && e.message) || "");
+      if (!code.includes("ER_DUP_FIELDNAME") && !msg.toLowerCase().includes("duplicate column")) throw e;
     }
-
-// migração defensiva: colunas de auditoria
-try {
-  const [cols] = await conn.query(
-    "SELECT column_name FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = 'escala_lancamentos'"
-  );
-  const names = new Set((cols || []).map(c => String(c.column_name || c.COLUMN_NAME || "").toLowerCase()));
-  if (!names.has("created_by")) await conn.query("ALTER TABLE escala_lancamentos ADD COLUMN created_by VARCHAR(255) NULL");
-  if (!names.has("updated_by")) await conn.query("ALTER TABLE escala_lancamentos ADD COLUMN updated_by VARCHAR(255) NULL");
-} catch (_e) {
-  // ignora
-}
-
 // logs detalhados de alterações (histórico)
 await conn.query(`CREATE TABLE IF NOT EXISTS escala_change_log (
   id BIGINT AUTO_INCREMENT PRIMARY KEY,
@@ -842,8 +827,10 @@ app.get("/api/state", authRequired(true), async (req, res) => {
 
     // se houver lançamentos no MySQL (escala_lancamentos), eles prevalecem
     let assignments = st.assignments || {};
-    let notes = {};
-    let notes_meta = {};
+    const baseNotes = (st.notes && typeof st.notes === "object") ? st.notes : {};
+    const baseMeta = (st.notes_meta && typeof st.notes_meta === "object") ? st.notes_meta : {};
+    let notes = baseNotes;
+    let notes_meta = baseMeta;
     try {
       const rows = await fetchLancamentosForPeriod(st.period.start, st.period.end);
       const built = buildAssignmentsAndNotesFromLancamentos(rows, st.dates);
@@ -1139,6 +1126,28 @@ app.get("/api/pdf", pdfAuth, async (req, res) => {
         notes = built.notes;
         notes_meta = built.notes_meta || {};
         usedDb = true;
+        // merge defensivo: se o DB não tiver observação (ou vier NULL), mantém o que estiver no state_store
+        try {
+          for (const k of Object.keys(baseNotes || {})) {
+            if (!notes || typeof notes !== "object") continue;
+            const codeNow = assignments && assignments[k] ? String(assignments[k]) : "";
+            if (codeNow !== "OUTROS" && codeNow !== "FO*") continue;
+            const dbVal = notes[k];
+            if (dbVal == null || String(dbVal).trim() === "") {
+              const v = String(baseNotes[k] || "").trim();
+              if (v) notes[k] = v;
+            }
+          }
+          // mantém metadados do state_store quando o DB não tiver (ex.: quem lançou)
+          if (notes_meta && typeof notes_meta === "object") {
+            for (const k of Object.keys(baseMeta || {})) {
+              if (!notes_meta[k]) notes_meta[k] = baseMeta[k];
+            }
+          }
+        } catch (_e) {
+          // ignora
+        }
+
       }
     } catch (_e) {
       // mantém fallback
