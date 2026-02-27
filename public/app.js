@@ -57,7 +57,7 @@ function ddmmyyyy_hhmm(isoOrDate) {
     if (state.token) headers["Authorization"] = `Bearer ${state.token}`;
     headers["Content-Type"] = "application/json";
 
-<<<<<<< HEAD
+    // evita travar eternamente em "salvando..." caso o backend/MySQL congele
     const timeoutMs = Number(opts.timeoutMs || 15000);
     const controller = new AbortController();
     const t = setTimeout(() => controller.abort(), timeoutMs);
@@ -68,21 +68,7 @@ function ddmmyyyy_hhmm(isoOrDate) {
       return { ok: res.ok, status: res.status, data };
     } catch (err) {
       const aborted = err && (err.name === "AbortError");
-      return { ok: false, status: aborted ? 408 : 0, data: { error: aborted ? "tempo esgotado" : "falha de rede", details: String(err && err.message || err) } };
-=======
-    // evita travar eternamente em "salvando..." caso o backend/MySQL congele
-    const timeoutMs = Number(opts.timeoutMs || 15000);
-    const ctrl = new AbortController();
-    const t = setTimeout(() => ctrl.abort(), timeoutMs);
-
-    try {
-      const res = await fetch(path, { ...opts, headers, signal: ctrl.signal });
-      const data = await res.json().catch(() => ({}));
-      return { ok: res.ok, status: res.status, data };
-    } catch (e) {
-      const msg = (e && e.name === "AbortError") ? "tempo esgotado" : (e && e.message ? e.message : "falha de rede");
-      return { ok: false, status: 0, data: { error: msg } };
->>>>>>> 97d5399 (fix: OUTROS/FO* não travar em salvando e exibir observação)
+      return { ok: false, status: aborted ? 408 : 0, data: { error: aborted ? "tempo esgotado" : "falha de rede", details: String((err && err.message) || err) } };
     } finally {
       clearTimeout(t);
     }
@@ -346,45 +332,75 @@ async function loadChangeLogs() {
         const noteText = (state.notes && state.notes[key]) ? String(state.notes[key]) : "";
         sel.title = noteText || "";
 
-        sel.addEventListener("change", () => {
-          const v = sel.value;
+        // campo de descrição inline (somente OUTROS / FO*)
+        const ta = document.createElement("textarea");
+        ta.className = "noteInput";
+        ta.rows = 3;
+        ta.placeholder = "descrição...";
+        ta.disabled = !editable;
 
+        const pendingObs = (pending && typeof pending === "object" && pending.observacao != null) ? String(pending.observacao) : "";
+        const savedObs = (state.notes && state.notes[key]) ? String(state.notes[key]) : "";
+        ta.value = pendingObs || savedObs || "";
+        ta.style.display = (sel.value === "OUTROS" || sel.value === "FO*") ? "" : "none";
+
+        ta.addEventListener("input", () => {
+          const currentCode = String(sel.value || "");
+          if (currentCode !== "OUTROS" && currentCode !== "FO*") return;
+          const txt = String(ta.value || "");
+          state.pending.set(key, { code: currentCode, observacao: txt });
+          td.classList.add("changed");
+          sel.title = txt.trim();
+          $("saveMsg").textContent = `${state.pending.size} alteração(ões) pendente(s).`;
+        });
+
+        sel.addEventListener("change", () => {
+          const v = String(sel.value || "");
+          const needObs = (v === "OUTROS" || v === "FO*");
+
+          // controla exibição do campo de descrição
+          ta.style.display = needObs ? "" : "none";
+          if (!needObs) {
+            // se trocou para código sem descrição, limpa tooltip
+            sel.title = "";
+          }
+
+          // se voltou ao código original, só mantém pendência se a observação mudou
           if (v === cur) {
-            state.pending.delete(key);
-            td.classList.remove("changed");
+            const beforeObs = savedObs || "";
+            const nowObs = String(ta.value || "");
+            if (needObs && nowObs !== beforeObs) {
+              state.pending.set(key, { code: v, observacao: nowObs });
+              td.classList.add("changed");
+            } else {
+              state.pending.delete(key);
+              td.classList.remove("changed");
+            }
             $("saveMsg").textContent = `${state.pending.size} alteração(ões) pendente(s).`;
             return;
           }
 
-          // códigos com descrição (texto livre exibido no PDF)
-          if (v === "OUTROS" || v === "FO*") {
-            const prev = (state.pending.get(key) && typeof state.pending.get(key) === "object")
-              ? (state.pending.get(key).observacao || "")
-              : (state.notes[key] || "");
-
-            // abre modal
-            descModal.open = true;
-            descModal.key = key;
-            descModal.code = v;
-            descModal.curCode = cur;
-            descModal.selectEl = sel;
-            descModal.cellEl = td;
-
-            $("descModalTitle").textContent = (v === "OUTROS") ? "OUTROS" : "FO*";
-            $("descModalHint").textContent = "digite a descrição (aparecerá integralmente no PDF).";
-            $("outrosText").value = prev || "";
-            $("outrosMsg").textContent = "";
-            $("outrosModal").style.display = "flex";
-            setTimeout(() => $("outrosText").focus(), 0);
+          if (needObs) {
+            // ao selecionar OUTROS/FO*, mantém o texto atual (ou o já salvo) e marca pendente
+            const txt = String(ta.value || savedObs || "");
+            ta.value = txt;
+            sel.title = txt.trim();
+            state.pending.set(key, { code: v, observacao: txt });
+            td.classList.add("changed");
+            $("saveMsg").textContent = `${state.pending.size} alteração(ões) pendente(s).`;
+            // foco rápido para digitar
+            setTimeout(() => ta.focus(), 0);
             return;
           }
 
+          // códigos sem descrição
           state.pending.set(key, { code: v, observacao: null });
           td.classList.add("changed");
           $("saveMsg").textContent = `${state.pending.size} alteração(ões) pendente(s).`;
         });
 
         td.appendChild(sel);
+        td.appendChild(ta);
         tr.appendChild(td);
       }
 
