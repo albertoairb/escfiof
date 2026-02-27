@@ -99,3 +99,5 @@ table.hist th {
   text-align: left;
   font-weight: 600;
 }
+
+.cellNote{margin-top:4px;font-size:11px;line-height:1.15;color:#555;max-width:140px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
