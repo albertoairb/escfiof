@@ -1125,39 +1125,37 @@ app.get("/api/pdf", pdfAuth, async (req, res) => {
 
     // prefere dados do MySQL (escala_lancamentos); fallback para state_store
     let assignments = st.assignments || {};
-    let notes = {};
-    let notes_meta = {};
+    // descrições (OUTROS/FO*) salvas no state_store (fallback)
+    const baseNotes = (st.notes && typeof st.notes === "object") ? st.notes : {};
+    const baseMeta = (st.notes_meta && typeof st.notes_meta === "object") ? st.notes_meta : {};
+
+    // inicia com state_store para garantir que o PDF sempre mostre o que aparece no front
+    let notes = { ...baseNotes };
+    let notes_meta = { ...baseMeta };
     let usedDb = false;
     try {
       const rows = await fetchLancamentosForPeriod(st.period.start, st.period.end);
       const built = buildAssignmentsAndNotesFromLancamentos(rows, dates);
       if (Object.keys(built.assignments).length) {
         assignments = built.assignments;
-        notes = built.notes;
-        notes_meta = built.notes_meta || {};
+        // DB passa a ser a fonte primária, mas fazemos merge defensivo com o state_store
+        notes = (built.notes && typeof built.notes === "object") ? built.notes : {};
+        notes_meta = (built.notes_meta && typeof built.notes_meta === "object") ? built.notes_meta : {};
         usedDb = true;
-        // merge defensivo: se o DB não tiver observação (ou vier NULL), mantém o que estiver no state_store
-        try {
-          for (const k of Object.keys(baseNotes || {})) {
-            if (!notes || typeof notes !== "object") continue;
-            const codeNow = assignments && assignments[k] ? String(assignments[k]) : "";
-            if (codeNow !== "OUTROS" && codeNow !== "FO*") continue;
-            const dbVal = notes[k];
-            if (dbVal == null || String(dbVal).trim() === "") {
-              const v = String(baseNotes[k] || "").trim();
-              if (v) notes[k] = v;
-            }
+        // merge defensivo: se o DB não tiver observação (ou vier NULL/vazio), mantém o state_store
+        for (const k of Object.keys(baseNotes)) {
+          const codeNow = assignments && assignments[k] ? String(assignments[k]) : "";
+          if (codeNow !== "OUTROS" && codeNow !== "FO*") continue;
+          const dbVal = (notes && notes[k] != null) ? String(notes[k]).trim() : "";
+          if (!dbVal) {
+            const v = String(baseNotes[k] || "").trim();
+            if (v) notes[k] = v;
           }
-          // mantém metadados do state_store quando o DB não tiver (ex.: quem lançou)
-          if (notes_meta && typeof notes_meta === "object") {
-            for (const k of Object.keys(baseMeta || {})) {
-              if (!notes_meta[k]) notes_meta[k] = baseMeta[k];
-            }
-          }
-        } catch (_e) {
-          // ignora
         }
-
+        // mantém metadados do state_store quando o DB não tiver
+        for (const k of Object.keys(baseMeta)) {
+          if (!notes_meta[k]) notes_meta[k] = baseMeta[k];
+        }
       }
     } catch (_e) {
       // mantém fallback
