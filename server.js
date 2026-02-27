@@ -390,6 +390,7 @@ function buildFreshState() {
 }
 
 async function safeQuery(sql, params = []) {
+<<<<<<< HEAD
   // evita "salvando..." infinito quando o MySQL está lento/instável
   const ACQUIRE_TIMEOUT_MS = Number(process.env.DB_ACQUIRE_TIMEOUT_MS || 5000);
   const QUERY_TIMEOUT_MS = Number(process.env.DB_QUERY_TIMEOUT_MS || 8000);
@@ -403,6 +404,26 @@ async function safeQuery(sql, params = []) {
     // mysql2 suporta timeout por query quando passado como objeto
     const queryObj = typeof sql === "string" ? { sql, timeout: QUERY_TIMEOUT_MS } : sql;
     const [rows] = await conn.query(queryObj, params);
+=======
+  const ACQUIRE_MS = Number(process.env.DB_ACQUIRE_TIMEOUT_MS || 8000);
+  const QUERY_MS = Number(process.env.DB_QUERY_TIMEOUT_MS || 8000);
+
+  const withTimeout = (p, ms, label) => {
+    return Promise.race([
+      p,
+      new Promise((_, rej) => setTimeout(() => rej(new Error(label)), ms))
+    ]);
+  };
+
+  const conn = await withTimeout(pool.getConnection(), ACQUIRE_MS, "db_acquire_timeout");
+  try {
+    // mysql2 aceita timeout por query quando enviado como objeto { sql, timeout }
+    const [rows] = await withTimeout(
+      conn.query({ sql, timeout: QUERY_MS }, params),
+      QUERY_MS + 500,
+      "db_query_timeout"
+    );
+>>>>>>> 97d5399 (fix: OUTROS/FO* não travar em salvando e exibir observação)
     return rows;
   } finally {
     try { conn.release(); } catch (_e) {}

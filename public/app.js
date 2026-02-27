@@ -57,6 +57,7 @@ function ddmmyyyy_hhmm(isoOrDate) {
     if (state.token) headers["Authorization"] = `Bearer ${state.token}`;
     headers["Content-Type"] = "application/json";
 
+<<<<<<< HEAD
     const timeoutMs = Number(opts.timeoutMs || 15000);
     const controller = new AbortController();
     const t = setTimeout(() => controller.abort(), timeoutMs);
@@ -68,6 +69,20 @@ function ddmmyyyy_hhmm(isoOrDate) {
     } catch (err) {
       const aborted = err && (err.name === "AbortError");
       return { ok: false, status: aborted ? 408 : 0, data: { error: aborted ? "tempo esgotado" : "falha de rede", details: String(err && err.message || err) } };
+=======
+    // evita travar eternamente em "salvando..." caso o backend/MySQL congele
+    const timeoutMs = Number(opts.timeoutMs || 15000);
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), timeoutMs);
+
+    try {
+      const res = await fetch(path, { ...opts, headers, signal: ctrl.signal });
+      const data = await res.json().catch(() => ({}));
+      return { ok: res.ok, status: res.status, data };
+    } catch (e) {
+      const msg = (e && e.name === "AbortError") ? "tempo esgotado" : (e && e.message ? e.message : "falha de rede");
+      return { ok: false, status: 0, data: { error: msg } };
+>>>>>>> 97d5399 (fix: OUTROS/FO* não travar em salvando e exibir observação)
     } finally {
       clearTimeout(t);
     }
@@ -547,14 +562,15 @@ async function loadChangeLogs() {
         updates.push({ canonical_name, date, code, observacao });
       }
 
-      const r = await api("/api/assignments", { method: "PUT", body: JSON.stringify({ updates }) });
+      const r = await api("/api/assignments", { method: "PUT", body: JSON.stringify({ updates }), timeoutMs: 15000 });
       if (!r.ok) {
         $("saveMsg").textContent = (r.data && (r.data.error || r.data.details)) ? (r.data.error || r.data.details) : "erro ao salvar";
         return;
       }
 
-      await loadState();
+      // marca salvo antes de recarregar o estado (se o /api/state demorar, o usuário não fica preso)
       $("saveMsg").textContent = "salvo.";
+      await loadState();
     } finally {
       state.saving = false;
       $("btnSave").disabled = false;
