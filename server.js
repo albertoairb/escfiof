@@ -113,7 +113,16 @@ app.use(express.static(path.join(__dirname, "public"), {
 // DB POOL
 // ===============================
 const pool = DB_URL
-  ? mysql.createPool(DB_URL)
+  ? mysql.createPool({
+      uri: DB_URL,
+      waitForConnections: true,
+      connectionLimit: 10,
+      queueLimit: 0,
+      timezone: "Z",
+      connectTimeout: Number(process.env.DB_CONNECT_TIMEOUT_MS || 10000),
+      enableKeepAlive: true,
+      keepAliveInitialDelay: 0,
+    })
   : mysql.createPool({
       host: DB_HOST,
       port: DB_PORT,
@@ -124,6 +133,9 @@ const pool = DB_URL
       connectionLimit: 10,
       queueLimit: 0,
       timezone: "Z",
+      connectTimeout: Number(process.env.DB_CONNECT_TIMEOUT_MS || 10000),
+      enableKeepAlive: true,
+      keepAliveInitialDelay: 0,
     });
 
 // ===============================
@@ -388,13 +400,29 @@ function buildFreshState() {
   };
 }
 
-async function safeQuery(sql, params = []) {
-  const conn = await pool.getConnection();
+async function safeQuery(sql, params = [], opts = {}) {
+  const timeoutMs = Number(opts.timeoutMs || process.env.DB_QUERY_TIMEOUT_MS || 8000);
+
+  // timeout também para pegar conexão do pool
+  let conn;
+  const getConn = pool.getConnection();
+  const connTimer = new Promise((_, reject) =>
+    setTimeout(() => reject(new Error(`db_connection_timeout_${timeoutMs}ms`)), timeoutMs)
+  );
+
   try {
-    const [rows] = await conn.query(sql, params);
+    conn = await Promise.race([getConn, connTimer]);
+
+    // mysql2 suporta timeout por query via objeto { sql, timeout }
+    const queryPromise = conn.query({ sql, timeout: timeoutMs }, params);
+    const queryTimer = new Promise((_, reject) =>
+      setTimeout(() => reject(new Error(`db_query_timeout_${timeoutMs}ms`)), timeoutMs + 200)
+    );
+
+    const [rows] = await Promise.race([queryPromise, queryTimer]);
     return rows;
   } finally {
-    conn.release();
+    try { if (conn) conn.release(); } catch (_e) {}
   }
 }
 
@@ -1064,10 +1092,16 @@ try {
     }
 
     st.updated_at = new Date().toISOString();
-    await safeQuery(
-      "INSERT INTO state_store (id, payload) VALUES (1, ?) ON DUPLICATE KEY UPDATE payload=VALUES(payload), updated_at=CURRENT_TIMESTAMP",
-      [JSON.stringify(st)]
-    );
+    try {
+      await safeQuery(
+        "INSERT INTO state_store (id, payload) VALUES (1, ?) ON DUPLICATE KEY UPDATE payload=VALUES(payload), updated_at=CURRENT_TIMESTAMP",
+        [JSON.stringify(st)],
+        { timeoutMs: Number(process.env.DB_QUERY_TIMEOUT_MS || 8000) }
+      );
+    } catch (e) {
+      // não deixa a requisição travar eternamente; retorna erro claro
+      return res.status(503).json({ error: "banco indisponível para salvar", details: e.message });
+    }
 
     return res.json({ ok: true, applied });
   } catch (err) {
@@ -1114,6 +1148,10 @@ app.get("/api/pdf", pdfAuth, async (req, res) => {
     const dates = st.dates || [];
 
     // prefere dados do MySQL (escala_lancamentos); fallback para state_store
+    const baseAssignments = st.assignments || {};
+    const baseNotes = st.notes || {};
+    const baseMeta = st.notes_meta || {};
+
     let assignments = st.assignments || {};
     let notes = {};
     let notes_meta = {};
