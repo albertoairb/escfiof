@@ -326,16 +326,23 @@ async function ensureSchema() {
       INDEX idx_oficial (oficial)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;`);
 
-    // migração defensiva: alguns bancos já possuem a coluna 'observacao'
-    const [hasObs] = await conn.query(
-      `SELECT COUNT(*) AS c
-         FROM information_schema.COLUMNS
-        WHERE table_schema = DATABASE()
-          AND table_name = 'escala_lancamentos'
-          AND column_name = 'observacao'`
-    );
-    if (!hasObs[0] || Number(hasObs[0].c) === 0) {
-      await conn.query("ALTER TABLE escala_lancamentos ADD COLUMN observacao TEXT NULL");
+    // migração defensiva: alguns bancos antigos podem não ter a coluna 'observacao'
+    // (no MySQL, não existe ADD COLUMN IF NOT EXISTS em todas as versões; então tratamos duplicidade.)
+    try {
+      const [hasObsRows] = await conn.query(
+        `SELECT COUNT(*) AS c
+           FROM information_schema.COLUMNS
+          WHERE table_schema = DATABASE()
+            AND table_name = 'escala_lancamentos'
+            AND column_name = 'observacao'`
+      );
+      const c = hasObsRows && hasObsRows[0] ? Number(hasObsRows[0].c) : 0;
+      if (!c) {
+        await conn.query("ALTER TABLE escala_lancamentos ADD COLUMN observacao TEXT NULL");
+      }
+    } catch (e) {
+      // se der ER_DUP_FIELDNAME por corrida de inicialização, ignorar
+      if (!String((e && e.code) || "").includes("ER_DUP_FIELDNAME")) throw e;
     }
 
 // migração defensiva: colunas de auditoria
@@ -540,6 +547,16 @@ async function getStateAutoReset() {
   const needReset = !st || !st.period || st.period.start !== currentWeek.start || st.period.end !== currentWeek.end;
 
   if (needReset) {
+    // se existia uma semana anterior registrada, significa virada de semana → limpar lançamentos (domingo fecha e apaga tudo)
+    // não remove usuários nem logs, apenas a tabela de registros da escala.
+    try {
+      if (st && st.period && (st.period.start || st.period.end)) {
+        await safeQuery("DELETE FROM escala_lancamentos");
+      }
+    } catch (_e) {
+      // ignora se a tabela não existir em algum ambiente
+    }
+
     st = buildFreshState();
     await safeQuery(
       "INSERT INTO state_store (id, payload) VALUES (1, ?) ON DUPLICATE KEY UPDATE payload=VALUES(payload), updated_at=CURRENT_TIMESTAMP",
@@ -735,6 +752,38 @@ app.get("/api/health", async (_req, res) => {
   } catch (err) {
     return res.status(500).json({ ok: false, error: err && err.message ? err.message : "falha no health" });
   }
+});
+
+// STATUS PÚBLICO (sem token) – para teste externo e monitoramento no Railway
+app.get("/api/status", async (_req, res) => {
+  try {
+    // não falha se o DB estiver indisponível: retorna o básico
+    try {
+      const conn = await pool.getConnection();
+      await conn.ping();
+      conn.release();
+    } catch (_e) {
+      // ignora
+    }
+
+    const week = getWeekRangeISO();
+    return res.json({
+      ok: true,
+      tz: process.env.TZ,
+      week,
+      locked: isClosedNow(),
+      close_friday_hour: CLOSE_FRIDAY_HOUR,
+      system_name: SYSTEM_NAME,
+    });
+  } catch (err) {
+    return res.status(500).json({ ok: false, error: err && err.message ? err.message : "falha no status" });
+  }
+});
+
+// WEEK PÚBLICO (sem token) – ajuda o frontend e facilita debug
+app.get("/api/week", (_req, res) => {
+  const week = getWeekRangeISO();
+  return res.json({ ok: true, week, dates: buildDatesForWeek(week.start) });
 });
 
 // login: nome + senha
