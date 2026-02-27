@@ -25,8 +25,6 @@
     curCode: null,
     selectEl: null,
     cellEl: null,
-    noteDiv: null,
-    prevText: "",
   };
 
   function ddmmyyyy(iso) {
@@ -321,19 +319,12 @@ async function loadChangeLogs() {
         const noteText = (state.notes && state.notes[key]) ? String(state.notes[key]) : "";
         sel.title = noteText || "";
 
-        // visualização de descrição (somente OUTROS / FO*)
-        const noteDiv = document.createElement("div");
-        noteDiv.className = "cellNote";
-        noteDiv.textContent = ((cur === "OUTROS" || cur === "FO*") && noteText) ? noteText : "";
-
         sel.addEventListener("change", () => {
           const v = sel.value;
 
           if (v === cur) {
             state.pending.delete(key);
             td.classList.remove("changed");
-            // restaura descrição visível
-            noteDiv.textContent = ((cur === "OUTROS" || cur === "FO*") && noteText) ? noteText : "";
             $("saveMsg").textContent = `${state.pending.size} alteração(ões) pendente(s).`;
             return;
           }
@@ -351,8 +342,6 @@ async function loadChangeLogs() {
             descModal.curCode = cur;
             descModal.selectEl = sel;
             descModal.cellEl = td;
-            descModal.noteDiv = noteDiv;
-            descModal.prevText = prev || "";
 
             $("descModalTitle").textContent = (v === "OUTROS") ? "OUTROS" : "FO*";
             $("descModalHint").textContent = "digite a descrição (aparecerá integralmente no PDF).";
@@ -364,15 +353,11 @@ async function loadChangeLogs() {
           }
 
           state.pending.set(key, { code: v, observacao: null });
-          // limpa descrição visível ao sair de OUTROS/FO*
-          noteDiv.textContent = "";
-          if (sel) sel.title = "";
           td.classList.add("changed");
           $("saveMsg").textContent = `${state.pending.size} alteração(ões) pendente(s).`;
         });
 
         td.appendChild(sel);
-        td.appendChild(noteDiv);
         tr.appendChild(td);
       }
 
@@ -447,9 +432,6 @@ async function loadChangeLogs() {
       if (sel) sel.value = cur;
       state.pending.delete(key);
       if (td) td.classList.remove("changed");
-      // restaura descrição visível e tooltip
-      if (descModal.noteDiv) descModal.noteDiv.textContent = descModal.prevText || "";
-      if (sel) sel.title = descModal.prevText || "";
       $("saveMsg").textContent = `${state.pending.size} alteração(ões) pendente(s).`;
     }
 
@@ -459,8 +441,6 @@ async function loadChangeLogs() {
     descModal.curCode = null;
     descModal.selectEl = null;
     descModal.cellEl = null;
-    descModal.noteDiv = null;
-    descModal.prevText = "";
   }
 
   function saveDescModal() {
@@ -481,8 +461,6 @@ async function loadChangeLogs() {
 
     // tooltip imediato
     if (descModal.selectEl) descModal.selectEl.title = txt;
-    // exibição imediata na célula
-    if (descModal.noteDiv) descModal.noteDiv.textContent = txt;
 
     closeDescModal(false);
   }
@@ -537,27 +515,41 @@ async function loadChangeLogs() {
   }
 
   async function save() {
+    if (state.saving) return;
+
+    // garante que mudanças recentes (ex.: fechar select) já entraram em pending
+    await new Promise((resolve) => requestAnimationFrame(resolve));
+
     if (!state.pending.size) { $("saveMsg").textContent = "nenhuma alteração pendente."; return; }
 
-    const updates = [];
-    for (const [key, item] of state.pending.entries()) {
-      const [canonical_name, date] = key.split("|");
-      const code = (item && typeof item === "object") ? (item.code || "") : String(item || "");
-      const observacao = (item && typeof item === "object") ? item.observacao : null;
-      updates.push({ canonical_name, date, code, observacao });
-    }
+    state.saving = true;
+    $("btnSave").disabled = true;
+    $("saveMsg").textContent = "salvando...";
 
-    const r = await api("/api/assignments", { method: "PUT", body: JSON.stringify({ updates }) });
-    if (!r.ok) {
-      $("saveMsg").textContent = (r.data && (r.data.error || r.data.details)) ? (r.data.error || r.data.details) : "erro ao salvar";
-      return;
-    }
+    try {
+      const updates = [];
+      for (const [key, item] of state.pending.entries()) {
+        const [canonical_name, date] = key.split("|");
+        const code = (item && typeof item === "object") ? (item.code || "") : String(item || "");
+        const observacao = (item && typeof item === "object") ? item.observacao : null;
+        updates.push({ canonical_name, date, code, observacao });
+      }
 
-    await loadState();
-    $("saveMsg").textContent = "salvo.";
+      const r = await api("/api/assignments", { method: "PUT", body: JSON.stringify({ updates }) });
+      if (!r.ok) {
+        $("saveMsg").textContent = (r.data && (r.data.error || r.data.details)) ? (r.data.error || r.data.details) : "erro ao salvar";
+        return;
+      }
+
+      await loadState();
+      $("saveMsg").textContent = "salvo.";
+    } finally {
+      state.saving = false;
+      $("btnSave").disabled = false;
+    }
   }
 
-  function logout() {
+function logout() {
     state.token = null;
     state.me = null;
     state.meta = null;
@@ -613,7 +605,7 @@ async function loadChangeLogs() {
 
   $("btnLogin").addEventListener("click", doLogin);
   $("btnChange").addEventListener("click", changePassword);
-  $("btnSave").addEventListener("click", save);
+  $("btnSave").addEventListener("click", (e) => { e.preventDefault(); requestAnimationFrame(() => save()); });
   $("btnLogout").addEventListener("click", logout);
   $("btnPdf").addEventListener("click", openPdf);
 

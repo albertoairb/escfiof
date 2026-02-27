@@ -842,19 +842,43 @@ app.get("/api/state", authRequired(true), async (req, res) => {
 
     // se houver lançamentos no MySQL (escala_lancamentos), eles prevalecem
     let assignments = st.assignments || {};
-    let notes = st.notes || {};
+    let notes = {};
     let notes_meta = {};
     try {
       const rows = await fetchLancamentosForPeriod(st.period.start, st.period.end);
       const built = buildAssignmentsAndNotesFromLancamentos(rows, st.dates);
       if (Object.keys(built.assignments).length) {
         assignments = built.assignments;
-        notes = Object.assign({}, (st.notes || {}), (built.notes || {}));
+        notes = built.notes;
         notes_meta = built.notes_meta || {};
       }
     } catch (_e) {
       // se a tabela ainda não existir em algum ambiente, mantém state_store
     }
+
+    // merge de descrições: mantém state_store.notes quando o MySQL vier sem observação
+    try {
+      const baseNotes = (st.notes && typeof st.notes === "object") ? st.notes : {};
+      const baseMeta = (st.notes_meta && typeof st.notes_meta === "object") ? st.notes_meta : {};
+      // se não veio nada do DB, usa o state_store
+      if (!notes || Object.keys(notes).length === 0) {
+        notes = { ...baseNotes };
+      } else {
+        for (const k of Object.keys(baseNotes)) {
+          const v = String(baseNotes[k] || "").trim();
+          if (!v) continue;
+          const cur = (notes[k] == null) ? "" : String(notes[k]).trim();
+          if (!cur) notes[k] = v;
+        }
+      }
+      if (!notes_meta || Object.keys(notes_meta).length === 0) {
+        notes_meta = { ...baseMeta };
+      } else {
+        for (const k of Object.keys(baseMeta)) {
+          if (!notes_meta[k]) notes_meta[k] = baseMeta[k];
+        }
+      }
+    } catch (_e) {}
 
     const periodLabel = `período: ${fmtDDMMYYYY(st.period.start)} a ${fmtDDMMYYYY(st.period.end)}`;
 
@@ -1104,7 +1128,7 @@ app.get("/api/pdf", pdfAuth, async (req, res) => {
 
     // prefere dados do MySQL (escala_lancamentos); fallback para state_store
     let assignments = st.assignments || {};
-    let notes = st.notes || {};
+    let notes = {};
     let notes_meta = {};
     let usedDb = false;
     try {
@@ -1112,7 +1136,7 @@ app.get("/api/pdf", pdfAuth, async (req, res) => {
       const built = buildAssignmentsAndNotesFromLancamentos(rows, dates);
       if (Object.keys(built.assignments).length) {
         assignments = built.assignments;
-        notes = Object.assign({}, (st.notes || {}), (built.notes || {}));
+        notes = built.notes;
         notes_meta = built.notes_meta || {};
         usedDb = true;
       }
