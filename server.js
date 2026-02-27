@@ -27,6 +27,15 @@ const SYSTEM_NAME = (process.env.SYSTEM_NAME || "Escala Semanal de Oficiais do 4
 const AUTHOR = (process.env.AUTHOR || "Desenvolvido por Alberto Franzini Neto").trim();
 const COPYRIGHT_YEAR = (process.env.COPYRIGHT_YEAR || "2026").toString().trim();
 
+function defaultSignatures() {
+  return {
+    left_name: "ALBERTO FRANZINI NETO",
+    left_role: "CH P1/P5",
+    right_name: "EDUARDO MOSNA XAVIER",
+    right_role: "SUBCMT BTL",
+  };
+}
+
 
 // DB: Railway (URL) > Docker/local (DB_HOST...)
 const DB_URL = (process.env.DB_URL || process.env.MYSQL_URL || process.env.MYSQL_PUBLIC_URL || "").trim();
@@ -78,7 +87,7 @@ const ADMIN_NAMES = new Set([
 // Códigos válidos (tudo em MAIÚSCULO, conforme regra)
 // - FO*: permite descrição
 // - FOJ: sem descrição
-const CODES = ["EXP", "SR",  "FO*", "FOJ", "MA", "VE", "LP", "FÉRIAS", "CFP_DIA", "CFP_NOITE", "OUTROS"];
+const CODES = ["EXP", "SR", "MA", "VE", "FOJ", "FO*", "LP", "FÉRIAS", "CFP_DIA", "CFP_NOITE", "OUTROS"];
 
 // ===============================
 // APP
@@ -345,12 +354,14 @@ function buildFreshState() {
     meta: {
       system_name: SYSTEM_NAME,
       footer_mark: `© ${COPYRIGHT_YEAR} - ${AUTHOR}`,
+      signatures: defaultSignatures(),
     },
     period: { start: w.start, end: w.end },
     dates,
     codes: CODES.slice(),
     officers: OFFICERS.slice(),
     assignments: {},
+    notes: {},
     updated_at: new Date().toISOString(),
   };
 }
@@ -490,11 +501,13 @@ async function getStateAutoReset() {
   st.meta = st.meta || {};
   st.meta.system_name = SYSTEM_NAME;
   st.meta.footer_mark = `© ${COPYRIGHT_YEAR} - ${AUTHOR}`;
+  st.meta.signatures = st.meta.signatures && typeof st.meta.signatures === "object" ? st.meta.signatures : defaultSignatures();
   st.codes = CODES.slice();
   st.officers = OFFICERS.slice();
   st.period = { start: currentWeek.start, end: currentWeek.end };
   st.dates = buildDatesForWeek(currentWeek.start);
   st.assignments = st.assignments && typeof st.assignments === "object" ? st.assignments : {};
+  st.notes = st.notes && typeof st.notes === "object" ? st.notes : {};
   return { st, didReset: false };
 
 }
@@ -753,6 +766,7 @@ app.get("/api/state", authRequired(true), async (req, res) => {
         system_name: SYSTEM_NAME,
         footer_mark: `© ${COPYRIGHT_YEAR} - ${AUTHOR}`,
         period_label: periodLabel,
+        signatures: (st.meta && st.meta.signatures) ? st.meta.signatures : defaultSignatures(),
       },
       locked: isClosedNow(),
       holidays,
@@ -767,6 +781,44 @@ app.get("/api/state", authRequired(true), async (req, res) => {
   }
 });
 
+// assinaturas do PDF (somente admin)
+app.put("/api/signatures", authRequired(true), async (req, res) => {
+  try {
+    if (!req.user.is_admin) return res.status(403).json({ error: "não autorizado" });
+
+    const { st } = await getStateAutoReset();
+    const cur = (st.meta && st.meta.signatures) ? st.meta.signatures : defaultSignatures();
+
+    const left_name = String(req.body && req.body.left_name ? req.body.left_name : cur.left_name).trim();
+    const left_role = String(req.body && req.body.left_role ? req.body.left_role : cur.left_role).trim();
+    const right_name = String(req.body && req.body.right_name ? req.body.right_name : cur.right_name).trim();
+    const right_role = String(req.body && req.body.right_role ? req.body.right_role : cur.right_role).trim();
+
+    if (!left_name || !right_name) return res.status(400).json({ error: "nome das assinaturas é obrigatório" });
+    if (left_name.length > 120 || right_name.length > 120) return res.status(400).json({ error: "nome muito longo" });
+    if (left_role.length > 120 || right_role.length > 120) return res.status(400).json({ error: "cargo/função muito longo" });
+
+    st.meta = st.meta || {};
+    st.meta.signatures = {
+      left_name: left_name.toUpperCase(),
+      left_role: left_role.toUpperCase(),
+      right_name: right_name.toUpperCase(),
+      right_role: right_role.toUpperCase(),
+    };
+
+    await safeQuery(
+      "INSERT INTO state_store (id, payload) VALUES (1, ?) ON DUPLICATE KEY UPDATE payload=VALUES(payload), updated_at=CURRENT_TIMESTAMP",
+      [JSON.stringify(st)]
+    );
+
+    await logAction(req.user.canonical_name, req.user.canonical_name, "update_signatures", "assinaturas do PDF atualizadas");
+
+    return res.json({ ok: true, signatures: st.meta.signatures });
+  } catch (err) {
+    return res.status(500).json({ error: "erro ao salvar assinaturas", details: err.message });
+  }
+});
+
 // salvar alterações (somente após troca de senha)
 app.put("/api/assignments", authRequired(false), async (req, res) => {
   try {
@@ -778,82 +830,87 @@ app.put("/api/assignments", authRequired(false), async (req, res) => {
     const locked = isClosedNow();
     const actor = req.user.canonical_name;
 
-    // regra de permissão
     if (locked && !req.user.is_admin) {
       return res.status(423).json({ error: "edição fechada (sexta 11h até domingo)" });
     }
 
+    const validDates = new Set(st.dates || []);
     const validCodes = new Set(CODES);
-    const validDates = new Set(st.dates);
-    const validOfficers = new Set(OFFICERS.map(o => o.canonical_name));
+    const officersByCanonical = new Set(OFFICERS.map(o => o.canonical_name));
 
     let applied = 0;
 
     for (const u of updates) {
-      const target = String(u.canonical_name || "").trim();
       const date = String(u.date || "").trim();
-      const code = String(u.code || "").trim();
-      const observacaoRaw = (u && Object.prototype.hasOwnProperty.call(u, "observacao")) ? u.observacao : null;
-      const observacao = observacaoRaw == null ? "" : String(observacaoRaw).trim();
+      if (!validDates.has(date)) continue;
 
-      if (!validOfficers.has(target)) return res.status(400).json({ error: "oficial inválido" });
-      if (!validDates.has(date)) return res.status(400).json({ error: "data inválida" });
+      let target = String(u.canonical_name || "").trim();
+      if (!officersByCanonical.has(target)) continue;
 
-      // antes do fechamento: só altera o próprio
-      if (!locked && !req.user.is_admin && target !== actor) {
-        return res.status(403).json({ error: "você só pode alterar o seu próprio registro até sexta 11h" });
+      // regra: durante a semana, não-admin só pode mexer na própria linha
+      if (!req.user.is_admin) {
+        target = actor;
       }
 
-      // depois do fechamento: só admin altera (já passou pelo check)
-      if (locked && req.user.is_admin !== true) {
-        return res.status(423).json({ error: "edição fechada" });
-      }
-
-      if (code && !validCodes.has(code)) return res.status(400).json({ error: "código inválido" });
+      let code = String(u.code || "").trim();
+      if (!code) code = ""; // limpar
+      if (code && !validCodes.has(code)) continue;
 
       const key = `${target}|${date}`;
-      const before = st.assignments && st.assignments[key] ? String(st.assignments[key]) : "";
 
-// se o código não mudou, ainda pode haver alteração de observação (OUTROS / FO*)
-const isNoteCode = (code === "OUTROS" || code === "FO*");
-const obsProvided = (observacaoRaw !== null); // veio do frontend (mesmo vazio)
-      const hasObs = !!(observacao && String(observacao).trim());
+      const beforeCode = (st.assignments && st.assignments[key]) ? String(st.assignments[key]) : "";
+      const beforeObs = (st.notes && st.notes[key]) ? String(st.notes[key]) : "";
 
-// se nada mudou (código igual e sem observação relevante), pode pular
-if (before === code && (!isNoteCode || !obsProvided)) continue;
+      const needObs = (code === "OUTROS" || code === "FO*");
+      const newObs = needObs ? String(u.observacao == null ? "" : u.observacao).trim() : "";
 
-      // salva (permite limpar com "")
+      // atualiza state_store (permite limpar)
       st.assignments = st.assignments || {};
-      if (!code) delete st.assignments[key];
-      else st.assignments[key] = code;
+      st.notes = st.notes || {};
 
-      // persistência no MySQL (para PDF e recarregamento)
-      // oficial gravado como canonical_name (garante chave única)
       if (!code) {
-        try {
-          await safeQuery("DELETE FROM escala_lancamentos WHERE data=? AND oficial=?", [date, target]);
-        } catch (_e) {
-          // ignora se a tabela ainda não existir em algum ambiente
-        }
+        delete st.assignments[key];
+        delete st.notes[key];
       } else {
-        const needObs = (code === "OUTROS" || code === "FO*");
-        const obsToSave = needObs ? (observacao || "") : null;
-        try {
-          await safeQuery(
-            "INSERT INTO escala_lancamentos (data, oficial, codigo, observacao) VALUES (?, ?, ?, ?) ON DUPLICATE KEY UPDATE codigo=VALUES(codigo), observacao=VALUES(observacao), updated_at=CURRENT_TIMESTAMP",
-            [date, target, code, obsToSave]
-          );
-        } catch (_e) {
-          // ignora se a tabela ainda não existir em algum ambiente
+        st.assignments[key] = code;
+        if (needObs) {
+          // grava/atualiza observação mesmo se o código não mudar
+          st.notes[key] = newObs;
+        } else {
+          delete st.notes[key];
         }
       }
 
-      await logAction(actor, target, "update_day", `${date}: ${before || "-"} -> ${code || "-"}`);
+      // persistência no MySQL
+      try {
+        if (!code) {
+          await safeQuery("DELETE FROM escala_lancamentos WHERE data=? AND oficial=?", [date, target]);
+        } else {
+          const obsToSave = needObs ? newObs : null;
+          await safeQuery(
+            "INSERT INTO escala_lancamentos (data, oficial, codigo, observacao) VALUES (?, ?, ?, ?) " +
+              "ON DUPLICATE KEY UPDATE codigo=VALUES(codigo), observacao=VALUES(observacao), updated_at=CURRENT_TIMESTAMP",
+            [date, target, code, obsToSave]
+          );
+        }
+      } catch (_e) {
+        // ignora se a tabela não existir em algum ambiente
+      }
+
+      // log
+      const changedCode = (beforeCode || "") !== (code || "");
+      const changedObs = needObs && (beforeObs || "") !== (newObs || "");
+      if (changedCode || changedObs) {
+        const logBefore = beforeCode || "-";
+        const logAfter = code || "-";
+        const logExtra = needObs ? ` | obs: ${(beforeObs || "-")} -> ${(newObs || "-")}` : "";
+        await logAction(actor, target, "update_day", `${date}: ${logBefore} -> ${logAfter}${logExtra}`);
+      }
+
       applied++;
     }
 
     st.updated_at = new Date().toISOString();
-
     await safeQuery(
       "INSERT INTO state_store (id, payload) VALUES (1, ?) ON DUPLICATE KEY UPDATE payload=VALUES(payload), updated_at=CURRENT_TIMESTAMP",
       [JSON.stringify(st)]
@@ -864,6 +921,7 @@ if (before === code && (!isNoteCode || !obsProvided)) continue;
     return res.status(500).json({ error: "erro ao salvar", details: err.message });
   }
 });
+
 
 // PDF: todos autenticados podem ler
 
@@ -1003,12 +1061,14 @@ app.get("/api/pdf", pdfAuth, async (req, res) => {
     doc.moveTo(xLeft, yLine).lineTo(xLeft + lineW, yLine).stroke();
     doc.moveTo(xRight, yLine).lineTo(xRight + lineW, yLine).stroke();
 
-    // nomes e cargos
-    doc.fontSize(10).text("ALBERTO FRANZINI NETO", xLeft, yLine + 6, { width: lineW, align: "center" });
-    doc.fontSize(9).text("CH P1/P5", xLeft, yLine + 22, { width: lineW, align: "center" });
+    // nomes e cargos (editáveis em /assinaturas)
+    const sig = (st.meta && st.meta.signatures) ? st.meta.signatures : defaultSignatures();
 
-    doc.fontSize(10).text("EDUARDO MOSNA XAVIER", xRight, yLine + 6, { width: lineW, align: "center" });
-    doc.fontSize(9).text("SUBCMT BTL", xRight, yLine + 22, { width: lineW, align: "center" });
+    doc.fontSize(10).text(String(sig.left_name || "").toUpperCase(), xLeft, yLine + 6, { width: lineW, align: "center" });
+    doc.fontSize(9).text(String(sig.left_role || "").toUpperCase(), xLeft, yLine + 22, { width: lineW, align: "center" });
+
+    doc.fontSize(10).text(String(sig.right_name || "").toUpperCase(), xRight, yLine + 6, { width: lineW, align: "center" });
+    doc.fontSize(9).text(String(sig.right_role || "").toUpperCase(), xRight, yLine + 22, { width: lineW, align: "center" });
 
     // rodapé
     doc.fontSize(9).text(`© ${COPYRIGHT_YEAR} - ${AUTHOR}`, 0, doc.page.height - 40, { align: "center" });

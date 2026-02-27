@@ -60,10 +60,53 @@
         <table id="table"></table>
       </div>
 
+      <div class="legend" id="legend"></div>
+
       <div class="row row--actions">
         <button id="btnSave" class="btn btn--primary">salvar</button>
         <div class="muted" id="saveMsg"></div>
       </div>
+
+
+<details id="descBox" class="descbox" style="display:none;">
+  <summary>descrições (OUTROS / FO*)</summary>
+  <div class="muted">as descrições digitadas em OUTROS e FO* aparecem aqui e também no PDF.</div>
+  <div id="descNotes" class="descnotes"></div>
+</details>
+
+
+<details id="sigBox" class="descbox" style="display:none;">
+  <summary>assinaturas do PDF</summary>
+  <div class="muted">somente responsáveis autorizados podem editar. os nomes e cargos aparecem no rodapé do PDF.</div>
+  <div class="siggrid">
+    <div class="sigcard">
+      <div class="sigtitle">assinatura 1</div>
+      <label>
+        nome
+        <input id="sigLeftName" placeholder="ex.: ALBERTO FRANZINI NETO" />
+      </label>
+      <label>
+        cargo/função
+        <input id="sigLeftRole" placeholder="ex.: CH P1/P5" />
+      </label>
+    </div>
+    <div class="sigcard">
+      <div class="sigtitle">assinatura 2</div>
+      <label>
+        nome
+        <input id="sigRightName" placeholder="ex.: EDUARDO MOSNA XAVIER" />
+      </label>
+      <label>
+        cargo/função
+        <input id="sigRightRole" placeholder="ex.: SUBCMT BTL" />
+      </label>
+    </div>
+  </div>
+  <div class="row row--actions">
+    <button id="btnSigSave" class="btn">salvar assinaturas</button>
+    <div class="muted" id="sigMsg"></div>
+  </div>
+</details>
 
       <hr />
 
@@ -76,11 +119,11 @@
   </main>
 
 
-  <!-- modal: OUTROS -->
+  <!-- modal: descrição (OUTROS / FO*) -->
   <div id="outrosModal" class="modal" style="display:none;">
     <div class="modal__card">
-      <h3>OUTROS</h3>
-      <div class="muted">digite a descrição (aparecerá integralmente no PDF).</div>
+      <h3 id="descModalTitle">descrição</h3>
+      <div class="muted" id="descModalHint">digite a descrição (aparecerá integralmente no PDF).</div>
       <textarea id="outrosText" rows="6" placeholder="descreva aqui..."></textarea>
       <div class="muted" id="outrosMsg"></div>
       <div class="modal__actions">

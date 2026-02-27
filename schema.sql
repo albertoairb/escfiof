@@ -1,5 +1,5 @@
 -- Escala Semanal de Oficiais do 4º BPM/M
--- Banco: MySQL 8
+-- MySQL 8 / utf8mb4
 
 CREATE TABLE IF NOT EXISTS state_store (
   id INT PRIMARY KEY,
@@ -28,13 +28,16 @@ CREATE TABLE IF NOT EXISTS action_logs (
   INDEX idx_target (target_name)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
-
--- lançamentos manuais (opcional)
+-- lançamentos por dia (persistência da semana)
 CREATE TABLE IF NOT EXISTS escala_lancamentos (
-  id INT AUTO_INCREMENT PRIMARY KEY,
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
   data DATE NOT NULL,
   oficial VARCHAR(255) NOT NULL,
-  codigo VARCHAR(40) NOT NULL,
+  codigo VARCHAR(32) NOT NULL,
   observacao TEXT NULL,
-  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  UNIQUE KEY uniq_data_oficial (data, oficial),
+  INDEX idx_data (data),
+  INDEX idx_oficial (oficial)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

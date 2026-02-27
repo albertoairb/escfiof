@@ -16,6 +16,16 @@
     pending: new Map() // key -> { code, observacao }
   };
 
+  // modal de descrição (OUTROS / FO*)
+  const descModal = {
+    open: false,
+    key: null,
+    code: null,
+    curCode: null,
+    selectEl: null,
+    cellEl: null,
+  };
+
   function ddmmyyyy(iso) {
     const [y,m,d] = iso.split("-");
     return `${d}/${m}/${y}`;
@@ -56,6 +66,34 @@
     $("footerMark").textContent = (state.meta && state.meta.footer_mark) ? state.meta.footer_mark : "";
   }
 
+  function setLegend() {
+    const el = $("legend");
+    if (!el) return;
+    el.innerHTML = "";
+
+    const help = {
+      "EXP": "expediente",
+      "SR": "supervisor regional",
+      "MA": "manhã",
+      "VE": "vespertino",
+      "FOJ": "folga obrigatória (sem descrição)",
+      "FO*": "folga obrigatória (com descrição)",
+      "LP": "licença-prêmio",
+      "FÉRIAS": "férias",
+      "CFP_DIA": "CFP (dia)",
+      "CFP_NOITE": "CFP (noite)",
+      "OUTROS": "com descrição"
+    };
+
+    for (const c of (state.codes || [])) {
+      if (!c) continue;
+      const div = document.createElement("div");
+      div.className = "pill";
+      div.textContent = help[c] ? `${c} – ${help[c]}` : c;
+      el.appendChild(div);
+    }
+  }
+
   function setLockMsg() {
     if (state.locked) {
       $("lockMsg").textContent = "edição fechada (sexta 11h até domingo). após isso, somente responsáveis autorizados.";
@@ -86,6 +124,54 @@
       box.appendChild(div);
     }
   }
+function buildDescNotes() {
+  const box = $("descNotes");
+  const wrap = $("descBox");
+  if (!box || !wrap) return;
+
+  box.innerHTML = "";
+
+  const byCanonical = new Map();
+  for (const o of (state.officers || [])) byCanonical.set(o.canonical_name, o);
+
+  const entries = [];
+  for (const k of Object.keys(state.notes || {})) {
+    const [canonical, iso] = k.split("|");
+    const o = byCanonical.get(canonical);
+    if (!o) continue;
+    const code = state.assignments && state.assignments[k] ? String(state.assignments[k]) : "";
+    if (code !== "OUTROS" && code !== "FO*") continue;
+    const text = String(state.notes[k] || "").trim();
+    if (!text) continue;
+    entries.push({ iso, o, code, text });
+  }
+
+  entries.sort((a,b) => (a.iso < b.iso ? -1 : a.iso > b.iso ? 1 : a.o.name.localeCompare(b.o.name)));
+
+  if (!entries.length) {
+    wrap.style.display = "none";
+    return;
+  }
+
+  wrap.style.display = "block";
+
+  for (const it of entries) {
+    const div = document.createElement("div");
+    div.className = "descitem";
+
+    const title = document.createElement("div");
+    title.className = "descitem__title";
+    title.textContent = `${ddmmyyyy(it.iso)} - ${it.o.rank} ${it.o.name} (${it.code})`;
+    div.appendChild(title);
+
+    const body = document.createElement("div");
+    body.textContent = it.text;
+    div.appendChild(body);
+
+    box.appendChild(div);
+  }
+}
+
 
   function canEditOfficer(officerCanonical) {
     if (!state.me) return false;
@@ -175,19 +261,20 @@
               ? (state.pending.get(key).observacao || "")
               : (state.notes[key] || "");
 
-            const txt = window.prompt("Digite a descrição (será exibida integralmente no PDF):", prev);
-            if (txt === null) {
-              // cancelado
-              sel.value = cur;
-              state.pending.delete(key);
-              td.classList.remove("changed");
-              $("saveMsg").textContent = `${state.pending.size} alteração(ões) pendente(s).`;
-              return;
-            }
+            // abre modal
+            descModal.open = true;
+            descModal.key = key;
+            descModal.code = v;
+            descModal.curCode = cur;
+            descModal.selectEl = sel;
+            descModal.cellEl = td;
 
-            state.pending.set(key, { code: v, observacao: txt });
-            td.classList.add("changed");
-            $("saveMsg").textContent = `${state.pending.size} alteração(ões) pendente(s).`;
+            $("descModalTitle").textContent = (v === "OUTROS") ? "OUTROS" : "FO*";
+            $("descModalHint").textContent = "digite a descrição (aparecerá integralmente no PDF).";
+            $("outrosText").value = prev || "";
+            $("outrosMsg").textContent = "";
+            $("outrosModal").style.display = "flex";
+            setTimeout(() => $("outrosText").focus(), 0);
             return;
           }
 
@@ -227,9 +314,74 @@
     setHolidayBar(r.data.holidays || []);
     setLockMsg();
     setUserMsg();
+    setLegend();
     buildTable();
     buildOpsNotes();
+    buildDescNotes();
+
+    // assinaturas
+    const sig = (state.meta && state.meta.signatures) ? state.meta.signatures : null;
+    if (state.me && state.me.is_admin && sig) {
+      $("sigLeftName").value = sig.left_name || "";
+      $("sigLeftRole").value = sig.left_role || "";
+      $("sigRightName").value = sig.right_name || "";
+      $("sigRightRole").value = sig.right_role || "";
+      $("sigMsg").textContent = "";
+      show("sigBox", true);
+    } else {
+      show("sigBox", false);
+    }
+
     $("saveMsg").textContent = "";
+  }
+
+  function closeDescModal(cancel = false) {
+    $("outrosModal").style.display = "none";
+    $("outrosMsg").textContent = "";
+
+    if (!descModal.open) return;
+
+    const key = descModal.key;
+    const sel = descModal.selectEl;
+    const td = descModal.cellEl;
+    const cur = descModal.curCode || "";
+
+    if (cancel) {
+      // volta para o que estava no banco
+      if (sel) sel.value = cur;
+      state.pending.delete(key);
+      if (td) td.classList.remove("changed");
+      $("saveMsg").textContent = `${state.pending.size} alteração(ões) pendente(s).`;
+    }
+
+    descModal.open = false;
+    descModal.key = null;
+    descModal.code = null;
+    descModal.curCode = null;
+    descModal.selectEl = null;
+    descModal.cellEl = null;
+  }
+
+  function saveDescModal() {
+    if (!descModal.open) return;
+    const key = descModal.key;
+    const v = descModal.code;
+    const td = descModal.cellEl;
+
+    const txt = String($("outrosText").value || "").trim();
+    if (!txt) {
+      $("outrosMsg").textContent = "a descrição não pode ficar em branco.";
+      return;
+    }
+
+    state.pending.set(key, { code: v, observacao: txt });
+    if (td) td.classList.add("changed");
+    $("saveMsg").textContent = `${state.pending.size} alteração(ões) pendente(s).`;
+
+    // tooltip imediato
+    if (descModal.selectEl) descModal.selectEl.title = txt;
+
+    closeDescModal(false);
   }
 
   async function doLogin() {
@@ -332,11 +484,46 @@
     window.open(url, "_blank", "noopener,noreferrer");
   }
 
+  async function saveSignatures() {
+    $("sigMsg").textContent = "";
+    if (!state.me || !state.me.is_admin) {
+      $("sigMsg").textContent = "sem permissão.";
+      return;
+    }
+
+    const payload = {
+      left_name: $("sigLeftName").value,
+      left_role: $("sigLeftRole").value,
+      right_name: $("sigRightName").value,
+      right_role: $("sigRightRole").value,
+    };
+
+    const r = await api("/api/signatures", { method: "PUT", body: JSON.stringify(payload) });
+    if (!r.ok) {
+      $("sigMsg").textContent = (r.data && (r.data.error || r.data.details)) ? (r.data.error || r.data.details) : "erro ao salvar assinaturas";
+      return;
+    }
+
+    $("sigMsg").textContent = "assinaturas salvas.";
+    await loadState();
+  }
+
   $("btnLogin").addEventListener("click", doLogin);
   $("btnChange").addEventListener("click", changePassword);
   $("btnSave").addEventListener("click", save);
   $("btnLogout").addEventListener("click", logout);
   $("btnPdf").addEventListener("click", openPdf);
+
+  // modal descrição
+  $("outrosCancel").addEventListener("click", () => closeDescModal(true));
+  $("outrosSave").addEventListener("click", saveDescModal);
+  $("outrosModal").addEventListener("click", (e) => {
+    if (e.target && e.target.id === "outrosModal") closeDescModal(true);
+  });
+
+  // assinaturas
+  const btnSig = $("btnSigSave");
+  if (btnSig) btnSig.addEventListener("click", saveSignatures);
 
   // start: mostra login
   show("loginBox", true);
