@@ -529,8 +529,7 @@ function buildAssignmentsAndNotesFromLancamentos(rows, validDates) {
     }
   }
 
-  return { assignments, notes,
-      notes_meta, notes_meta };
+  return { assignments, notes, notes_meta };
 }
 
 async function getStateAutoReset() {
@@ -964,8 +963,8 @@ app.put("/api/assignments", authRequired(false), async (req, res) => {
         } else {
           const obsToSave = needObs ? newObs : null;
           await safeQuery(
-            "INSERT INTO escala_lancamentos (data, oficial, codigo, observacao) VALUES (?, ?, ?, ?) " +
-              "ON DUPLICATE KEY UPDATE codigo=VALUES(codigo), observacao=VALUES(observacao), updated_at=CURRENT_TIMESTAMP",
+            "INSERT INTO escala_lancamentos (data, oficial, codigo, observacao, created_by, updated_by) VALUES (?, ?, ?, ?, ?, ?) " +
+              "ON DUPLICATE KEY UPDATE codigo=VALUES(codigo), observacao=VALUES(observacao), updated_by=VALUES(updated_by), updated_at=CURRENT_TIMESTAMP",
             [date, target, code, obsToSave, actor, actor]
           );
         }
