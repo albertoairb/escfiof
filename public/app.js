@@ -56,9 +56,21 @@ function ddmmyyyy_hhmm(isoOrDate) {
     const headers = opts.headers || {};
     if (state.token) headers["Authorization"] = `Bearer ${state.token}`;
     headers["Content-Type"] = "application/json";
-    const res = await fetch(path, { ...opts, headers });
-    const data = await res.json().catch(() => ({}));
-    return { ok: res.ok, status: res.status, data };
+
+    const timeoutMs = Number(opts.timeoutMs || 15000);
+    const controller = new AbortController();
+    const t = setTimeout(() => controller.abort(), timeoutMs);
+
+    try {
+      const res = await fetch(path, { ...opts, headers, signal: controller.signal });
+      const data = await res.json().catch(() => ({}));
+      return { ok: res.ok, status: res.status, data };
+    } catch (err) {
+      const aborted = err && (err.name === "AbortError");
+      return { ok: false, status: aborted ? 408 : 0, data: { error: aborted ? "tempo esgotado" : "falha de rede", details: String(err && err.message || err) } };
+    } finally {
+      clearTimeout(t);
+    }
   }
 
   function show(el, yes) {
