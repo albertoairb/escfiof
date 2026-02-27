@@ -400,6 +400,8 @@ function buildAssignmentsAndNotesFromLancamentos(rows, validDates) {
   const notes = {};
 
   const valid = new Set(validDates || []);
+  const validCodes = new Set(CODES);
+
   for (const r of rows || []) {
     const iso = isoFromDbDate(r.data);
     if (!valid.has(iso)) continue;
@@ -407,10 +409,34 @@ function buildAssignmentsAndNotesFromLancamentos(rows, validDates) {
     const canonical = resolveCanonicalFromDbOfficer(r.oficial);
     if (!canonical) continue;
 
+    // normaliza código vindo do DB (legado)
+    let code = String(r.codigo || "").trim();
+    // remove espaços estranhos
+    code = code.replace(/\s+/g, "");
+    // aceita variações de FO simples e converte para FOJ (FO simples não existe no sistema)
+    if (/^FO\.?$/i.test(code)) code = "FOJ";
+    if (/^FOJ$/i.test(code)) code = "FOJ";
+    // mantém exatamente FO* (asterisco) e demais
+    if (/^FO\*$/i.test(code)) code = "FO*";
+    // mantém CFP_DIA/CFP_NOITE (case)
+    if (/^CFP_DIA$/i.test(code)) code = "CFP_DIA";
+    if (/^CFP_NOITE$/i.test(code)) code = "CFP_NOITE";
+    // mantém FÉRIAS (aceita FERIAS)
+    if (/^FERIAS$/i.test(code)) code = "FÉRIAS";
+
+    if (!validCodes.has(code)) {
+      // ignora códigos desconhecidos/antigos
+      continue;
+    }
+
     const key = `${canonical}|${iso}`;
-    assignments[key] = String(r.codigo || "").trim();
-    const obs = (r.observacao == null) ? "" : String(r.observacao);
-    if (obs) notes[key] = obs;
+    assignments[key] = code;
+
+    // observação só faz sentido em OUTROS e FO*
+    const obs = (r.observacao == null) ? "" : String(r.observacao).trim();
+    if (obs && (code === "OUTROS" || code === "FO*")) {
+      notes[key] = obs;
+    }
   }
 
   return { assignments, notes };
@@ -454,6 +480,51 @@ function signToken(me) {
     JWT_SECRET,
     { expiresIn: "14d" }
   );
+}
+
+// token curto e específico para abrir PDF via URL (window.open não envia headers)
+function signPdfToken(me) {
+  return jwt.sign(
+    { canonical_name: me.canonical_name, is_admin: !!me.is_admin, scope: "pdf" },
+    JWT_SECRET,
+    { expiresIn: "2m" }
+  );
+}
+
+function pdfAuth(req, res, next) {
+  // 1) Bearer token normal
+  const auth = (req.headers["authorization"] || "").toString();
+  const m = auth.match(/^Bearer\s+(.+)$/i);
+  if (m) {
+    try {
+      const payload = jwt.verify(m[1], JWT_SECRET);
+      req.user = {
+        canonical_name: String(payload.canonical_name || "").trim(),
+        is_admin: !!payload.is_admin,
+        must_change: !!payload.must_change,
+      };
+      return next();
+    } catch (_e) {
+      // continua para tentar token via query
+    }
+  }
+
+  // 2) token via query (curto, só para PDF)
+  const q = (req.query && req.query.token ? String(req.query.token) : "").trim();
+  if (!q) return res.status(401).json({ error: "não autenticado" });
+
+  try {
+    const payload = jwt.verify(q, JWT_SECRET);
+    if (payload.scope !== "pdf") return res.status(401).json({ error: "token inválido" });
+    req.user = {
+      canonical_name: String(payload.canonical_name || "").trim(),
+      is_admin: !!payload.is_admin,
+      must_change: false,
+    };
+    return next();
+  } catch (e) {
+    return res.status(401).json({ error: "token inválido" });
+  }
 }
 
 function authRequired(allowMustChange = false) {
@@ -761,7 +832,22 @@ app.put("/api/assignments", authRequired(false), async (req, res) => {
 });
 
 // PDF: todos autenticados podem ler
-app.get("/api/pdf", authRequired(true), async (req, res) => {
+
+// gera link autenticado para abrir PDF em nova aba (sem depender de headers)
+app.post("/api/pdf_link", authRequired(true), async (req, res) => {
+  try {
+    const me = {
+      canonical_name: req.user.canonical_name,
+      is_admin: !!req.user.is_admin,
+    };
+    const t = signPdfToken(me);
+    return res.json({ ok: true, url: `/api/pdf?token=${encodeURIComponent(t)}` });
+  } catch (err) {
+    return res.status(500).json({ error: "erro ao gerar link do PDF", details: err.message });
+  }
+});
+
+app.get("/api/pdf", pdfAuth, async (req, res) => {
   const PDFDocument = requirePdfKitOr501(res);
   if (!PDFDocument) return;
 

@@ -315,26 +315,21 @@
   }
 
   async function openPdf() {
-    // abre em nova aba
-// Busca o PDF autenticado (envia x-access-key) e abre em nova aba
-if (!usuarioLogado || !usuarioLogado.access_key) {
-  alert("Você precisa estar logado para abrir o PDF.");
-  return;
-}
-const resp = await fetch(`${API}/api/pdf`, {
-  method: "GET",
-  headers: { "x-access-key": usuarioLogado.access_key }
-});
-if (!resp.ok) {
-  let msg = "Erro ao gerar PDF";
-  try { const j = await resp.json(); msg = j.error || msg; } catch (_) {}
-  throw new Error(msg);
-}
-const blob = await resp.blob();
-const url = URL.createObjectURL(blob);
-window.open(url, "_blank", "noopener,noreferrer");
-setTimeout(() => URL.revokeObjectURL(url), 60000);
+    // abre em nova aba com link autenticado (window.open não envia headers)
+    if (!state.token) {
+      alert("Você precisa estar logado para abrir o PDF.");
+      return;
+    }
 
+    const r = await api("/api/pdf_link", { method: "POST" });
+    if (!r.ok) {
+      const msg = (r.data && (r.data.error || r.data.details)) ? (r.data.error || r.data.details) : "Erro ao gerar link do PDF";
+      alert(msg);
+      return;
+    }
+
+    const url = r.data.url || "/api/pdf";
+    window.open(url, "_blank", "noopener,noreferrer");
   }
 
   $("btnLogin").addEventListener("click", doLogin);
