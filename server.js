@@ -368,9 +368,9 @@ async function safeQuery(sql, params = []) {
 function isoFromDbDate(v) {
   if (!v) return "";
   if (v instanceof Date) {
-    const y = v.getFullYear();
-    const m = String(v.getMonth() + 1).padStart(2, "0");
-    const d = String(v.getDate()).padStart(2, "0");
+    const y = v.getUTCFullYear();
+    const m = String(v.getUTCMonth() + 1).padStart(2, "0");
+    const d = String(v.getUTCDate()).padStart(2, "0");
     return `${y}-${m}-${d}`;
   }
 
@@ -814,7 +814,13 @@ app.put("/api/assignments", authRequired(false), async (req, res) => {
       const key = `${target}|${date}`;
       const before = st.assignments && st.assignments[key] ? String(st.assignments[key]) : "";
 
-      if (before === code) continue;
+// se o código não mudou, ainda pode haver alteração de observação (OUTROS / FO*)
+const isNoteCode = (code === "OUTROS" || code === "FO*");
+const obsProvided = (observacaoRaw !== null); // veio do frontend (mesmo vazio)
+      const hasObs = !!(observacao && String(observacao).trim());
+
+// se nada mudou (código igual e sem observação relevante), pode pular
+if (before === code && (!isNoteCode || !obsProvided)) continue;
 
       // salva (permite limpar com "")
       st.assignments = st.assignments || {};
@@ -979,9 +985,14 @@ app.get("/api/pdf", pdfAuth, async (req, res) => {
     }
 
     // assinaturas (sempre na última página)
-    if (doc.page.layout !== "portrait" || doc.y > doc.page.height - 220) {
-      doc.addPage({ margin: 36, size: "A4", layout: "portrait" });
-    }
+// tenta colocar na página atual; se não houver espaço, cria nova página mantendo o mesmo layout
+{
+  const layoutNow = doc.page.layout || "portrait";
+  const needNewPage = doc.y > doc.page.height - 140;
+  if (needNewPage) {
+    doc.addPage({ margin: 36, size: "A4", layout: layoutNow });
+  }
+}
 
     const xLeft = doc.page.margins.left;
     const xRight = doc.page.width / 2 + 20;
