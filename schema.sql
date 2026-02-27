@@ -35,9 +35,25 @@ CREATE TABLE IF NOT EXISTS escala_lancamentos (
   oficial VARCHAR(255) NOT NULL,
   codigo VARCHAR(32) NOT NULL,
   observacao TEXT NULL,
+  created_by VARCHAR(255) NULL,
+  updated_by VARCHAR(255) NULL,
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   UNIQUE KEY uniq_data_oficial (data, oficial),
   INDEX idx_data (data),
   INDEX idx_oficial (oficial)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS escala_change_log (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  actor_name VARCHAR(255) NOT NULL,
+  target_name VARCHAR(255) NOT NULL,
+  data DATE NOT NULL,
+  field_name VARCHAR(32) NOT NULL,
+  before_value TEXT NULL,
+  after_value TEXT NULL,
+  INDEX idx_at (at),
+  INDEX idx_target (target_name),
+  INDEX idx_data (data)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

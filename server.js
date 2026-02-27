@@ -317,6 +317,8 @@ async function ensureSchema() {
       oficial VARCHAR(255) NOT NULL,
       codigo VARCHAR(32) NOT NULL,
       observacao TEXT NULL,
+      created_by VARCHAR(255) NULL,
+      updated_by VARCHAR(255) NULL,
       created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
       updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
       UNIQUE KEY uniq_data_oficial (data, oficial),
@@ -335,6 +337,34 @@ async function ensureSchema() {
     if (!hasObs[0] || Number(hasObs[0].c) === 0) {
       await conn.query("ALTER TABLE escala_lancamentos ADD COLUMN observacao TEXT NULL");
     }
+
+// migração defensiva: colunas de auditoria
+try {
+  const [cols] = await conn.query(
+    "SELECT column_name FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = 'escala_lancamentos'"
+  );
+  const names = new Set((cols || []).map(c => String(c.column_name || c.COLUMN_NAME || "").toLowerCase()));
+  if (!names.has("created_by")) await conn.query("ALTER TABLE escala_lancamentos ADD COLUMN created_by VARCHAR(255) NULL");
+  if (!names.has("updated_by")) await conn.query("ALTER TABLE escala_lancamentos ADD COLUMN updated_by VARCHAR(255) NULL");
+} catch (_e) {
+  // ignora
+}
+
+// logs detalhados de alterações (histórico)
+await conn.query(`CREATE TABLE IF NOT EXISTS escala_change_log (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  actor_name VARCHAR(255) NOT NULL,
+  target_name VARCHAR(255) NOT NULL,
+  data DATE NOT NULL,
+  field_name VARCHAR(32) NOT NULL,   -- 'codigo' | 'observacao'
+  before_value TEXT NULL,
+  after_value TEXT NULL,
+  INDEX idx_at (at),
+  INDEX idx_target (target_name),
+  INDEX idx_data (data)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;`);
+
 
     const [rows] = await conn.query("SELECT id FROM state_store WHERE id=1 LIMIT 1");
     if (!rows.length) {
@@ -421,7 +451,7 @@ async function fetchLancamentosForPeriod(periodStartISO, periodEndISO) {
   // periodStartISO / periodEndISO são YYYY-MM-DD
   // Compatível com coluna 'data' como DATE ou como string (ex.: 'YYYY/MM/DD')
   const sql = `
-    SELECT data, oficial, codigo, observacao
+    SELECT data, oficial, codigo, observacao, created_at, updated_at, created_by, updated_by
       FROM escala_lancamentos
      WHERE (
        CASE
@@ -434,9 +464,22 @@ async function fetchLancamentosForPeriod(periodStartISO, periodEndISO) {
   return safeQuery(sql, [periodStartISO, periodEndISO]);
 }
 
+function fetchChangeLogsForPeriod(periodStartISO, periodEndISO, limit = 500) {
+  const sql = `
+    SELECT at, actor_name, target_name, data, field_name, before_value, after_value
+      FROM escala_change_log
+     WHERE data BETWEEN ? AND ?
+     ORDER BY at ASC
+     LIMIT ?
+  `;
+  return safeQuery(sql, [periodStartISO, periodEndISO, limit]);
+}
+
+
 function buildAssignmentsAndNotesFromLancamentos(rows, validDates) {
   const assignments = {};
   const notes = {};
+  const notes_meta = {};
 
   const valid = new Set(validDates || []);
   const validCodes = new Set(CODES);
@@ -475,10 +518,19 @@ function buildAssignmentsAndNotesFromLancamentos(rows, validDates) {
     const obs = (r.observacao == null) ? "" : String(r.observacao).trim();
     if (obs && (code === "OUTROS" || code === "FO*")) {
       notes[key] = obs;
+
+      // metadados para exibir no sistema/PDF
+      const updatedAt = r.updated_at ? new Date(r.updated_at).toISOString() : null;
+      notes_meta[key] = {
+        updated_at: updatedAt,
+        updated_by: r.updated_by ? String(r.updated_by) : null,
+        created_by: r.created_by ? String(r.created_by) : null,
+      };
     }
   }
 
-  return { assignments, notes };
+  return { assignments, notes,
+      notes_meta, notes_meta };
 }
 
 async function getStateAutoReset() {
@@ -743,12 +795,14 @@ app.get("/api/state", authRequired(true), async (req, res) => {
     // se houver lançamentos no MySQL (escala_lancamentos), eles prevalecem
     let assignments = st.assignments || {};
     let notes = {};
+    let notes_meta = {};
     try {
       const rows = await fetchLancamentosForPeriod(st.period.start, st.period.end);
       const built = buildAssignmentsAndNotesFromLancamentos(rows, st.dates);
       if (Object.keys(built.assignments).length) {
         assignments = built.assignments;
         notes = built.notes;
+        notes_meta = built.notes_meta || {};
       }
     } catch (_e) {
       // se a tabela ainda não existir em algum ambiente, mantém state_store
@@ -775,6 +829,7 @@ app.get("/api/state", authRequired(true), async (req, res) => {
       codes: CODES,
       assignments,
       notes,
+      notes_meta,
     });
   } catch (err) {
     return res.status(500).json({ error: "erro ao carregar", details: err.message });
@@ -818,6 +873,27 @@ app.put("/api/signatures", authRequired(true), async (req, res) => {
     return res.status(500).json({ error: "erro ao salvar assinaturas", details: err.message });
   }
 });
+
+
+// histórico de alterações (somente admin)
+app.get("/api/change_logs", authRequired(true), async (req, res) => {
+  try {
+    if (!req.user.is_admin) return res.status(403).json({ error: "não autorizado" });
+
+    const limit = Math.max(10, Math.min(500, Number(req.query && req.query.limit ? req.query.limit : 200)));
+    const sql = `
+      SELECT id, at, actor_name, target_name, data, field_name, before_value, after_value
+        FROM escala_change_log
+       ORDER BY at DESC
+       LIMIT ?
+    `;
+    const rows = await safeQuery(sql, [limit]);
+    return res.json({ ok: true, rows: rows || [] });
+  } catch (err) {
+    return res.status(500).json({ error: "erro ao carregar histórico", details: err.message });
+  }
+});
+
 
 // salvar alterações (somente após troca de senha)
 app.put("/api/assignments", authRequired(false), async (req, res) => {
@@ -890,7 +966,7 @@ app.put("/api/assignments", authRequired(false), async (req, res) => {
           await safeQuery(
             "INSERT INTO escala_lancamentos (data, oficial, codigo, observacao) VALUES (?, ?, ?, ?) " +
               "ON DUPLICATE KEY UPDATE codigo=VALUES(codigo), observacao=VALUES(observacao), updated_at=CURRENT_TIMESTAMP",
-            [date, target, code, obsToSave]
+            [date, target, code, obsToSave, actor, actor]
           );
         }
       } catch (_e) {
@@ -905,7 +981,25 @@ app.put("/api/assignments", authRequired(false), async (req, res) => {
         const logAfter = code || "-";
         const logExtra = needObs ? ` | obs: ${(beforeObs || "-")} -> ${(newObs || "-")}` : "";
         await logAction(actor, target, "update_day", `${date}: ${logBefore} -> ${logAfter}${logExtra}`);
-      }
+      
+// histórico detalhado
+try {
+  if (changedCode) {
+    await safeQuery(
+      "INSERT INTO escala_change_log (actor_name, target_name, data, field_name, before_value, after_value) VALUES (?, ?, ?, 'codigo', ?, ?)",
+      [actor, target, date, beforeCode || null, code || null]
+    );
+  }
+  if (changedObs) {
+    await safeQuery(
+      "INSERT INTO escala_change_log (actor_name, target_name, data, field_name, before_value, after_value) VALUES (?, ?, ?, 'observacao', ?, ?)",
+      [actor, target, date, beforeObs || null, newObs || null]
+    );
+  }
+} catch (_e) {
+  // ignora
+}
+}
 
       applied++;
     }
@@ -963,6 +1057,7 @@ app.get("/api/pdf", pdfAuth, async (req, res) => {
     // prefere dados do MySQL (escala_lancamentos); fallback para state_store
     let assignments = st.assignments || {};
     let notes = {};
+    let notes_meta = {};
     let usedDb = false;
     try {
       const rows = await fetchLancamentosForPeriod(st.period.start, st.period.end);
@@ -970,11 +1065,25 @@ app.get("/api/pdf", pdfAuth, async (req, res) => {
       if (Object.keys(built.assignments).length) {
         assignments = built.assignments;
         notes = built.notes;
+        notes_meta = built.notes_meta || {};
         usedDb = true;
       }
     } catch (_e) {
       // mantém fallback
     }
+
+
+// histórico para PDF (quando houver DB)
+let changeLogs = [];
+if (usedDb) {
+  try {
+    const rows = await fetchChangeLogsForPeriod(st.period.start, st.period.end, 500);
+    changeLogs = Array.isArray(rows) ? rows : [];
+  } catch (_e) {
+    changeLogs = [];
+  }
+}
+
 
     // tabela
     const left = doc.page.margins.left;
@@ -1018,7 +1127,8 @@ app.get("/api/pdf", pdfAuth, async (req, res) => {
       const code = assignments[k] ? String(assignments[k]) : "";
       // só imprime descrições para OUTROS e FO*
       if (code !== "OUTROS" && code !== "FO*") continue;
-      noteEntries.push({ iso, off, code, text: notes[k] });
+      const meta = (notes_meta && notes_meta[k]) ? notes_meta[k] : null;
+      noteEntries.push({ iso, off, code, text: notes[k], meta });
     }
     noteEntries.sort((a, b) => (a.iso < b.iso ? -1 : a.iso > b.iso ? 1 : 0));
 
@@ -1032,7 +1142,17 @@ app.get("/api/pdf", pdfAuth, async (req, res) => {
         const title = `${fmtDDMMYYYY(it.iso)} - ${it.off.rank} ${it.off.name} (${it.code})`;
         doc.font("Helvetica-Bold").text(title);
         doc.font("Helvetica").text(it.text, { width: doc.page.width - doc.page.margins.left - doc.page.margins.right });
-        doc.moveDown(0.6);
+        
+if (it.meta && (it.meta.updated_at || it.meta.updated_by || it.meta.created_by)) {
+  const dt = it.meta.updated_at ? fmtDDMMYYYYHHmm(it.meta.updated_at) : "";
+  const by = it.meta.updated_by ? String(it.meta.updated_by) : (it.meta.created_by ? String(it.meta.created_by) : "");
+  const suffix = [dt ? `atualizado em ${dt}` : "", by ? `por ${by}` : ""].filter(Boolean).join(" ");
+  if (suffix) {
+    doc.fontSize(8).fillColor("#555555").text(suffix);
+    doc.fontSize(10).fillColor("black");
+  }
+}
+doc.moveDown(0.6);
         if (doc.y > doc.page.height - 180) {
           doc.addPage({ margin: 36, size: "A4", layout: "portrait" });
           doc.fontSize(14).text("DESCRIÇÕES (OUTROS / FO*)", { align: "center" });
@@ -1041,6 +1161,56 @@ app.get("/api/pdf", pdfAuth, async (req, res) => {
         }
       }
     }
+
+
+// histórico de alterações (semana)
+if (changeLogs && changeLogs.length) {
+  doc.addPage({ margin: 36, size: "A4", layout: "portrait" });
+  doc.fontSize(14).text("HISTÓRICO DE ALTERAÇÕES (SEMANA)", { align: "center" });
+  doc.moveDown(0.6);
+  doc.fontSize(9);
+
+  // imprime somente alterações relacionadas a OUTROS/FO* (código ou observação)
+  const relevant = [];
+  for (const r of changeLogs) {
+    const iso = isoFromDbDate(r.data);
+    const canonical = resolveCanonicalFromDbOfficer(r.target_name);
+    // tenta achar código vigente do dia para filtrar FO*/OUTROS
+    const key = canonical ? `${canonical}|${iso}` : null;
+    const code = key && assignments[key] ? String(assignments[key]) : "";
+    if (code !== "OUTROS" && code !== "FO*") continue;
+    relevant.push(r);
+  }
+
+  if (!relevant.length) {
+    doc.font("Helvetica").text("sem alterações relacionadas a OUTROS/FO* nesta semana.");
+  } else {
+    for (const r of relevant) {
+      const when = r.at ? fmtDDMMYYYYHHmm(r.at) : "";
+      const day = r.data ? fmtDDMMYYYY(isoFromDbDate(r.data)) : "";
+      const who = r.actor_name ? String(r.actor_name) : "";
+      const target = r.target_name ? String(r.target_name) : "";
+      const field = r.field_name ? String(r.field_name) : "";
+      const beforeV = r.before_value == null ? "" : String(r.before_value);
+      const afterV = r.after_value == null ? "" : String(r.after_value);
+
+      doc.font("Helvetica-Bold").text(`${when} - ${who}`);
+      doc.font("Helvetica").text(`${day} - ${target} | ${field}:`, { continued: false });
+      if (beforeV || afterV) {
+        doc.font("Helvetica").text(`antes: ${beforeV || "-"}`);
+        doc.font("Helvetica").text(`depois: ${afterV || "-"}`);
+      }
+      doc.moveDown(0.5);
+
+      if (doc.y > doc.page.height - 160) {
+        doc.addPage({ margin: 36, size: "A4", layout: "portrait" });
+        doc.fontSize(14).text("HISTÓRICO DE ALTERAÇÕES (SEMANA)", { align: "center" });
+        doc.moveDown(0.6);
+        doc.fontSize(9);
+      }
+    }
+  }
+}
 
     // assinaturas (sempre na última página)
 // tenta colocar na página atual; se não houver espaço, cria nova página mantendo o mesmo layout

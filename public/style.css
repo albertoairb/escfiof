@@ -79,3 +79,23 @@ h2{margin:0 0 8px 0;font-size:15px}
 .descnotes { margin-top: 8px; display: grid; gap: 10px; }
 .descitem { padding: 8px 10px; border: 1px dashed #d8dbe1; border-radius: 8px; background: #fff; }
 .descitem__title { font-weight: 600; margin-bottom: 4px; }
+
+
+
+/* histórico */
+table.hist {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+  margin-top: 8px;
+}
+table.hist th, table.hist td {
+  border: 1px solid rgba(0,0,0,0.12);
+  padding: 6px 8px;
+  vertical-align: top;
+}
+table.hist th {
+  background: rgba(0,0,0,0.04);
+  text-align: left;
+  font-weight: 600;
+}

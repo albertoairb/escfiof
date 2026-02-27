@@ -13,6 +13,7 @@
     codes: [],
     assignments: {},
     notes: {},
+    notes_meta: {},
     pending: new Map() // key -> { code, observacao }
   };
 
@@ -30,6 +31,21 @@
     const [y,m,d] = iso.split("-");
     return `${d}/${m}/${y}`;
   }
+
+
+function ddmmyyyy_hhmm(isoOrDate) {
+  try {
+    const dt = new Date(isoOrDate);
+    const dd = String(dt.getDate()).padStart(2, "0");
+    const mm2 = String(dt.getMonth() + 1).padStart(2, "0");
+    const yy = dt.getFullYear();
+    const hh = String(dt.getHours()).padStart(2, "0");
+    const mi = String(dt.getMinutes()).padStart(2, "0");
+    return `${dd}/${mm2}/${yy} ${hh}:${mi}`;
+  } catch (_e) {
+    return "";
+  }
+}
 
   function dayNameBR(idx) {
     const names = ["DOMINGO","SEGUNDA","TERÇA","QUARTA","QUINTA","SEXTA","SÁBADO"];
@@ -143,7 +159,7 @@ function buildDescNotes() {
     if (code !== "OUTROS" && code !== "FO*") continue;
     const text = String(state.notes[k] || "").trim();
     if (!text) continue;
-    entries.push({ iso, o, code, text });
+    entries.push({ key: k, iso, o, code, text });
   }
 
   entries.sort((a,b) => (a.iso < b.iso ? -1 : a.iso > b.iso ? 1 : a.o.name.localeCompare(b.o.name)));
@@ -167,6 +183,64 @@ function buildDescNotes() {
     const body = document.createElement("div");
     body.textContent = it.text;
     div.appendChild(body);
+
+
+const meta = state.notes_meta && state.notes_meta[it.key] ? state.notes_meta[it.key] : null;
+if (meta && (meta.updated_at || meta.updated_by || meta.created_by)) {
+  const metaLine = document.createElement("div");
+  metaLine.className = "muted";
+  const dt = meta.updated_at ? ddmmyyyy_hhmm(meta.updated_at) : "";
+  const by = meta.updated_by || meta.created_by || "";
+  metaLine.textContent = `${dt ? "atualizado em " + dt : ""}${(dt && by) ? " por " : ""}${by ? by : ""}`.trim();
+  if (metaLine.textContent) div.appendChild(metaLine);
+}
+
+
+function hideChangeLogs() {
+  const box = $("historyBox");
+  if (box) box.style.display = "none";
+  const table = $("historyTable");
+  if (table) table.innerHTML = "";
+}
+
+async function loadChangeLogs() {
+  const box = $("historyBox");
+  const table = $("historyTable");
+  if (!box || !table) return;
+
+  box.style.display = "block";
+  table.innerHTML = "<div class='muted'>carregando…</div>";
+
+  const r = await api("/api/change_logs?limit=200");
+  if (!r.ok) {
+    table.innerHTML = `<div class='muted'>${(r.data && (r.data.error || r.data.details)) ? (r.data.error || r.data.details) : "erro ao carregar histórico"}</div>`;
+    return;
+  }
+
+  const rows = Array.isArray(r.data && r.data.rows) ? r.data.rows : [];
+  if (!rows.length) {
+    table.innerHTML = "<div class='muted'>sem registros.</div>";
+    return;
+  }
+
+  const esc = (s) => String(s == null ? "" : s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+  let html = "<table class='hist'><thead><tr><th>data/hora</th><th>ator</th><th>alvo</th><th>dia</th><th>campo</th><th>antes</th><th>depois</th></tr></thead><tbody>";
+  for (const r of rows) {
+    const at = r.at ? ddmmyyyy_hhmm(r.at) : "";
+    const day = r.data ? ddmmyyyy(String(r.data).slice(0,10).replaceAll('/','-')) : "";
+    html += "<tr>";
+    html += `<td>${esc(at)}</td>`;
+    html += `<td>${esc(r.actor_name || "")}</td>`;
+    html += `<td>${esc(r.target_name || "")}</td>`;
+    html += `<td>${esc(day)}</td>`;
+    html += `<td>${esc(r.field_name || "")}</td>`;
+    html += `<td>${esc(r.before_value || "")}</td>`;
+    html += `<td>${esc(r.after_value || "")}</td>`;
+    html += "</tr>";
+  }
+  html += "</tbody></table>";
+  table.innerHTML = html;
+}
 
     box.appendChild(div);
   }
@@ -318,6 +392,13 @@ function buildDescNotes() {
     buildTable();
     buildOpsNotes();
     buildDescNotes();
+
+    // histórico (somente admin)
+    if (state.me && state.me.is_admin) {
+      await loadChangeLogs();
+    } else {
+      hideChangeLogs();
+    }
 
     // assinaturas
     const sig = (state.meta && state.meta.signatures) ? state.meta.signatures : null;
