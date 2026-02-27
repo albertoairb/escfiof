@@ -76,7 +76,9 @@ const ADMIN_NAMES = new Set([
 ]);
 
 // Códigos válidos (tudo em MAIÚSCULO, conforme regra)
-const CODES = ["EXP", "SR", "FO", "MA", "VE", "LP", "FÉRIAS", "CFP_DIA", "CFP_NOITE", "OUTROS"];
+// - FO*: permite descrição
+// - FOJ: sem descrição
+const CODES = ["EXP", "SR", "FO", "FO*", "FOJ", "MA", "VE", "LP", "FÉRIAS", "CFP_DIA", "CFP_NOITE", "OUTROS"];
 
 // ===============================
 // APP
@@ -102,16 +104,9 @@ app.use(express.static(path.join(__dirname, "public"), {
 // DB POOL
 // ===============================
 const pool = DB_URL
-  ? mysql.createPool({
-      uri: DB_URL,
-      waitForConnections: true,
-      connectionLimit: 10,
-      queueLimit: 0,
-      // evita deslocamento de fuso em campos DATE (MySQL) e mantém datas como string YYYY-MM-DD
-      dateStrings: true,
-    })
+  ? mysql.createPool(DB_URL)
   : mysql.createPool({
-host: DB_HOST,
+      host: DB_HOST,
       port: DB_PORT,
       user: DB_USER,
       password: DB_PASSWORD,
@@ -120,8 +115,6 @@ host: DB_HOST,
       connectionLimit: 10,
       queueLimit: 0,
       timezone: "Z",
-      // evita deslocamento de fuso em campos DATE (MySQL) e mantém datas como string YYYY-MM-DD
-      dateStrings: true,
     });
 
 // ===============================
@@ -143,26 +136,6 @@ function fmtYYYYMMDD(d) {
   const dd = String(d.getDate()).padStart(2, "0");
   return `${yyyy}-${mm}-${dd}`;
 }
-
-
-function normalizeDateISO(v) {
-  // Aceita Date, "YYYY-MM-DD", "YYYY-MM-DD HH:MM:SS", "YYYY-MM-DDTHH:MM:SSZ"
-  if (!v) return "";
-  if (typeof v === "string") {
-    const s = v.trim();
-    // pega sempre os 10 primeiros chars quando começar com YYYY-MM-DD
-    if (/^\d{4}-\d{2}-\d{2}/.test(s)) return s.slice(0, 10);
-    return s;
-  }
-  if (v instanceof Date) return v.toISOString().slice(0, 10);
-  // fallback (mysql2 pode devolver objeto)
-  try {
-    return new Date(v).toISOString().slice(0, 10);
-  } catch {
-    return "";
-  }
-}
-
 
 function fmtDDMMYYYY(iso) {
   const [y, m, d] = String(iso || "").split("-");
@@ -299,7 +272,7 @@ function getHolidaysForWeek(weekDates) {
 // SCHEMA / STATE
 // ===============================
 async function ensureSchema() {
-const conn = await pool.getConnection();
+  const conn = await pool.getConnection();
   try {
     await conn.query(`CREATE TABLE IF NOT EXISTS state_store (
       id INT PRIMARY KEY,
@@ -328,6 +301,32 @@ const conn = await pool.getConnection();
       INDEX idx_target (target_name)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;`);
 
+    // lançamentos por dia (persistência da semana)
+    await conn.query(`CREATE TABLE IF NOT EXISTS escala_lancamentos (
+      id BIGINT AUTO_INCREMENT PRIMARY KEY,
+      data DATE NOT NULL,
+      oficial VARCHAR(255) NOT NULL,
+      codigo VARCHAR(32) NOT NULL,
+      observacao TEXT NULL,
+      created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      UNIQUE KEY uniq_data_oficial (data, oficial),
+      INDEX idx_data (data),
+      INDEX idx_oficial (oficial)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;`);
+
+    // migração defensiva: alguns bancos já possuem a coluna 'observacao'
+    const [hasObs] = await conn.query(
+      `SELECT COUNT(*) AS c
+         FROM information_schema.COLUMNS
+        WHERE table_schema = DATABASE()
+          AND table_name = 'escala_lancamentos'
+          AND column_name = 'observacao'`
+    );
+    if (!hasObs[0] || Number(hasObs[0].c) === 0) {
+      await conn.query("ALTER TABLE escala_lancamentos ADD COLUMN observacao TEXT NULL");
+    }
+
     const [rows] = await conn.query("SELECT id FROM state_store WHERE id=1 LIMIT 1");
     if (!rows.length) {
       const initial = buildFreshState();
@@ -336,44 +335,6 @@ const conn = await pool.getConnection();
   } finally {
     conn.release();
   }
-  // lançamentos manuais (opcional) - usado para alimentar PDF/tela quando houver
-  await safeQuery(`
-    CREATE TABLE IF NOT EXISTS escala_lancamentos (
-      id INT AUTO_INCREMENT PRIMARY KEY,
-      data DATE NOT NULL,
-      oficial VARCHAR(255) NOT NULL,
-      codigo VARCHAR(40) NOT NULL,
-      observacao TEXT NULL,
-      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-  `);
-
-  // compatibilidade: adiciona coluna observacao somente se ainda não existir
-  try {
-    const [cols] = await pool.query(
-      `SELECT COUNT(*) AS c
-       FROM INFORMATION_SCHEMA.COLUMNS
-       WHERE TABLE_SCHEMA = DATABASE()
-         AND TABLE_NAME = 'escala_lancamentos'
-         AND COLUMN_NAME = 'observacao'`
-    );
-    const exists = cols && cols[0] && Number(cols[0].c) > 0;
-    if (!exists) {
-      await safeQuery(`ALTER TABLE escala_lancamentos ADD COLUMN observacao TEXT NULL`);
-    }
-  } catch (e) {
-    // se não conseguir checar por algum motivo, tente o ALTER e ignore duplicidade
-    try {
-      await safeQuery(`ALTER TABLE escala_lancamentos ADD COLUMN observacao TEXT NULL`);
-    } catch (e2) {
-      if (e2 && (e2.code === "ER_DUP_FIELDNAME" || String(e2.sqlMessage || "").includes("Duplicate column name"))) {
-        // ok: já existe
-      } else {
-        throw e2;
-      }
-    }
-  }
-
 }
 
 function buildFreshState() {
@@ -402,6 +363,57 @@ async function safeQuery(sql, params = []) {
   } finally {
     conn.release();
   }
+}
+
+function isoFromDbDate(v) {
+  if (!v) return "";
+  if (v instanceof Date) {
+    const y = v.getFullYear();
+    const m = String(v.getMonth() + 1).padStart(2, "0");
+    const d = String(v.getDate()).padStart(2, "0");
+    return `${y}-${m}-${d}`;
+  }
+  const s = String(v);
+  return s.length >= 10 ? s.slice(0, 10) : s;
+}
+
+function resolveCanonicalFromDbOfficer(oficialStr) {
+  const nk = normKey(oficialStr);
+  if (!nk) return null;
+  for (const off of OFFICERS) {
+    const ok = normKey(off.canonical_name);
+    if (ok && (nk.includes(ok) || ok.includes(nk))) return off.canonical_name;
+  }
+  return null;
+}
+
+async function fetchLancamentosForPeriod(periodStartISO, periodEndISO) {
+  // periodStartISO / periodEndISO são YYYY-MM-DD
+  return safeQuery(
+    "SELECT data, oficial, codigo, observacao FROM escala_lancamentos WHERE data BETWEEN ? AND ?",
+    [periodStartISO, periodEndISO]
+  );
+}
+
+function buildAssignmentsAndNotesFromLancamentos(rows, validDates) {
+  const assignments = {};
+  const notes = {};
+
+  const valid = new Set(validDates || []);
+  for (const r of rows || []) {
+    const iso = isoFromDbDate(r.data);
+    if (!valid.has(iso)) continue;
+
+    const canonical = resolveCanonicalFromDbOfficer(r.oficial);
+    if (!canonical) continue;
+
+    const key = `${canonical}|${iso}`;
+    assignments[key] = String(r.codigo || "").trim();
+    const obs = (r.observacao == null) ? "" : String(r.observacao);
+    if (obs) notes[key] = obs;
+  }
+
+  return { assignments, notes };
 }
 
 async function getStateAutoReset() {
@@ -539,100 +551,6 @@ async function logAction(actor, target, action, details = "") {
 // ===============================
 // PDF
 // ===============================
-
-// ===============================
-// LANÇAMENTOS (MySQL) -> mapa de escala
-// ===============================
-function officerCanonicalFromDbName(dbName) {
-  // No banco, o campo "oficial" pode vir com posto abreviado (ex.: "Cap PM")
-  // enquanto a lista fixa usa grafias completas (ex.: "Capitão PM").
-  // Para garantir o match, normalizamos removendo posto/"PM" e aceitando comparação por inclusão.
-
-  const raw = String(dbName || "");
-  let n = normKey(raw);
-
-  // remove tokens de posto/abreviações comuns
-  n = n
-    .replace(/\b(pm)\b/g, " ")
-    .replace(/\b(ten\s*cel|tenente\s*coronel|tenente-coronel|coronel|cel)\b/g, " ")
-    .replace(/\b(maj|major)\b/g, " ")
-    .replace(/\b(cap|capitao|capit[aã]o)\b/g, " ")
-    .replace(/\b(1o|1º|2o|2º)\b/g, " ")
-    .replace(/\b(ten|tenente)\b/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-
-  for (const o of OFFICERS) {
-    const a = normKey(`${o.rank} ${o.name}`);
-    const b = normKey(o.canonical_name);
-    const c = normKey(o.name);
-
-    // igualdade estrita (caso ideal)
-    if (n === a || n === b || n === c) return o.canonical_name;
-
-    // inclusão (caso venha com/ou sem partes do posto)
-    if (n && (a.includes(n) || b.includes(n) || c.includes(n) || n.includes(b) || n.includes(c))) {
-      return o.canonical_name;
-    }
-  }
-  return null;
-}
-
-async function getAssignmentsFromLancamentos(startISO, endISO) {
-  // retorna { used: boolean, map: {}, notes: {} }
-  try {
-    const [rows] = await pool.query(
-      `SELECT data, oficial, codigo, observacao
-       FROM escala_lancamentos
-       WHERE data BETWEEN ? AND ?
-       ORDER BY data ASC, oficial ASC`,
-      [startISO, endISO]
-    );
-
-    if (!rows || !rows.length) return { used: false, map: {}, notes: {} };
-
-    const map = {};
-    const notes = {};
-
-    for (const r of rows) {
-      const dateISO = normalizeDateISO(r.data);
-      const canon = officerCanonicalFromDbName(r.oficial);
-      if (!canon) continue;
-
-      const code = String(r.codigo || "").trim();
-      if (!code) continue;
-
-      const key = `${canon}|${dateISO}`;
-      map[key] = code;
-
-      if (code === "OUTROS") {
-        const obs = String(r.observacao || "").trim();
-        if (obs) notes[key] = obs;
-      }
-    }
-
-    return { used: Object.keys(map).length > 0, map, notes };
-  } catch (e) {
-    // se a tabela não existir ainda em algum ambiente, cai no state_store
-    return { used: false, map: {}, notes: {} };
-  }
-}
-
-function buildOutrosList(dates, assignments, notes) {
-  const items = [];
-  for (const off of OFFICERS) {
-    for (const iso of dates) {
-      const k = `${off.canonical_name}|${iso}`;
-      const code = assignments[k] ? String(assignments[k]) : "";
-      if (code !== "OUTROS") continue;
-      const note = notes && notes[k] ? String(notes[k]) : "";
-      if (!note) continue;
-      items.push({ officer: `${off.rank} ${off.name}`, date: iso, note });
-    }
-  }
-  return items;
-}
-
 function requirePdfKitOr501(res) {
   try {
     return require("pdfkit");
@@ -710,6 +628,20 @@ app.get("/api/state", authRequired(true), async (req, res) => {
     const { st } = await getStateAutoReset();
     const holidays = getHolidaysForWeek(st.dates);
 
+    // se houver lançamentos no MySQL (escala_lancamentos), eles prevalecem
+    let assignments = st.assignments || {};
+    let notes = {};
+    try {
+      const rows = await fetchLancamentosForPeriod(st.period.start, st.period.end);
+      const built = buildAssignmentsAndNotesFromLancamentos(rows, st.dates);
+      if (Object.keys(built.assignments).length) {
+        assignments = built.assignments;
+        notes = built.notes;
+      }
+    } catch (_e) {
+      // se a tabela ainda não existir em algum ambiente, mantém state_store
+    }
+
     const periodLabel = `período: ${fmtDDMMYYYY(st.period.start)} a ${fmtDDMMYYYY(st.period.end)}`;
 
     return res.json({
@@ -728,8 +660,8 @@ app.get("/api/state", authRequired(true), async (req, res) => {
       officers: OFFICERS,
       dates: st.dates,
       codes: CODES,
-      assignments: st.assignments || {},
-      notes: st.notes || {},
+      assignments,
+      notes,
     });
   } catch (err) {
     return res.status(500).json({ error: "erro ao carregar", details: err.message });
@@ -762,7 +694,8 @@ app.put("/api/assignments", authRequired(false), async (req, res) => {
       const target = String(u.canonical_name || "").trim();
       const date = String(u.date || "").trim();
       const code = String(u.code || "").trim();
-      const note = String(u.note || "").trim();
+      const observacaoRaw = (u && Object.prototype.hasOwnProperty.call(u, "observacao")) ? u.observacao : null;
+      const observacao = observacaoRaw == null ? "" : String(observacaoRaw).trim();
 
       if (!validOfficers.has(target)) return res.status(400).json({ error: "oficial inválido" });
       if (!validDates.has(date)) return res.status(400).json({ error: "data inválida" });
@@ -786,19 +719,27 @@ app.put("/api/assignments", authRequired(false), async (req, res) => {
 
       // salva (permite limpar com "")
       st.assignments = st.assignments || {};
-      st.notes = st.notes || {};
+      if (!code) delete st.assignments[key];
+      else st.assignments[key] = code;
 
+      // persistência no MySQL (para PDF e recarregamento)
+      // oficial gravado como canonical_name (garante chave única)
       if (!code) {
-        delete st.assignments[key];
-        delete st.notes[key];
+        try {
+          await safeQuery("DELETE FROM escala_lancamentos WHERE data=? AND oficial=?", [date, target]);
+        } catch (_e) {
+          // ignora se a tabela ainda não existir em algum ambiente
+        }
       } else {
-        st.assignments[key] = code;
-        if (code === "OUTROS") {
-          // exige descrição para OUTROS
-          if (!note) return res.status(400).json({ error: "OUTROS exige descrição" });
-          st.notes[key] = note;
-        } else {
-          delete st.notes[key];
+        const needObs = (code === "OUTROS" || code === "FO*");
+        const obsToSave = needObs ? (observacao || "") : null;
+        try {
+          await safeQuery(
+            "INSERT INTO escala_lancamentos (data, oficial, codigo, observacao) VALUES (?, ?, ?, ?) ON DUPLICATE KEY UPDATE codigo=VALUES(codigo), observacao=VALUES(observacao), updated_at=CURRENT_TIMESTAMP",
+            [date, target, code, obsToSave]
+          );
+        } catch (_e) {
+          // ignora se a tabela ainda não existir em algum ambiente
         }
       }
 
@@ -840,10 +781,22 @@ app.get("/api/pdf", authRequired(true), async (req, res) => {
     doc.moveDown(0.6);
 
     const dates = st.dates || [];
-    // Preferir lançamentos do MySQL (escala_lancamentos) quando existirem
-    const fromLanc = await getAssignmentsFromLancamentos(st.period.start, st.period.end);
-    const assignments = fromLanc.used ? fromLanc.map : (st.assignments || {});
-    const notes = fromLanc.used ? fromLanc.notes : (st.notes || {});
+
+    // prefere dados do MySQL (escala_lancamentos); fallback para state_store
+    let assignments = st.assignments || {};
+    let notes = {};
+    let usedDb = false;
+    try {
+      const rows = await fetchLancamentosForPeriod(st.period.start, st.period.end);
+      const built = buildAssignmentsAndNotesFromLancamentos(rows, dates);
+      if (Object.keys(built.assignments).length) {
+        assignments = built.assignments;
+        notes = built.notes;
+        usedDb = true;
+      }
+    } catch (_e) {
+      // mantém fallback
+    }
 
     // tabela
     const left = doc.page.margins.left;
@@ -867,8 +820,7 @@ app.get("/api/pdf", authRequired(true), async (req, res) => {
 
       for (let i = 0; i < dates.length; i++) {
         const k = `${off.canonical_name}|${dates[i]}`;
-        let code = assignments[k] ? String(assignments[k]) : "";
-        if (code === "OUTROS" && notes && notes[k]) code = "OUTROS*";
+        const code = assignments[k] ? String(assignments[k]) : "";
         doc.text(code || "-", left + colWName + i * colWDay, y, { width: colWDay, align: "center" });
       }
 
@@ -879,85 +831,62 @@ app.get("/api/pdf", authRequired(true), async (req, res) => {
       }
     }
 
+    // detalhamento de descrições (OUTROS e FO*)
+    const noteEntries = [];
+    for (const k of Object.keys(notes || {})) {
+      const [canonical, iso] = k.split("|");
+      const off = OFFICERS.find(o => o.canonical_name === canonical);
+      if (!off) continue;
+      const code = assignments[k] ? String(assignments[k]) : "";
+      // só imprime descrições para OUTROS e FO*
+      if (code !== "OUTROS" && code !== "FO*") continue;
+      noteEntries.push({ iso, off, code, text: notes[k] });
+    }
+    noteEntries.sort((a, b) => (a.iso < b.iso ? -1 : a.iso > b.iso ? 1 : 0));
 
-    // assinaturas no fim da escala (mesma página da tabela)
-    // IMPORTANTÍSSIMO: manter dentro da área útil (acima da margem inferior) para evitar quebra automática
-    // que estava separando nome/cargo em páginas diferentes.
+    if (noteEntries.length) {
+      doc.addPage({ margin: 36, size: "A4", layout: "portrait" });
+      doc.fontSize(14).text("DESCRIÇÕES (OUTROS / FO*)", { align: "center" });
+      doc.moveDown(0.6);
+      doc.fontSize(10);
 
-    // "cursor" real ao final da tabela
-    doc.y = y;
-
-    const mL = doc.page.margins.left;
-    const mR = doc.page.margins.right;
-    const mB = doc.page.margins.bottom;
-    const usableW = doc.page.width - mL - mR;
-    const half = usableW / 2;
-
-    const bottomLimit = doc.page.height - mB;
-    const blockH = 44; // linha + 2 linhas de texto
-    const minTopForSigs = bottomLimit - blockH;
-
-    // se não couber abaixo do conteúdo atual, abre página nova landscape só para assinaturas
-    if (doc.y > minTopForSigs - 10) {
-      doc.addPage({ margin: 28, size: "A4", layout: "landscape" });
+      for (const it of noteEntries) {
+        const title = `${fmtDDMMYYYY(it.iso)} - ${it.off.rank} ${it.off.name} (${it.code})`;
+        doc.font("Helvetica-Bold").text(title);
+        doc.font("Helvetica").text(it.text, { width: doc.page.width - doc.page.margins.left - doc.page.margins.right });
+        doc.moveDown(0.6);
+        if (doc.y > doc.page.height - 180) {
+          doc.addPage({ margin: 36, size: "A4", layout: "portrait" });
+          doc.fontSize(14).text("DESCRIÇÕES (OUTROS / FO*)", { align: "center" });
+          doc.moveDown(0.6);
+          doc.fontSize(10);
+        }
+      }
     }
 
-    const lineY = (doc.page.height - doc.page.margins.bottom) - 32;
+    // assinaturas (sempre na última página)
+    if (doc.page.layout !== "portrait" || doc.y > doc.page.height - 220) {
+      doc.addPage({ margin: 36, size: "A4", layout: "portrait" });
+    }
+
+    const xLeft = doc.page.margins.left;
+    const xRight = doc.page.width / 2 + 20;
+    const lineW = (doc.page.width - doc.page.margins.left - doc.page.margins.right - 40) / 2;
+    const yLine = doc.page.height - 160;
 
     // linhas
-    doc.moveTo(mL + 20, lineY).lineTo(mL + half - 20, lineY).stroke();
-    doc.moveTo(mL + half + 20, lineY).lineTo(mL + usableW - 20, lineY).stroke();
+    doc.moveTo(xLeft, yLine).lineTo(xLeft + lineW, yLine).stroke();
+    doc.moveTo(xRight, yLine).lineTo(xRight + lineW, yLine).stroke();
 
-    // textos
-    doc.fontSize(10);
-    doc.text("ALBERTO FRANZINI NETO", mL, lineY + 6, { width: half, align: "center" });
-    doc.text("CH P1/P5", mL, lineY + 18, { width: half, align: "center" });
+    // nomes e cargos
+    doc.fontSize(10).text("ALBERTO FRANZINI NETO", xLeft, yLine + 6, { width: lineW, align: "center" });
+    doc.fontSize(9).text("CH P1/P5", xLeft, yLine + 22, { width: lineW, align: "center" });
 
-    doc.text("EDUARDO MOSNA XAVIER", mL + half, lineY + 6, { width: half, align: "center" });
-    doc.text("SUBCMT BTL", mL + half, lineY + 18, { width: half, align: "center" });
-
-    // OUTROS - detalhamento (texto integral)
-    const outrosItems = buildOutrosList(dates, assignments, notes);
-    if (outrosItems.length) {
-      doc.addPage({ margin: 28, size: "A4", layout: "portrait" });
-      doc.fontSize(14).text("OUTROS - DETALHAMENTO", { align: "center" });
-      doc.moveDown(0.6);
-
-      doc.fontSize(10);
-      for (const it of outrosItems) {
-        doc.font("Helvetica-Bold").text(`${it.officer} — ${fmtDDMMYYYY(it.date)}`);
-        doc.font("Helvetica").text(it.note, { width: doc.page.width - doc.page.margins.left - doc.page.margins.right });
-        doc.moveDown(0.6);
-        if (doc.y > doc.page.height - 80) doc.addPage({ margin: 28, size: "A4", layout: "portrait" });
-      }
-    }
-
-    // seção alterações operacionais (para impressão)
-    doc.addPage({ margin: 28, size: "A4", layout: "portrait" });
-    doc.fontSize(14).text("ALTERAÇÕES OPERACIONAIS (para impressão)", { align: "center" });
-    doc.moveDown(0.4);
-    doc.fontSize(10).text("texto livre (4 linhas por dia)", { align: "center" });
-    doc.moveDown(0.8);
-
-    doc.fontSize(10);
-    for (const iso of dates) {
-      const d = new Date(iso + "T00:00:00");
-      const day = ["DOMINGO","SEGUNDA","TERÇA","QUARTA","QUINTA","SEXTA","SÁBADO"][d.getDay()];
-      doc.text(`${day} - ${fmtDDMMYYYY(iso)}`);
-      doc.moveDown(0.2);
-      // 4 linhas
-      for (let i = 0; i < 4; i++) {
-        const x1 = doc.page.margins.left;
-        const x2 = doc.page.width - doc.page.margins.right;
-        const yy = doc.y + 12;
-        doc.moveTo(x1, yy).lineTo(x2, yy).stroke();
-        doc.moveDown(0.9);
-      }
-      doc.moveDown(0.4);
-    }
+    doc.fontSize(10).text("EDUARDO MOSNA XAVIER", xRight, yLine + 6, { width: lineW, align: "center" });
+    doc.fontSize(9).text("SUBCMT BTL", xRight, yLine + 22, { width: lineW, align: "center" });
 
     // rodapé
-    doc.fontSize(9).text(`© ${COPYRIGHT_YEAR} - ${AUTHOR}`, { align: "center" });
+    doc.fontSize(9).text(`© ${COPYRIGHT_YEAR} - ${AUTHOR}`, 0, doc.page.height - 40, { align: "center" });
 
     doc.end();
   } catch (err) {

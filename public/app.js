@@ -12,9 +12,8 @@
     dates: [],
     codes: [],
     assignments: {},
-    pending: new Map(), // key -> code
     notes: {},
-    pendingNotes: new Map() // key -> note (para OUTROS)
+    pending: new Map() // key -> { code, observacao }
   };
 
   function ddmmyyyy(iso) {
@@ -39,55 +38,6 @@
   function show(el, yes) {
     $(el).style.display = yes ? "" : "none";
   }
-
-  // ===============================
-  // MODAL OUTROS
-  // ===============================
-  let outrosResolve = null;
-  function openOutrosModal(prefill) {
-    const modal = $("outrosModal");
-    const ta = $("outrosText");
-    const msg = $("outrosMsg");
-    ta.value = prefill || "";
-    msg.textContent = "";
-    modal.style.display = "flex";
-
-    return new Promise((resolve) => {
-      outrosResolve = resolve;
-      ta.focus();
-    });
-  }
-
-  function closeOutrosModal(ok) {
-    const modal = $("outrosModal");
-    const ta = $("outrosText");
-    const msg = $("outrosMsg");
-
-    if (!outrosResolve) {
-      modal.style.display = "none";
-      return;
-    }
-
-    if (ok) {
-      const v = (ta.value || "").trim();
-      if (!v) {
-        msg.textContent = "OUTROS exige descrição.";
-        ta.focus();
-        return;
-      }
-      modal.style.display = "none";
-      const r = outrosResolve;
-      outrosResolve = null;
-      r({ ok: true, text: v });
-      return;
-    }
-
-    modal.style.display = "none";
-    const r = outrosResolve;
-    outrosResolve = null;
-    r({ ok: false, text: "" });
-  }
-
 
   function setHolidayBar(holidays) {
     const bar = $("holidayBar");
@@ -202,38 +152,51 @@
         const key = `${off.canonical_name}|${iso}`;
         const cur = state.assignments[key] || "";
         const pending = state.pending.has(key) ? state.pending.get(key) : null;
-        sel.value = pending !== null ? pending : cur;
+        const pendingCode = (pending && typeof pending === "object") ? (pending.code || "") : pending;
+        sel.value = (pendingCode !== null && pendingCode !== undefined) ? pendingCode : cur;
 
-        sel.addEventListener("change", async () => {
+        // tooltip com descrição (quando houver)
+        const noteText = (state.notes && state.notes[key]) ? String(state.notes[key]) : "";
+        sel.title = noteText || "";
+
+        sel.addEventListener("change", () => {
           const v = sel.value;
-
-          // se OUTROS, pede descrição
-          if (v === "OUTROS") {
-            const prefill = state.pendingNotes.has(key)
-              ? state.pendingNotes.get(key)
-              : (state.notes[key] || "");
-            const ans = await openOutrosModal(prefill);
-            if (!ans.ok) {
-              // cancelou: volta ao valor anterior
-              sel.value = (state.pending.has(key) ? state.pending.get(key) : cur) || "";
-              return;
-            }
-            state.pendingNotes.set(key, ans.text);
-          } else {
-            state.pendingNotes.delete(key);
-          }
 
           if (v === cur) {
             state.pending.delete(key);
             td.classList.remove("changed");
-          } else {
-            state.pending.set(key, v);
-            td.classList.add("changed");
+            $("saveMsg").textContent = `${state.pending.size} alteração(ões) pendente(s).`;
+            return;
           }
 
-          const pend = state.pending.size;
-          $("saveMsg").textContent = `${pend} alteração(ões) pendente(s).`;
-        });td.appendChild(sel);
+          // códigos com descrição (texto livre exibido no PDF)
+          if (v === "OUTROS" || v === "FO*") {
+            const prev = (state.pending.get(key) && typeof state.pending.get(key) === "object")
+              ? (state.pending.get(key).observacao || "")
+              : (state.notes[key] || "");
+
+            const txt = window.prompt("Digite a descrição (será exibida integralmente no PDF):", prev);
+            if (txt === null) {
+              // cancelado
+              sel.value = cur;
+              state.pending.delete(key);
+              td.classList.remove("changed");
+              $("saveMsg").textContent = `${state.pending.size} alteração(ões) pendente(s).`;
+              return;
+            }
+
+            state.pending.set(key, { code: v, observacao: txt });
+            td.classList.add("changed");
+            $("saveMsg").textContent = `${state.pending.size} alteração(ões) pendente(s).`;
+            return;
+          }
+
+          state.pending.set(key, { code: v, observacao: null });
+          td.classList.add("changed");
+          $("saveMsg").textContent = `${state.pending.size} alteração(ões) pendente(s).`;
+        });
+
+        td.appendChild(sel);
         tr.appendChild(td);
       }
 
@@ -259,7 +222,6 @@
     state.assignments = r.data.assignments || {};
     state.notes = r.data.notes || {};
     state.pending.clear();
-    state.pendingNotes.clear();
 
     setHeader();
     setHolidayBar(r.data.holidays || []);
@@ -323,9 +285,11 @@
     if (!state.pending.size) { $("saveMsg").textContent = "nenhuma alteração pendente."; return; }
 
     const updates = [];
-    for (const [key, code] of state.pending.entries()) {
+    for (const [key, item] of state.pending.entries()) {
       const [canonical_name, date] = key.split("|");
-      updates.push({ canonical_name, date, code });
+      const code = (item && typeof item === "object") ? (item.code || "") : String(item || "");
+      const observacao = (item && typeof item === "object") ? item.observacao : null;
+      updates.push({ canonical_name, date, code, observacao });
     }
 
     const r = await api("/api/assignments", { method: "PUT", body: JSON.stringify({ updates }) });
@@ -351,38 +315,11 @@
   }
 
   async function openPdf() {
-    if (!state.token) {
-      alert("Faça login novamente.");
-      return;
-    }
-
-    const r = await fetch("/api/pdf", {
-      method: "GET",
-      headers: {
-        "Authorization": `Bearer ${state.token}`
-      }
-    });
-
-    if (!r.ok) {
-      const t = await r.text();
-      alert("Erro ao gerar PDF: " + t);
-      return;
-    }
-
-    const blob = await r.blob();
-    const url = URL.createObjectURL(blob);
-    window.open(url, "_blank");
+    // abre em nova aba
+    window.open("/api/pdf", "_blank");
   }
 
-  
-  // modal OUTROS
-  $("outrosCancel").addEventListener("click", () => closeOutrosModal(false));
-  $("outrosSave").addEventListener("click", () => closeOutrosModal(true));
-  $("outrosModal").addEventListener("click", (e) => {
-    if (e.target && e.target.id === "outrosModal") closeOutrosModal(false);
-  });
-
-$("btnLogin").addEventListener("click", doLogin);
+  $("btnLogin").addEventListener("click", doLogin);
   $("btnChange").addEventListener("click", changePassword);
   $("btnSave").addEventListener("click", save);
   $("btnLogout").addEventListener("click", logout);
