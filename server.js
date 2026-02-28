@@ -1240,23 +1240,12 @@ if (usedDb) {
   }
 }
 
-// Ãºltimo registro (nome + data/hora) para rodapÃ© do PDF
-let lastAction = null;
-try {
-  lastAction = await fetchLastActionForPeriod(st.period.start, st.period.end);
-} catch (_e) {
-  lastAction = null;
-}
-
-const lastActor = (lastAction && lastAction.actor_name) ? String(lastAction.actor_name) : "";
-const lastAt = (lastAction && lastAction.at) ? lastAction.at : (st && st.updated_at ? st.updated_at : null);
-// Ãºltimo registro (nome + data/hora) para o PDF
-// prioridade: metadados gravados no state_store no momento do salvamento
+// ultimo registro (nome + data/hora) para rodape do PDF
 let lastActor = (st && st.last_edit_actor) ? String(st.last_edit_actor) : "";
 let lastAt = (st && st.last_edit_at) ? st.last_edit_at : (st && st.updated_at ? st.updated_at : null);
 
-// fallback: action_logs (se ainda nÃ£o existir last_edit_* em algum ambiente antigo)
-if (!lastAt) {
+// fallback: action_logs (para ambientes antigos)
+if (!lastAt || !lastActor) {
   let lastAction = null;
   try {
     lastAction = await fetchLastActionForPeriod(st.period.start, st.period.end);
@@ -1268,8 +1257,6 @@ if (!lastAt) {
 }
 
 const lastStamp = fmtDDMMYYYYHHmm(lastAt);
-
-
     // tabela
     const left = doc.page.margins.left;
     const top = doc.y;
@@ -1466,3 +1453,4 @@ app.get("*", (_req, res) => {
     process.exit(1);
   }
 })();
+
