@@ -16,7 +16,9 @@ process.env.TZ = (process.env.TZ || "America/Sao_Paulo").trim();
 
 // Semana mínima (segunda-feira) para iniciar o sistema automaticamente, sem precisar forçar via variável.
 // Ex.: quando a semana anterior já passou, iniciamos diretamente na próxima.
-const CUTOVER_WEEK_START = "2026-03-02";
+const CUTOVER_WEEK_START = "2026-03-09";
+// Se quiser forçar manualmente a semana exibida (ex.: liberar semana futura), defina WEEK_START_OVERRIDE=YYYY-MM-DD (segunda-feira)
+const WEEK_START_OVERRIDE = (process.env.WEEK_START_OVERRIDE || "").trim();
 
 const JWT_SECRET = (process.env.JWT_SECRET || "troque-este-segredo").trim();
 const DEFAULT_PASSWORD = (process.env.DEFAULT_PASSWORD || "sr123").trim();
@@ -159,8 +161,9 @@ function fmtDDMMYYYY(iso) {
 function getWeekRangeISO() {
   const now = new Date(); // respeita TZ no processo
 
-  // data efetiva = max(agora, CUTOVER_WEEK_START)
-  const [cy, cm, cd] = CUTOVER_WEEK_START.split("-").map(Number);
+  // data efetiva = max(agora, CUTOVER_WEEK_START ou WEEK_START_OVERRIDE)
+  const baseStart = (WEEK_START_OVERRIDE && /^\d{4}-\d{2}-\d{2}$/.test(WEEK_START_OVERRIDE)) ? WEEK_START_OVERRIDE : CUTOVER_WEEK_START;
+  const [cy, cm, cd] = baseStart.split("-").map(Number);
   const cutover = new Date(cy, cm - 1, cd);
   cutover.setHours(0, 0, 0, 0);
 
