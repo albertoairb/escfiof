@@ -153,6 +153,24 @@ function fmtDDMMYYYY(iso) {
   const [y, m, d] = String(iso || "").split("-");
   if (!y || !m || !d) return String(iso || "");
   return `${d}/${m}/${y}`;
+function fmtDDMMYYYYHHmm(value) {
+  if (!value) return "";
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return String(value);
+  // força fuso de São Paulo para consistência
+  const parts = new Intl.DateTimeFormat("pt-BR", {
+    timeZone: "America/Sao_Paulo",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).formatToParts(d);
+  const get = (t) => (parts.find(p => p.type === t) || {}).value || "";
+  return `${get("day")}/${get("month")}/${get("year")} ${get("hour")}:${get("minute")}`;
+}
+
 }
 
 // Semana vigente: segunda a domingo, em YYYY-MM-DD (sem usar toISOString para evitar +1 dia)
@@ -379,7 +397,7 @@ function buildFreshState() {
   return {
     meta: {
       system_name: SYSTEM_NAME,
-      footer_mark: `© ${COPYRIGHT_YEAR} - ${AUTHOR}`,
+      footer_mark: `© ${COPYRIGHT_YEAR}`,
       signatures: defaultSignatures(),
     },
     period: { start: w.start, end: w.end },
@@ -566,7 +584,7 @@ async function getStateAutoReset() {
   // garante campos
   st.meta = st.meta || {};
   st.meta.system_name = SYSTEM_NAME;
-  st.meta.footer_mark = `© ${COPYRIGHT_YEAR} - ${AUTHOR}`;
+  st.meta.footer_mark = `© ${COPYRIGHT_YEAR}`;
   st.meta.signatures = st.meta.signatures && typeof st.meta.signatures === "object" ? st.meta.signatures : defaultSignatures();
   st.codes = CODES.slice();
   st.officers = OFFICERS.slice();
@@ -890,7 +908,7 @@ app.get("/api/state", authRequired(true), async (req, res) => {
       },
       meta: {
         system_name: SYSTEM_NAME,
-        footer_mark: `© ${COPYRIGHT_YEAR} - ${AUTHOR}`,
+        footer_mark: `© ${COPYRIGHT_YEAR}`,
         period_label: periodLabel,
         signatures: (st.meta && st.meta.signatures) ? st.meta.signatures : defaultSignatures(),
       },
@@ -1015,17 +1033,24 @@ app.put("/api/assignments", authRequired(false), async (req, res) => {
       // atualiza state_store (permite limpar)
       st.assignments = st.assignments || {};
       st.notes = st.notes || {};
+      st.notes_meta = st.notes_meta || {};
 
       if (!code) {
         delete st.assignments[key];
         delete st.notes[key];
+        delete st.notes_meta[key];
       } else {
         st.assignments[key] = code;
         if (needObs) {
           // grava/atualiza observação mesmo se o código não mudar
           st.notes[key] = newObs;
+          st.notes_meta[key] = {
+            updated_at: new Date().toISOString(),
+            updated_by: actor,
+          };
         } else {
           delete st.notes[key];
+          delete st.notes_meta[key];
         }
       }
 
@@ -1255,76 +1280,9 @@ doc.moveDown(0.6);
     }
 
 
-// histórico de alterações (semana)
-if (changeLogs && changeLogs.length) {
-  doc.addPage({ margin: 36, size: "A4", layout: "portrait" });
-  doc.fontSize(14).text("HISTÓRICO DE ALTERAÇÕES (SEMANA)", { align: "center" });
-  doc.moveDown(0.6);
-  doc.fontSize(9);
 
-  // imprime somente alterações relacionadas a OUTROS/FO* (código ou observação)
-  const relevant = [];
-  for (const r of changeLogs) {
-    const iso = isoFromDbDate(r.data);
-    const canonical = resolveCanonicalFromDbOfficer(r.target_name);
-    // tenta achar código vigente do dia para filtrar FO*/OUTROS
-    const key = canonical ? `${canonical}|${iso}` : null;
-    const code = key && assignments[key] ? String(assignments[key]) : "";
-    if (code !== "OUTROS" && code !== "FO*") continue;
-    relevant.push(r);
-  }
 
-  if (!relevant.length) {
-    doc.font("Helvetica").text("sem alterações relacionadas a OUTROS/FO* nesta semana.");
-  } else {
-    for (const r of relevant) {
-      const when = r.at ? fmtDDMMYYYYHHmm(r.at) : "";
-      const day = r.data ? fmtDDMMYYYY(isoFromDbDate(r.data)) : "";
-      const who = r.actor_name ? String(r.actor_name) : "";
-      const target = r.target_name ? String(r.target_name) : "";
-      const field = r.field_name ? String(r.field_name) : "";
-      const beforeV = r.before_value == null ? "" : String(r.before_value);
-      const afterV = r.after_value == null ? "" : String(r.after_value);
-
-      doc.font("Helvetica-Bold").text(`${when} - ${who}`);
-      doc.font("Helvetica").text(`${day} - ${target} | ${field}:`, { continued: false });
-      if (beforeV || afterV) {
-        doc.font("Helvetica").text(`antes: ${beforeV || "-"}`);
-        doc.font("Helvetica").text(`depois: ${afterV || "-"}`);
-      }
-      doc.moveDown(0.5);
-
-      if (doc.y > doc.page.height - 160) {
-        doc.addPage({ margin: 36, size: "A4", layout: "portrait" });
-        doc.fontSize(14).text("HISTÓRICO DE ALTERAÇÕES (SEMANA)", { align: "center" });
-        doc.moveDown(0.6);
-        doc.fontSize(9);
-      }
-    }
-  }
-}
-
-    // assinaturas (sempre na última página)
-// tenta colocar na página atual; se não houver espaço, cria nova página mantendo o mesmo layout
-{
-  const layoutNow = doc.page.layout || "portrait";
-  const needNewPage = doc.y > doc.page.height - 140;
-  if (needNewPage) {
-    doc.addPage({ margin: 36, size: "A4", layout: layoutNow });
-  }
-}
-
-    const xLeft = doc.page.margins.left;
-    const xRight = doc.page.width / 2 + 20;
-    const lineW = (doc.page.width - doc.page.margins.left - doc.page.margins.right - 40) / 2;
-    const yLine = doc.page.height - 160;
-
-    // linhas
-    doc.moveTo(xLeft, yLine).lineTo(xLeft + lineW, yLine).stroke();
-    doc.moveTo(xRight, yLine).lineTo(xRight + lineW, yLine).stroke();
-
-    // nomes e cargos (editáveis em /assinaturas)
-    const sig = (st.meta && st.meta.signatures) ? st.meta.signatures : defaultSignatures();
+const sig = (st.meta && st.meta.signatures) ? st.meta.signatures : defaultSignatures();
 
     doc.fontSize(10).text(String(sig.left_name || "").toUpperCase(), xLeft, yLine + 6, { width: lineW, align: "center" });
     doc.fontSize(9).text(String(sig.left_role || "").toUpperCase(), xLeft, yLine + 22, { width: lineW, align: "center" });
@@ -1333,7 +1291,7 @@ if (changeLogs && changeLogs.length) {
     doc.fontSize(9).text(String(sig.right_role || "").toUpperCase(), xRight, yLine + 22, { width: lineW, align: "center" });
 
     // rodapé
-    doc.fontSize(9).text(`© ${COPYRIGHT_YEAR} - ${AUTHOR}`, 0, doc.page.height - 40, { align: "center" });
+    doc.fontSize(9).text(`© ${COPYRIGHT_YEAR}`, 0, doc.page.height - 40, { align: "center" });
 
     doc.end();
   } catch (err) {
