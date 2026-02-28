@@ -1229,18 +1229,6 @@ if (usedDb) {
   }
 }
 
-<<<<<<< HEAD
-// último registro (nome + data/hora) para rodapé do PDF
-let lastAction = null;
-try {
-  lastAction = await fetchLastActionForPeriod(st.period.start, st.period.end);
-} catch (_e) {
-  lastAction = null;
-}
-
-const lastActor = (lastAction && lastAction.actor_name) ? String(lastAction.actor_name) : "";
-const lastAt = (lastAction && lastAction.at) ? lastAction.at : (st && st.updated_at ? st.updated_at : null);
-=======
 // último registro (nome + data/hora) para o PDF
 // prioridade: metadados gravados no state_store no momento do salvamento
 let lastActor = (st && st.last_edit_actor) ? String(st.last_edit_actor) : "";
@@ -1258,7 +1246,6 @@ if (!lastAt) {
   if (!lastAt && lastAction && lastAction.at) lastAt = lastAction.at;
 }
 
->>>>>>> 5984a1b (fix: ultimo registro com data/hora momentaneas e sem rodape no PDF)
 const lastStamp = fmtDDMMYYYYHHmm(lastAt);
 
 
@@ -1424,17 +1411,7 @@ if (changeLogs && changeLogs.length) {
     doc.fontSize(10).text(String(sig.right_name || "").toUpperCase(), xRight, yLine + 6, { width: lineW, align: "center" });
     doc.fontSize(9).text(String(sig.right_role || "").toUpperCase(), xRight, yLine + 22, { width: lineW, align: "center" });
 
-<<<<<<< HEAD
-    // rodapé (institucional): sem "desenvolvido por" no PDF
-    const footer = lastStamp
-      ? (lastActor ? `Último registro: ${lastActor} — ${lastStamp}` : `Último registro: ${lastStamp}`)
-      : "";
-    if (footer) {
-      doc.fontSize(9).text(footer, 0, doc.page.height - 40, { align: "center" });
-    }
-=======
     // sem rodapé de "último registro" (fica somente em DESCRIÇÕES, conforme regra)
->>>>>>> 5984a1b (fix: ultimo registro com data/hora momentaneas e sem rodape no PDF)
 
     doc.end();
   } catch (err) {
