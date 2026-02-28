@@ -79,7 +79,7 @@ const OFFICERS = [
   { canonical_name: "Raphael Mecca Sampaio", rank: "1º Ten PM", name: "Raphael Mecca Sampaio" },
 ];
             
-// override visual para postos (Ten Dent) â€” garante exibiÃ§Ã£o correta no state e no PDF
+// override visual para postos (Ten Dent) — garante exibiÃ§Ã£o correta no state e no PDF
 function fixDentRanks(list) {
   return (Array.isArray(list) ? list : []).map(o => {
     if (!o || typeof o !== "object") return o;
@@ -184,7 +184,7 @@ function fmtDDMMYYYY(iso) {
   return `${d}/${m}/${y}`;
 }
 
-// Formata data/hora em pt-BR (SÃ£o Paulo) no padrÃ£o: dd/mm/aaaa Ã s HHhMM
+// Formata data/hora em pt-BR (SÃ£o Paulo) no padrÃ£o: dd/mm/aaaa às HHhMM
 function fmtDDMMYYYYHHmm(value) {
   if (!value) return "";
   const dt = (value instanceof Date) ? value : new Date(value);
@@ -211,7 +211,7 @@ function fmtDDMMYYYYHHmm(value) {
 
   const dateStr = `${dd}/${mm}/${yyyy}`;
   if (!hh || !mi) return dateStr;
-  return `${dateStr} Ã s ${hh}h${mi}`;
+  return `${dateStr} às ${hh}h${mi}`;
 }
 
 // Semana vigente: segunda a domingo, em YYYY-MM-DD (sem usar toISOString para evitar +1 dia)
@@ -256,7 +256,7 @@ function buildDatesForWeek(startYYYYMMDD) {
   return dates;
 }
 
-// Fechamento: sexta-feira Ã s 11h (SÃ£o Paulo) atÃ© domingo
+// Fechamento: sexta-feira às 11h (SÃ£o Paulo) atÃ© domingo
 function isClosedNow() {
   const now = new Date();
   const day = now.getDay(); // 5=sexta
@@ -1328,7 +1328,7 @@ const lastStamp = fmtDDMMYYYYHHmm(lastAt);
       doc.moveDown(0.6);
       // registro institucional (somente aqui, conforme regra)
       if (lastStamp) {
-        const line = lastActor ? `Ãšltimo registro: ${lastActor} â€” ${lastStamp}` : `Ãšltimo registro: ${lastStamp}`;
+        const line = lastActor ? `Último registro: ${lastActor} — ${lastStamp}` : `Último registro: ${lastStamp}`;
         doc.fontSize(9).text(line, { align: "center" });
         doc.moveDown(0.6);
       }
@@ -1439,7 +1439,7 @@ if (changeLogs && changeLogs.length) {
 
     // rodapÃ© (institucional): sem "desenvolvido por" no PDF
     const footer = lastStamp
-      ? (lastActor ? `Ãšltimo registro: ${lastActor} â€” ${lastStamp}` : `Ãšltimo registro: ${lastStamp}`)
+      ? (lastActor ? `Último registro: ${lastActor} — ${lastStamp}` : `Último registro: ${lastStamp}`)
       : "";
     if (footer) {
       doc.fontSize(9).text(footer, 0, doc.page.height - 40, { align: "center" });
