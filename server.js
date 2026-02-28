@@ -56,35 +56,35 @@ const DB_NAME = (process.env.DB_NAME || process.env.DB_DATABASE || "escala").tri
 // - name: nome completo a exibir
 // ===============================
 const OFFICERS = [
-  { canonical_name: "Helder AntÃ´nio de Paula", rank: "Tenente-Coronel PM", name: "Helder AntÃ´nio de Paula" },
-  { canonical_name: "Eduardo Mosna Xavier", rank: "Major PM", name: "Eduardo Mosna Xavier" },
-  { canonical_name: "Alessandra Paula Tonolli", rank: "Major PM", name: "Alessandra Paula Tonolli" },
-  { canonical_name: "Carlos Bordim Neto", rank: "CapitÃ£o PM", name: "Carlos Bordim Neto" },
-  { canonical_name: "Alberto Franzini Neto", rank: "CapitÃ£o PM", name: "Alberto Franzini Neto" },
-  { canonical_name: "Marcio Saito Essaki", rank: "CapitÃ£o PM", name: "Marcio Saito Essaki" },
-  { canonical_name: "Daniel Alves de Siqueira", rank: "1Âº Tenente PM", name: "Daniel Alves de Siqueira" },
-  { canonical_name: "Mateus Pedro Teodoro", rank: "1Âº Tenente PM", name: "Mateus Pedro Teodoro" },
-  { canonical_name: "Fernanda Bruno Pomponio Martignago", rank: "1Âº Tenente Dent PM", name: "Fernanda Bruno Pomponio Martignago" },
-  { canonical_name: "Dayana de Oliveira Silva Almeida", rank: "1Âº Tenente Dent PM", name: "Dayana de Oliveira Silva Almeida" },
+  { canonical_name: "Helder AntÃ´nio de Paula", rank: "Ten Cel PM", name: "Helder AntÃ´nio de Paula" },
+  { canonical_name: "Eduardo Mosna Xavier", rank: "Maj PM", name: "Eduardo Mosna Xavier" },
+  { canonical_name: "Alessandra Paula Tonolli", rank: "Maj PM", name: "Alessandra Paula Tonolli" },
+  { canonical_name: "Carlos Bordim Neto", rank: "Cap PM", name: "Carlos Bordim Neto" },
+  { canonical_name: "Alberto Franzini Neto", rank: "Cap PM", name: "Alberto Franzini Neto" },
+  { canonical_name: "Marcio Saito Essaki", rank: "Cap PM", name: "Marcio Saito Essaki" },
+  { canonical_name: "Daniel Alves de Siqueira", rank: "1Âº Ten PM", name: "Daniel Alves de Siqueira" },
+  { canonical_name: "Mateus Pedro Teodoro", rank: "1Âº Ten PM", name: "Mateus Pedro Teodoro" },
+  { canonical_name: "Fernanda Bruno Pomponio Martignago", rank: "1Âº Ten Dent PM", name: "Fernanda Bruno Pomponio Martignago" },
+  { canonical_name: "Dayana de Oliveira Silva Almeida", rank: "1Âº Ten Dent PM", name: "Dayana de Oliveira Silva Almeida" },
 
-  { canonical_name: "AndrÃ© Santarelli de Paula", rank: "CapitÃ£o PM", name: "AndrÃ© Santarelli de Paula" },
-  { canonical_name: "Vinicio Augusto Voltarelli Tavares", rank: "CapitÃ£o PM", name: "Vinicio Augusto Voltarelli Tavares" },
-  { canonical_name: "Jose Antonio Marciano Neto", rank: "CapitÃ£o PM", name: "Jose Antonio Marciano Neto" },
+  { canonical_name: "AndrÃ© Santarelli de Paula", rank: "Cap PM", name: "AndrÃ© Santarelli de Paula" },
+  { canonical_name: "Vinicio Augusto Voltarelli Tavares", rank: "Cap PM", name: "Vinicio Augusto Voltarelli Tavares" },
+  { canonical_name: "Jose Antonio Marciano Neto", rank: "Cap PM", name: "Jose Antonio Marciano Neto" },
 
-  { canonical_name: "Uri Filipe dos Santos", rank: "1Âº Tenente PM", name: "Uri Filipe dos Santos" },
-  { canonical_name: "AntÃ´nio OvÃ­dio Ferrucio Cardoso", rank: "1Âº Tenente PM", name: "AntÃ´nio OvÃ­dio Ferrucio Cardoso" },
-  { canonical_name: "Bruno AntÃ£o de Oliveira", rank: "1Âº Tenente PM", name: "Bruno AntÃ£o de Oliveira" },
-  { canonical_name: "Larissa Amadeu Leite", rank: "1Âº Tenente PM", name: "Larissa Amadeu Leite" },
-  { canonical_name: "Renato Fernandes Freire", rank: "1Âº Tenente PM", name: "Renato Fernandes Freire" },
-  { canonical_name: "Raphael Mecca Sampaio", rank: "1Âº Tenente PM", name: "Raphael Mecca Sampaio" },
+  { canonical_name: "Uri Filipe dos Santos", rank: "1Âº Ten PM", name: "Uri Filipe dos Santos" },
+  { canonical_name: "AntÃ´nio OvÃ­dio Ferrucio Cardoso", rank: "1Âº Ten PM", name: "AntÃ´nio OvÃ­dio Ferrucio Cardoso" },
+  { canonical_name: "Bruno AntÃ£o de Oliveira", rank: "1Âº Ten PM", name: "Bruno AntÃ£o de Oliveira" },
+  { canonical_name: "Larissa Amadeu Leite", rank: "1Âº Ten PM", name: "Larissa Amadeu Leite" },
+  { canonical_name: "Renato Fernandes Freire", rank: "1Âº Ten PM", name: "Renato Fernandes Freire" },
+  { canonical_name: "Raphael Mecca Sampaio", rank: "1Âº Ten PM", name: "Raphael Mecca Sampaio" },
 ];
             
 // override visual para postos (Ten Dent) â€” garante exibiÃ§Ã£o correta no state e no PDF
 function fixDentRanks(list) {
   return (Array.isArray(list) ? list : []).map(o => {
     if (!o || typeof o !== "object") return o;
-    if (o.canonical_name === "Fernanda Bruno Pomponio Martignago") return { ...o, rank: "1Âº Tenente Dent PM" };
-    if (o.canonical_name === "Dayana de Oliveira Silva Almeida") return { ...o, rank: "1Âº Tenente Dent PM" };
+    if (o.canonical_name === "Fernanda Bruno Pomponio Martignago") return { ...o, rank: "1Âº Ten Dent PM" };
+    if (o.canonical_name === "Dayana de Oliveira Silva Almeida") return { ...o, rank: "1Âº Ten Dent PM" };
     return o;
   });
 }
