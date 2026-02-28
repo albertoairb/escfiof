@@ -155,6 +155,36 @@ function fmtDDMMYYYY(iso) {
   return `${d}/${m}/${y}`;
 }
 
+// Formata data/hora em pt-BR (São Paulo) no padrão: dd/mm/aaaa às HHhMM
+function fmtDDMMYYYYHHmm(value) {
+  if (!value) return "";
+  const dt = (value instanceof Date) ? value : new Date(value);
+  if (Number.isNaN(dt.getTime())) return "";
+
+  // Usa timeZone explicitamente para não depender do TZ do processo.
+  const parts = new Intl.DateTimeFormat("pt-BR", {
+    timeZone: "America/Sao_Paulo",
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).formatToParts(dt);
+
+  const get = (type) => (parts.find(p => p.type === type) || {}).value || "";
+  const dd = get("day");
+  const mm = get("month");
+  const yyyy = get("year");
+  const hh = get("hour");
+  const mi = get("minute");
+  if (!dd || !mm || !yyyy) return "";
+
+  const dateStr = `${dd}/${mm}/${yyyy}`;
+  if (!hh || !mi) return dateStr;
+  return `${dateStr} às ${hh}h${mi}`;
+}
+
 // Semana vigente: segunda a domingo, em YYYY-MM-DD (sem usar toISOString para evitar +1 dia)
 // Regra adicional: nunca retornar semana anterior a CUTOVER_WEEK_START (segunda-feira).
 
@@ -478,6 +508,22 @@ function fetchChangeLogsForPeriod(periodStartISO, periodEndISO, limit = 500) {
      LIMIT ?
   `;
   return safeQuery(sql, [periodStartISO, periodEndISO, limit]);
+}
+
+async function fetchLastActionForPeriod(periodStartISO, periodEndISO) {
+  // action_logs.at é TIMESTAMP; filtra pela janela da semana (São Paulo)
+  const start = `${periodStartISO} 00:00:00`;
+  const end = `${periodEndISO} 23:59:59`;
+  const sql = `
+    SELECT at, actor_name, action
+      FROM action_logs
+     WHERE at BETWEEN ? AND ?
+       AND action IN ('update_day','update_signatures','reset_week')
+     ORDER BY at DESC
+     LIMIT 1
+  `;
+  const rows = await safeQuery(sql, [start, end]);
+  return (rows && rows.length) ? rows[0] : null;
 }
 
 
@@ -1176,6 +1222,18 @@ if (usedDb) {
   }
 }
 
+// último registro (nome + data/hora) para rodapé do PDF
+let lastAction = null;
+try {
+  lastAction = await fetchLastActionForPeriod(st.period.start, st.period.end);
+} catch (_e) {
+  lastAction = null;
+}
+
+const lastActor = (lastAction && lastAction.actor_name) ? String(lastAction.actor_name) : "";
+const lastAt = (lastAction && lastAction.at) ? lastAction.at : (st && st.updated_at ? st.updated_at : null);
+const lastStamp = fmtDDMMYYYYHHmm(lastAt);
+
 
     // tabela
     const left = doc.page.margins.left;
@@ -1332,8 +1390,13 @@ if (changeLogs && changeLogs.length) {
     doc.fontSize(10).text(String(sig.right_name || "").toUpperCase(), xRight, yLine + 6, { width: lineW, align: "center" });
     doc.fontSize(9).text(String(sig.right_role || "").toUpperCase(), xRight, yLine + 22, { width: lineW, align: "center" });
 
-    // rodapé
-    doc.fontSize(9).text(`© ${COPYRIGHT_YEAR} - ${AUTHOR}`, 0, doc.page.height - 40, { align: "center" });
+    // rodapé (institucional): sem "desenvolvido por" no PDF
+    const footer = lastStamp
+      ? (lastActor ? `Último registro: ${lastActor} — ${lastStamp}` : `Último registro: ${lastStamp}`)
+      : "";
+    if (footer) {
+      doc.fontSize(9).text(footer, 0, doc.page.height - 40, { align: "center" });
+    }
 
     doc.end();
   } catch (err) {
