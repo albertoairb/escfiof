@@ -64,8 +64,8 @@ const OFFICERS = [
   { canonical_name: "Marcio Saito Essaki", rank: "Capitão PM", name: "Marcio Saito Essaki" },
   { canonical_name: "Daniel Alves de Siqueira", rank: "1º Tenente PM", name: "Daniel Alves de Siqueira" },
   { canonical_name: "Mateus Pedro Teodoro", rank: "1º Tenente PM", name: "Mateus Pedro Teodoro" },
-  { canonical_name: "Fernanda Bruno Pomponio Martignago", rank: "2º Tenente PM", name: "Fernanda Bruno Pomponio Martignago" },
-  { canonical_name: "Dayana de Oliveira Silva Almeida", rank: "2º Tenente PM", name: "Dayana de Oliveira Silva Almeida" },
+  { canonical_name: "Fernanda Bruno Pomponio Martignago", rank: "1º Tenente Dent PM", name: "Fernanda Bruno Pomponio Martignago" },
+  { canonical_name: "Dayana de Oliveira Silva Almeida", rank: "1º Tenente Dent PM", name: "Dayana de Oliveira Silva Almeida" },
 
   { canonical_name: "André Santarelli de Paula", rank: "Capitão PM", name: "André Santarelli de Paula" },
   { canonical_name: "Vinicio Augusto Voltarelli Tavares", rank: "Capitão PM", name: "Vinicio Augusto Voltarelli Tavares" },
@@ -979,6 +979,10 @@ app.put("/api/signatures", authRequired(true), async (req, res) => {
       right_role: right_role.toUpperCase(),
     };
 
+    // metadados do último registro (para PDF)
+    st.last_edit_actor = req.user.canonical_name;
+    st.last_edit_at = new Date().toISOString();
+
     await safeQuery(
       "INSERT INTO state_store (id, payload) VALUES (1, ?) ON DUPLICATE KEY UPDATE payload=VALUES(payload), updated_at=CURRENT_TIMESTAMP",
       [JSON.stringify(st)]
@@ -1122,7 +1126,10 @@ try {
       applied++;
     }
 
-    st.updated_at = new Date().toISOString();
+    // metadados do último registro (para PDF)
+    st.last_edit_actor = actor;
+    st.last_edit_at = new Date().toISOString();
+    st.updated_at = st.last_edit_at;
     await safeQuery(
       "INSERT INTO state_store (id, payload) VALUES (1, ?) ON DUPLICATE KEY UPDATE payload=VALUES(payload), updated_at=CURRENT_TIMESTAMP",
       [JSON.stringify(st)]
@@ -1222,6 +1229,7 @@ if (usedDb) {
   }
 }
 
+<<<<<<< HEAD
 // último registro (nome + data/hora) para rodapé do PDF
 let lastAction = null;
 try {
@@ -1232,6 +1240,25 @@ try {
 
 const lastActor = (lastAction && lastAction.actor_name) ? String(lastAction.actor_name) : "";
 const lastAt = (lastAction && lastAction.at) ? lastAction.at : (st && st.updated_at ? st.updated_at : null);
+=======
+// último registro (nome + data/hora) para o PDF
+// prioridade: metadados gravados no state_store no momento do salvamento
+let lastActor = (st && st.last_edit_actor) ? String(st.last_edit_actor) : "";
+let lastAt = (st && st.last_edit_at) ? st.last_edit_at : (st && st.updated_at ? st.updated_at : null);
+
+// fallback: action_logs (se ainda não existir last_edit_* em algum ambiente antigo)
+if (!lastAt) {
+  let lastAction = null;
+  try {
+    lastAction = await fetchLastActionForPeriod(st.period.start, st.period.end);
+  } catch (_e) {
+    lastAction = null;
+  }
+  if (!lastActor && lastAction && lastAction.actor_name) lastActor = String(lastAction.actor_name);
+  if (!lastAt && lastAction && lastAction.at) lastAt = lastAction.at;
+}
+
+>>>>>>> 5984a1b (fix: ultimo registro com data/hora momentaneas e sem rodape no PDF)
 const lastStamp = fmtDDMMYYYYHHmm(lastAt);
 
 
@@ -1286,6 +1313,13 @@ const lastStamp = fmtDDMMYYYYHHmm(lastAt);
       doc.addPage({ margin: 36, size: "A4", layout: "portrait" });
       doc.fontSize(14).text("DESCRIÇÕES (OUTROS / FO*)", { align: "center" });
       doc.moveDown(0.6);
+      // registro institucional (somente aqui, conforme regra)
+      if (lastStamp) {
+        const line = lastActor ? `Último registro: ${lastActor} — ${lastStamp}` : `Último registro: ${lastStamp}`;
+        doc.fontSize(9).text(line, { align: "center" });
+        doc.moveDown(0.6);
+      }
+
       doc.fontSize(10);
 
       for (const it of noteEntries) {
@@ -1390,6 +1424,7 @@ if (changeLogs && changeLogs.length) {
     doc.fontSize(10).text(String(sig.right_name || "").toUpperCase(), xRight, yLine + 6, { width: lineW, align: "center" });
     doc.fontSize(9).text(String(sig.right_role || "").toUpperCase(), xRight, yLine + 22, { width: lineW, align: "center" });
 
+<<<<<<< HEAD
     // rodapé (institucional): sem "desenvolvido por" no PDF
     const footer = lastStamp
       ? (lastActor ? `Último registro: ${lastActor} — ${lastStamp}` : `Último registro: ${lastStamp}`)
@@ -1397,6 +1432,9 @@ if (changeLogs && changeLogs.length) {
     if (footer) {
       doc.fontSize(9).text(footer, 0, doc.page.height - 40, { align: "center" });
     }
+=======
+    // sem rodapé de "último registro" (fica somente em DESCRIÇÕES, conforme regra)
+>>>>>>> 5984a1b (fix: ultimo registro com data/hora momentaneas e sem rodape no PDF)
 
     doc.end();
   } catch (err) {
