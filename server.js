@@ -25,7 +25,7 @@ const DEFAULT_PASSWORD = (process.env.DEFAULT_PASSWORD || "sr123").trim();
 
 const CLOSE_FRIDAY_HOUR = Number(process.env.CLOSE_FRIDAY_HOUR || 11);
 
-const SYSTEM_NAME = (process.env.SYSTEM_NAME || "Escala Semanal de Oficiais do 4Âº BPM/M").trim();
+const SYSTEM_NAME = (process.env.SYSTEM_NAME || "Escala Semanal de Oficiais do 4º BPM/M").trim();
 const AUTHOR = (process.env.AUTHOR || "Desenvolvido por Alberto Franzini Neto").trim();
 const COPYRIGHT_YEAR = (process.env.COPYRIGHT_YEAR || "2026").toString().trim();
 
@@ -62,29 +62,29 @@ const OFFICERS = [
   { canonical_name: "Carlos Bordim Neto", rank: "Cap PM", name: "Carlos Bordim Neto" },
   { canonical_name: "Alberto Franzini Neto", rank: "Cap PM", name: "Alberto Franzini Neto" },
   { canonical_name: "Marcio Saito Essaki", rank: "Cap PM", name: "Marcio Saito Essaki" },
-  { canonical_name: "Daniel Alves de Siqueira", rank: "1Âº Ten PM", name: "Daniel Alves de Siqueira" },
-  { canonical_name: "Mateus Pedro Teodoro", rank: "1Âº Ten PM", name: "Mateus Pedro Teodoro" },
-  { canonical_name: "Fernanda Bruno Pomponio Martignago", rank: "1Âº Ten Dent PM", name: "Fernanda Bruno Pomponio Martignago" },
-  { canonical_name: "Dayana de Oliveira Silva Almeida", rank: "1Âº Ten Dent PM", name: "Dayana de Oliveira Silva Almeida" },
+  { canonical_name: "Daniel Alves de Siqueira", rank: "1º Ten PM", name: "Daniel Alves de Siqueira" },
+  { canonical_name: "Mateus Pedro Teodoro", rank: "1º Ten PM", name: "Mateus Pedro Teodoro" },
+  { canonical_name: "Fernanda Bruno Pomponio Martignago", rank: "1º Ten Dent PM", name: "Fernanda Bruno Pomponio Martignago" },
+  { canonical_name: "Dayana de Oliveira Silva Almeida", rank: "1º Ten Dent PM", name: "Dayana de Oliveira Silva Almeida" },
 
   { canonical_name: "AndrÃ© Santarelli de Paula", rank: "Cap PM", name: "AndrÃ© Santarelli de Paula" },
   { canonical_name: "Vinicio Augusto Voltarelli Tavares", rank: "Cap PM", name: "Vinicio Augusto Voltarelli Tavares" },
   { canonical_name: "Jose Antonio Marciano Neto", rank: "Cap PM", name: "Jose Antonio Marciano Neto" },
 
-  { canonical_name: "Uri Filipe dos Santos", rank: "1Âº Ten PM", name: "Uri Filipe dos Santos" },
-  { canonical_name: "AntÃ´nio OvÃ­dio Ferrucio Cardoso", rank: "1Âº Ten PM", name: "AntÃ´nio OvÃ­dio Ferrucio Cardoso" },
-  { canonical_name: "Bruno AntÃ£o de Oliveira", rank: "1Âº Ten PM", name: "Bruno AntÃ£o de Oliveira" },
-  { canonical_name: "Larissa Amadeu Leite", rank: "1Âº Ten PM", name: "Larissa Amadeu Leite" },
-  { canonical_name: "Renato Fernandes Freire", rank: "1Âº Ten PM", name: "Renato Fernandes Freire" },
-  { canonical_name: "Raphael Mecca Sampaio", rank: "1Âº Ten PM", name: "Raphael Mecca Sampaio" },
+  { canonical_name: "Uri Filipe dos Santos", rank: "1º Ten PM", name: "Uri Filipe dos Santos" },
+  { canonical_name: "AntÃ´nio OvÃ­dio Ferrucio Cardoso", rank: "1º Ten PM", name: "AntÃ´nio OvÃ­dio Ferrucio Cardoso" },
+  { canonical_name: "Bruno AntÃ£o de Oliveira", rank: "1º Ten PM", name: "Bruno AntÃ£o de Oliveira" },
+  { canonical_name: "Larissa Amadeu Leite", rank: "1º Ten PM", name: "Larissa Amadeu Leite" },
+  { canonical_name: "Renato Fernandes Freire", rank: "1º Ten PM", name: "Renato Fernandes Freire" },
+  { canonical_name: "Raphael Mecca Sampaio", rank: "1º Ten PM", name: "Raphael Mecca Sampaio" },
 ];
             
 // override visual para postos (Ten Dent) â€” garante exibiÃ§Ã£o correta no state e no PDF
 function fixDentRanks(list) {
   return (Array.isArray(list) ? list : []).map(o => {
     if (!o || typeof o !== "object") return o;
-    if (o.canonical_name === "Fernanda Bruno Pomponio Martignago") return { ...o, rank: "1Âº Ten Dent PM" };
-    if (o.canonical_name === "Dayana de Oliveira Silva Almeida") return { ...o, rank: "1Âº Ten Dent PM" };
+    if (o.canonical_name === "Fernanda Bruno Pomponio Martignago") return { ...o, rank: "1º Ten Dent PM" };
+    if (o.canonical_name === "Dayana de Oliveira Silva Almeida") return { ...o, rank: "1º Ten Dent PM" };
     return o;
   });
 }
@@ -100,7 +100,7 @@ const ADMIN_NAMES = new Set([
 // CÃ³digos vÃ¡lidos (tudo em MAIÃšSCULO, conforme regra)
 // - FO*: permite descriÃ§Ã£o
 // - FOJ: sem descriÃ§Ã£o
-const CODES = ["EXP", "SR", "MA", "VE", "FOJ", "FO*", "LP", "FÃ‰RIAS", "CFP_DIA", "CFP_NOITE", "OUTROS"];
+const CODES = ["EXP", "SR", "MA", "VE", "FOJ", "FO*", "LP", "FÉRIAS", "CFP_DIA", "CFP_NOITE", "OUTROS"];
 
 // ===============================
 // APP
@@ -147,10 +147,28 @@ function safeJsonParse(s) {
   try { return JSON.parse(s); } catch { return null; }
 }
 
+
+function fixText(s) {
+  const str = String(s ?? "");
+  if (!str) return "";
+  // Corrige "mojibake" comum (UTF-8 interpretado como Latin-1 e regravado).
+  if (/[ÃÂ�]/.test(str)) {
+    try { return Buffer.from(str, "latin1").toString("utf8"); } catch (_e) {}
+  }
+  return str;
+}
+
+// Remove acentos (usar APENAS para nomes de oficiais, conforme regra).
+function stripAccents(s) {
+  return fixText(s).normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+}
+
+function officerNameNoAccents(s) {
+  return stripAccents(s).trim().replace(/\s+/g, " ");
+}
+
 function normKey(s) {
-  return String(s || "")
-    .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
-    .toLowerCase().trim().replace(/\s+/g, " ");
+  return stripAccents(s).toLowerCase().trim().replace(/\s+/g, " ");
 }
 
 function fmtYYYYMMDD(d) {
@@ -419,8 +437,8 @@ function buildFreshState() {
 
   return {
     meta: {
-      system_name: SYSTEM_NAME,
-      footer_mark: `Â© ${COPYRIGHT_YEAR} - ${AUTHOR}`,
+      system_name: fixText(SYSTEM_NAME),
+      footer_mark: `© ${COPYRIGHT_YEAR} - ${fixText(AUTHOR)}`,
       signatures: defaultSignatures(),
     },
     period: { start: w.start, end: w.end },
@@ -566,7 +584,7 @@ function buildAssignmentsAndNotesFromLancamentos(rows, validDates) {
     if (/^CFP_DIA$/i.test(code)) code = "CFP_DIA";
     if (/^CFP_NOITE$/i.test(code)) code = "CFP_NOITE";
     // mantÃ©m FÃ‰RIAS (aceita FERIAS)
-    if (/^FERIAS$/i.test(code)) code = "FÃ‰RIAS";
+    if (/^FERIAS$/i.test(code)) code = "FÉRIAS";
 
     if (!validCodes.has(code)) {
       // ignora cÃ³digos desconhecidos/antigos
@@ -623,7 +641,7 @@ async function getStateAutoReset() {
   // garante campos
   st.meta = st.meta || {};
   st.meta.system_name = SYSTEM_NAME;
-  st.meta.footer_mark = `Â© ${COPYRIGHT_YEAR} - ${AUTHOR}`;
+  st.meta.footer_mark = `© ${COPYRIGHT_YEAR} - ${AUTHOR}`;
   st.meta.signatures = st.meta.signatures && typeof st.meta.signatures === "object" ? st.meta.signatures : defaultSignatures();
   st.codes = CODES.slice();
   st.officers = OFFICERS.slice();
@@ -736,8 +754,8 @@ function resolveOfficerFromInput(nameInput) {
     .replace(/^tenente coronel pm\s+/, "")
     .replace(/^major pm\s+/, "")
     .replace(/^capit(ao|Ã£o) pm\s+/, "")
-    .replace(/^1Âº tenente pm\s+/, "")
-    .replace(/^2Âº tenente pm\s+/, "")
+    .replace(/^1º tenente pm\s+/, "")
+    .replace(/^2º tenente pm\s+/, "")
     .replace(/\s+/g, " ")
     .trim();
 
@@ -828,7 +846,7 @@ app.get("/api/status", async (_req, res) => {
       week,
       locked: isClosedNow(),
       close_friday_hour: CLOSE_FRIDAY_HOUR,
-      system_name: SYSTEM_NAME,
+      system_name: fixText(SYSTEM_NAME),
     });
   } catch (err) {
     return res.status(500).json({ ok: false, error: err && err.message ? err.message : "falha no status" });
@@ -937,7 +955,7 @@ app.get("/api/state", authRequired(true), async (req, res) => {
       }
     } catch (_e) {}
 
-    const periodLabel = `perÃ­odo: ${fmtDDMMYYYY(st.period.start)} a ${fmtDDMMYYYY(st.period.end)}`;
+    const periodLabel = `período: ${fmtDDMMYYYY(st.period.start)} a ${fmtDDMMYYYY(st.period.end)}`;
 
     return res.json({
       ok: true,
@@ -946,14 +964,14 @@ app.get("/api/state", authRequired(true), async (req, res) => {
         is_admin: req.user.is_admin,
       },
       meta: {
-        system_name: SYSTEM_NAME,
-        footer_mark: `Â© ${COPYRIGHT_YEAR} - ${AUTHOR}`,
+        system_name: fixText(SYSTEM_NAME),
+        footer_mark: `© ${COPYRIGHT_YEAR} - ${fixText(AUTHOR)}`,
         period_label: periodLabel,
         signatures: (st.meta && st.meta.signatures) ? st.meta.signatures : defaultSignatures(),
       },
       locked: isClosedNow(),
       holidays,
-      officers: fixDentRanks(OFFICERS),
+      officers: fixDentRanks(OFFICERS).map(o => ({ ...o, rank: fixText(o.rank), name: officerNameNoAccents(o.name) })),
       dates: st.dates,
       codes: CODES,
       assignments,
@@ -1183,9 +1201,9 @@ app.get("/api/pdf", pdfAuth, async (req, res) => {
     doc.pipe(res);
 
     // cabeÃ§alho
-    doc.fontSize(16).text(SYSTEM_NAME, { align: "center" });
+    doc.fontSize(16).text(fixText(SYSTEM_NAME), { align: "center" });
     doc.moveDown(0.2);
-    doc.fontSize(10).text(`PerÃ­odo: ${fmtDDMMYYYY(st.period.start)} a ${fmtDDMMYYYY(st.period.end)}`, { align: "center" });
+    doc.fontSize(10).text(`Período: ${fmtDDMMYYYY(st.period.start)} a ${fmtDDMMYYYY(st.period.end)}`, { align: "center" });
     doc.moveDown(0.6);
 
     const dates = st.dates || [];
@@ -1240,8 +1258,8 @@ if (usedDb) {
   }
 }
 
-// ultimo registro (nome + data/hora) para rodape do PDF
-let lastActor = (st && st.last_edit_actor) ? String(st.last_edit_actor) : "";
+// último registro (nome + data/hora) para rodapé do PDF
+let lastActor = (st && st.last_edit_actor) ? officerNameNoAccents(st.last_edit_actor) : "";
 let lastAt = (st && st.last_edit_at) ? st.last_edit_at : (st && st.updated_at ? st.updated_at : null);
 
 // fallback: action_logs (para ambientes antigos)
@@ -1252,7 +1270,7 @@ if (!lastAt || !lastActor) {
   } catch (_e) {
     lastAction = null;
   }
-  if (!lastActor && lastAction && lastAction.actor_name) lastActor = String(lastAction.actor_name);
+  if (!lastActor && lastAction && lastAction.actor_name) lastActor = officerNameNoAccents(lastAction.actor_name);
   if (!lastAt && lastAction && lastAction.at) lastAt = lastAction.at;
 }
 
@@ -1274,7 +1292,7 @@ const lastStamp = fmtDDMMYYYYHHmm(lastAt);
 
     doc.fontSize(8);
     for (const off of OFFICERS) {
-      const label = `${off.rank} ${off.name}`;
+      const label = `${fixText(off.rank)} ${officerNameNoAccents(off.name)}`;
       doc.text(label, left, y, { width: colWName, align: "left" });
 
       for (let i = 0; i < dates.length; i++) {
@@ -1306,7 +1324,7 @@ const lastStamp = fmtDDMMYYYYHHmm(lastAt);
 
     if (noteEntries.length) {
       doc.addPage({ margin: 36, size: "A4", layout: "portrait" });
-      doc.fontSize(14).text("DESCRIÃ‡Ã•ES (OUTROS / FO*)", { align: "center" });
+      doc.fontSize(14).text("DESCRIÇÕES (OUTROS / FO*)", { align: "center" });
       doc.moveDown(0.6);
       // registro institucional (somente aqui, conforme regra)
       if (lastStamp) {
@@ -1318,7 +1336,7 @@ const lastStamp = fmtDDMMYYYYHHmm(lastAt);
       doc.fontSize(10);
 
       for (const it of noteEntries) {
-        const title = `${fmtDDMMYYYY(it.iso)} - ${it.off.rank} ${it.off.name} (${it.code})`;
+        const title = `${fmtDDMMYYYY(it.iso)} - ${fixText(it.off.rank)} ${officerNameNoAccents(it.off.name)} (${it.code})`;
         doc.font("Helvetica-Bold").text(title);
         doc.font("Helvetica").text(it.text, { width: doc.page.width - doc.page.margins.left - doc.page.margins.right });
         
@@ -1334,7 +1352,7 @@ if (it.meta && (it.meta.updated_at || it.meta.updated_by || it.meta.created_by))
 doc.moveDown(0.6);
         if (doc.y > doc.page.height - 180) {
           doc.addPage({ margin: 36, size: "A4", layout: "portrait" });
-          doc.fontSize(14).text("DESCRIÃ‡Ã•ES (OUTROS / FO*)", { align: "center" });
+          doc.fontSize(14).text("DESCRIÇÕES (OUTROS / FO*)", { align: "center" });
           doc.moveDown(0.6);
           doc.fontSize(10);
         }
