@@ -25,7 +25,7 @@ const DEFAULT_PASSWORD = (process.env.DEFAULT_PASSWORD || "aux123").trim();
 
 const CLOSE_FRIDAY_HOUR = Number(process.env.CLOSE_FRIDAY_HOUR || 11);
 
-const SYSTEM_NAME = (process.env.SYSTEM_NAME || "Escala Semanal de Praças do EM – 4º BPM/M").trim();
+const SYSTEM_NAME = (process.env.SYSTEM_NAME || "ESCALA DE OFICIAIS DO 4º BPM/M").trim();
 const AUTHOR = (process.env.AUTHOR || "Desenvolvido por Alberto Franzini Neto").trim();
 const COPYRIGHT_YEAR = (process.env.COPYRIGHT_YEAR || "2026").toString().trim();
 
