@@ -107,7 +107,6 @@ function ddmmyyyy_hhmm(isoOrDate) {
       "VE": "trabalha tarde",
       "FOJ": "folga (sem descrição)",
       "FO*": "folga (com descrição)",
-      "SV*": "sobreaviso (com descrição)",
       "LP": "licença-prêmio",
       "FÉRIAS": "férias",
       "CURSO": "curso",

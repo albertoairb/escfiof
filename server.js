@@ -1,4 +1,4 @@
-﻿"use strict";
+"use strict";
 
 const path = require("path");
 const express = require("express");
@@ -104,7 +104,7 @@ const ADMIN_NAMES = new Set([
 // CÃ³digos vÃ¡lidos (tudo em MAIÃšSCULO, conforme regra)
 // - códigos terminados em * permitem descrição
 // - FOJ: sem descrição
-const CODES = ["EXP", "SR", "MA", "VE", "FOJ", "FO*", "SV*", "LP", "FÉRIAS", "CURSO", "CFP_DIA", "CFP_NOITE", "OUTROS", "SS", "EXP_SS", "FO", "PF"];
+const CODES = ["EXP", "SR", "MA", "VE", "FOJ", "FO*", "LP", "FÉRIAS", "CURSO", "CFP_DIA", "CFP_NOITE", "OUTROS", "SS", "EXP_SS", "FO", "PF"];
 
 // ===============================
 // APP
@@ -1350,7 +1350,6 @@ const lastStamp = fmtDDMMYYYYHHmm(lastAt);
       const sig = (st.meta && st.meta.signatures) ? st.meta.signatures : defaultSignatures();
 
       doc.moveTo(xLeft, yLine).lineTo(xLeft + lineW, yLine).stroke();
-      doc.moveTo(xCenter, yLine).lineTo(xCenter + lineW, yLine).stroke();
       doc.moveTo(xRight, yLine).lineTo(xRight + lineW, yLine).stroke();
 
       doc.fontSize(10).text(String(sig.left_name || "").toUpperCase(), xLeft, yLine + 6, { width: lineW, align: "center" });
