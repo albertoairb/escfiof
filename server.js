@@ -1307,7 +1307,7 @@ const lastStamp = fmtDDMMYYYYHHmm(lastAt);
     const colWDay = 80;
 
     // header row
-    doc.fontSize(9).text("PRAÇA", left, top, { width: colWName, align: "left" });
+    doc.fontSize(9).text("OFICIAIS", left, top, { width: colWName, align: "left" });
     for (let i = 0; i < dates.length; i++) {
       doc.text(fmtDDMMYYYY(dates[i]), left + colWName + i * colWDay, top, { width: colWDay, align: "center" });
     }
