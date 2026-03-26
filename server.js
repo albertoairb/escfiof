@@ -31,7 +31,7 @@ const COPYRIGHT_YEAR = (process.env.COPYRIGHT_YEAR || "2026").toString().trim();
 
 function defaultSignatures() {
   return {
-    left_name: "AUXILIAR P1",
+    left_name: "",
     left_role: "",
     center_name: "ALBERTO FRANZINI NETO",
     center_role: "CAP PM CH P1/P5",
@@ -1019,7 +1019,7 @@ app.put("/api/signatures", authRequired(true), async (req, res) => {
     const right_name = String(req.body && req.body.right_name ? req.body.right_name : cur.right_name).trim();
     const right_role = String(req.body && req.body.right_role ? req.body.right_role : cur.right_role).trim();
 
-    if (!left_name || !center_name || !right_name) return res.status(400).json({ error: "nome das assinaturas é obrigatório" });
+    if (!center_name || !right_name) return res.status(400).json({ error: "nome das assinaturas é obrigatório" });
     if (left_name.length > 120 || center_name.length > 120 || right_name.length > 120) return res.status(400).json({ error: "nome muito longo" });
     if (left_role.length > 120 || center_role.length > 120 || right_role.length > 120) return res.status(400).json({ error: "cargo/função muito longa" });
 
@@ -1340,20 +1340,22 @@ const lastStamp = fmtDDMMYYYYHHmm(lastAt);
     {
       const leftMargin = doc.page.margins.left;
       const usableW = doc.page.width - doc.page.margins.left - doc.page.margins.right;
-      const gap = 18;
-      const lineW = (usableW - (gap * 2)) / 3;
-      const xLeft = leftMargin;
-      const xCenter = xLeft + lineW + gap;
+      const gap = 40;
+      const lineW = (usableW - gap) / 2;
+      const xCenter = leftMargin;
       const xRight = xCenter + lineW + gap;
       const yLine = doc.page.height - 100;
 
-      const sig = (st.meta && st.meta.signatures) ? st.meta.signatures : defaultSignatures();
+      const rawSig = (st.meta && st.meta.signatures) ? st.meta.signatures : defaultSignatures();
+      const sig = {
+        center_name: String(rawSig.center_name || "").trim() || defaultSignatures().center_name,
+        center_role: String(rawSig.center_role || "").trim() || defaultSignatures().center_role,
+        right_name: String(rawSig.right_name || "").trim() || defaultSignatures().right_name,
+        right_role: String(rawSig.right_role || "").trim() || defaultSignatures().right_role,
+      };
 
-      doc.moveTo(xLeft, yLine).lineTo(xLeft + lineW, yLine).stroke();
+      doc.moveTo(xCenter, yLine).lineTo(xCenter + lineW, yLine).stroke();
       doc.moveTo(xRight, yLine).lineTo(xRight + lineW, yLine).stroke();
-
-      doc.fontSize(10).text(String(sig.left_name || "").toUpperCase(), xLeft, yLine + 6, { width: lineW, align: "center" });
-      doc.fontSize(9).text(String(sig.left_role || "").toUpperCase(), xLeft, yLine + 22, { width: lineW, align: "center" });
 
       doc.fontSize(10).text(String(sig.center_name || "").toUpperCase(), xCenter, yLine + 6, { width: lineW, align: "center" });
       doc.fontSize(9).text(String(sig.center_role || "").toUpperCase(), xCenter, yLine + 22, { width: lineW, align: "center" });

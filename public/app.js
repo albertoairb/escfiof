@@ -451,8 +451,6 @@ async function loadChangeLogs() {
     // assinaturas
     const sig = (state.meta && state.meta.signatures) ? state.meta.signatures : null;
     if (state.me && state.me.is_admin && sig) {
-      $("sigLeftName").value = sig.left_name || "";
-      $("sigLeftRole").value = sig.left_role || "";
       $("sigCenterName").value = sig.center_name || "";
       $("sigCenterRole").value = sig.center_role || "";
       $("sigRightName").value = sig.right_name || "";
@@ -638,8 +636,6 @@ function logout() {
     }
 
     const payload = {
-      left_name: $("sigLeftName").value,
-      left_role: $("sigLeftRole").value,
       right_name: $("sigRightName").value,
       right_role: $("sigRightRole").value,
     };
