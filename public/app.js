@@ -48,7 +48,7 @@ function ddmmyyyy_hhmm(isoOrDate) {
 }
 
   function dayNameBR(idx) {
-    const names = ["EXP", "SR", "MA", "VE", "FOJ", "FO*", "SV*", "LP", "FÉRIAS", "FERIADO", "CONVALESCENÇA", "CURSO", "CFP_DIA", "CFP_NOITE", "OUTROS", "SS", "EXP_SS", "FO", "PF"];
+    const names = ["EXP", "SR", "MA", "VE", "FOJ", "FO*", "SV*", "LP", "FÉRIAS", "FERIADO", "CONVALESCENÇA", "CURSO", "CFP_DIA", "CFP_NOITE", "OUTROS", "SS", "EXP_SS", "FO", "PF", "CAO", "EAP", "CSP"];
     return names[idx] || "";
   }
 
@@ -116,7 +116,10 @@ function ddmmyyyy_hhmm(isoOrDate) {
       "SS": "superior de sobreaviso",
       "EXP_SS": "expediente superior de sobreaviso",
       "FO": "folga",
-      "PF": "ponto facultativo"
+      "PF": "ponto facultativo",
+      "CAO": "CAO",
+      "EAP": "EAP",
+      "CSP": "CSP"
     };
 
     for (const c of (state.codes || [])) {
