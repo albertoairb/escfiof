@@ -25,7 +25,7 @@ services:
       PORT: ${PORT:-8080}
       TZ: ${TZ:-America/Sao_Paulo}
       JWT_SECRET: ${JWT_SECRET:-troque-este-segredo}
-      DEFAULT_PASSWORD: ${DEFAULT_PASSWORD:-aux123}
+      DEFAULT_PASSWORD: ${DEFAULT_PASSWORD:-sr123}
       CLOSE_FRIDAY_HOUR: ${CLOSE_FRIDAY_HOUR:-11}
       SYSTEM_NAME: ${SYSTEM_NAME:-Escala Semanal de Praças do EM – 4º BPM/M}
       COPYRIGHT_YEAR: ${COPYRIGHT_YEAR:-2026}

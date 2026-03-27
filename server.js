@@ -21,7 +21,7 @@ const CUTOVER_WEEK_START = "2026-03-09";
 const WEEK_START_OVERRIDE = (process.env.WEEK_START_OVERRIDE || "").trim();
 
 const JWT_SECRET = (process.env.JWT_SECRET || "troque-este-segredo").trim();
-const DEFAULT_PASSWORD = (process.env.DEFAULT_PASSWORD || "aux123").trim();
+const DEFAULT_PASSWORD = (process.env.DEFAULT_PASSWORD || "sr123").trim();
 
 const CLOSE_FRIDAY_HOUR = Number(process.env.CLOSE_FRIDAY_HOUR || 11);
 
