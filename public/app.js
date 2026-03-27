@@ -48,7 +48,7 @@ function ddmmyyyy_hhmm(isoOrDate) {
 }
 
   function dayNameBR(idx) {
-    const names = ["EXP", "SR", "MA", "VE", "FOJ", "FO*", "SV*", "LP", "FÉRIAS", "FERIADO", "CONVALESCENÇA", "CURSO", "CFP_DIA", "CFP_NOITE", "OUTROS", "SS", "EXP_SS", "FO", "PF", "CAO", "EAP", "CSP"];
+    const names = ["EXP", "SR", "MA", "VE", "FOJ", "FO*", "SV*", "LP", "FÉRIAS", "FERIADO", "CONVALESCENÇA", "CURSO", "CFP_DIA", "CFP_NOITE", "OUTROS", "SS", "EXP_SS", "FO", "PF", "CAO", "EAP", "CSP", "PPJM", "DS"];
     return names[idx] || "";
   }
 
@@ -119,7 +119,9 @@ function ddmmyyyy_hhmm(isoOrDate) {
       "PF": "ponto facultativo",
       "CAO": "CAO",
       "EAP": "EAP",
-      "CSP": "CSP"
+      "CSP": "CSP",
+      "PPJM": "PPJM",
+      "DS": "DS"
     };
 
     for (const c of (state.codes || [])) {
