@@ -27,6 +27,61 @@
     cellEl: null,
   };
 
+
+  function fixText(value) {
+    let str = String(value ?? "");
+    if (!str) return "";
+
+    const suspicious = /(?:Ã.|Â.|â..|ðŸ|�)/;
+    if (suspicious.test(str)) {
+      for (let i = 0; i < 3; i++) {
+        try {
+          const bytes = new Uint8Array(Array.from(str, ch => ch.charCodeAt(0) & 0xff));
+          const fixed = new TextDecoder("utf-8", { fatal: false }).decode(bytes);
+          if (!fixed || fixed === str) break;
+          str = fixed;
+          if (!suspicious.test(str)) break;
+        } catch (_e) {
+          break;
+        }
+      }
+    }
+
+    const directMap = {
+      "Ã¡": "á", "Ã ": "à", "Ã¢": "â", "Ã£": "ã", "Ã¤": "ä",
+      "Ã©": "é", "Ã¨": "è", "Ãª": "ê", "Ã«": "ë",
+      "Ã­": "í", "Ã¬": "ì", "Ã®": "î", "Ã¯": "ï",
+      "Ã³": "ó", "Ã²": "ò", "Ã´": "ô", "Ãµ": "õ", "Ã¶": "ö",
+      "Ãº": "ú", "Ã¹": "ù", "Ã»": "û", "Ã¼": "ü",
+      "Ã§": "ç", "Ã‡": "Ç",
+      "Ã": "Á", "Ã€": "À", "Ã‚": "Â", "Ãƒ": "Ã", "Ã„": "Ä",
+      "Ã‰": "É", "Ãˆ": "È", "ÃŠ": "Ê", "Ã‹": "Ë",
+      "Ã": "Í", "ÃŒ": "Ì", "ÃŽ": "Î", "Ã": "Ï",
+      "Ã“": "Ó", "Ã’": "Ò", "Ã”": "Ô", "Ã•": "Õ", "Ã–": "Ö",
+      "Ãš": "Ú", "Ã™": "Ù", "Ã›": "Û", "Ãœ": "Ü",
+      "Âº": "º", "Âª": "ª", "Â°": "°", "Â": "",
+      "â€“": "–", "â€”": "—", "â€˜": "‘", "â€™": "’", "â€œ": "“", "â€�": "”", "â€¢": "•",
+      "�": ""
+    };
+
+    for (const [wrong, right] of Object.entries(directMap)) {
+      if (str.includes(wrong)) str = str.split(wrong).join(right);
+    }
+
+    return str;
+  }
+
+  function deepFixText(value) {
+    if (typeof value === "string") return fixText(value);
+    if (Array.isArray(value)) return value.map(deepFixText);
+    if (value && typeof value === "object") {
+      const out = {};
+      for (const [k, v] of Object.entries(value)) out[k] = deepFixText(v);
+      return out;
+    }
+    return value;
+  }
+
   function ddmmyyyy(iso) {
     const [y,m,d] = iso.split("-");
     return `${d}/${m}/${y}`;
@@ -64,7 +119,7 @@ function ddmmyyyy_hhmm(isoOrDate) {
 
     try {
       const res = await fetch(path, { ...opts, headers, signal: controller.signal });
-      const data = await res.json().catch(() => ({}));
+      const data = deepFixText(await res.json().catch(() => ({})));
       return { ok: res.ok, status: res.status, data };
     } catch (err) {
       const aborted = err && (err.name === "AbortError");
@@ -584,8 +639,8 @@ async function loadChangeLogs() {
       const updates = [];
       for (const [key, item] of state.pending.entries()) {
         const [canonical_name, date] = key.split("|");
-        const code = (item && typeof item === "object") ? (item.code || "") : String(item || "");
-        const observacao = (item && typeof item === "object") ? item.observacao : null;
+        const code = fixText((item && typeof item === "object") ? (item.code || "") : String(item || ""));
+        const observacao = (item && typeof item === "object") ? fixText(item.observacao) : null;
         updates.push({ canonical_name, date, code, observacao });
       }
 

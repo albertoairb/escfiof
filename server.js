@@ -164,15 +164,44 @@ function safeJsonParse(s) {
 
 
 function fixText(s) {
-  const str = String(s ?? "");
+  let str = String(s ?? "");
   if (!str) return "";
-  // Corrige "mojibake" comum (UTF-8 interpretado como Latin-1/Windows-1252 e regravado).
-  if (/(?:Ã.|Â.|â..|�)/.test(str)) {
-    try {
-      const fixed = Buffer.from(str, "latin1").toString("utf8");
-      if (fixed) return fixed;
-    } catch (_e) {}
+
+  const suspicious = /(?:Ã.|Â.|â..|ðŸ|�)/;
+  if (suspicious.test(str)) {
+    for (let i = 0; i < 3; i++) {
+      try {
+        const fixed = Buffer.from(str, "latin1").toString("utf8");
+        if (!fixed || fixed === str) break;
+        str = fixed;
+        if (!suspicious.test(str)) break;
+      } catch (_e) {
+        break;
+      }
+    }
   }
+
+  const directMap = {
+    "Ã¡": "á", "Ã ": "à", "Ã¢": "â", "Ã£": "ã", "Ã¤": "ä",
+    "Ã©": "é", "Ã¨": "è", "Ãª": "ê", "Ã«": "ë",
+    "Ã­": "í", "Ã¬": "ì", "Ã®": "î", "Ã¯": "ï",
+    "Ã³": "ó", "Ã²": "ò", "Ã´": "ô", "Ãµ": "õ", "Ã¶": "ö",
+    "Ãº": "ú", "Ã¹": "ù", "Ã»": "û", "Ã¼": "ü",
+    "Ã§": "ç", "Ã‡": "Ç",
+    "Ã": "Á", "Ã€": "À", "Ã‚": "Â", "Ãƒ": "Ã", "Ã„": "Ä",
+    "Ã‰": "É", "Ãˆ": "È", "ÃŠ": "Ê", "Ã‹": "Ë",
+    "Ã": "Í", "ÃŒ": "Ì", "ÃŽ": "Î", "Ã": "Ï",
+    "Ã“": "Ó", "Ã’": "Ò", "Ã”": "Ô", "Ã•": "Õ", "Ã–": "Ö",
+    "Ãš": "Ú", "Ã™": "Ù", "Ã›": "Û", "Ãœ": "Ü",
+    "Âº": "º", "Âª": "ª", "Â°": "°", "Â": "",
+    "â€“": "–", "â€”": "—", "â€˜": "‘", "â€™": "’", "â€œ": "“", "â€�": "”", "â€¢": "•",
+    "�": "",
+  };
+
+  for (const [wrong, right] of Object.entries(directMap)) {
+    if (str.includes(wrong)) str = str.split(wrong).join(right);
+  }
+
   return str;
 }
 
@@ -566,7 +595,7 @@ function isoFromDbDate(v) {
 }
 
 function resolveCanonicalFromDbOfficer(oficialStr) {
-  const nk = normKey(oficialStr);
+  const nk = normKey(fixText(oficialStr));
   if (!nk) return null;
   for (const off of OFFICERS) {
     const ok = normKey(off.canonical_name);
@@ -636,7 +665,7 @@ function buildAssignmentsAndNotesFromLancamentos(rows, validDates) {
     if (!canonical) continue;
 
     // normaliza código vindo do DB (legado)
-    let code = String(r.codigo || "").trim();
+    let code = fixText(String(r.codigo || "")).trim();
     // remove espaços estranhos
     code = code.replace(/\s+/g, "");
     // mantém FO simples e FOJ como códigos distintos
