@@ -463,6 +463,26 @@ await conn.query(`CREATE TABLE IF NOT EXISTS escala_change_log (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;`);
 
 
+await conn.query("SET NAMES utf8mb4 COLLATE utf8mb4_unicode_ci");
+    await conn.query("ALTER DATABASE CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci");
+    await conn.query("ALTER TABLE state_store CONVERT TO CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci");
+    await conn.query("ALTER TABLE users CONVERT TO CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci");
+    await conn.query("ALTER TABLE action_logs CONVERT TO CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci");
+    await conn.query("ALTER TABLE escala_lancamentos CONVERT TO CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci");
+    await conn.query("ALTER TABLE escala_change_log CONVERT TO CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci");
+
+    // migração defensiva: notes_meta no state_store
+    try {
+      const [stRows] = await conn.query("SELECT payload FROM state_store WHERE id=1 LIMIT 1");
+      if (Array.isArray(stRows) && stRows.length) {
+        const payload = safeJsonParse(stRows[0].payload);
+        if (payload && typeof payload === 'object' && (!payload.notes_meta || typeof payload.notes_meta !== 'object')) {
+          payload.notes_meta = {};
+          await conn.query("UPDATE state_store SET payload=?, updated_at=CURRENT_TIMESTAMP WHERE id=1", [JSON.stringify(payload)]);
+        }
+      }
+    } catch (_e) {}
+
     const [rows] = await conn.query("SELECT id FROM state_store WHERE id=1 LIMIT 1");
     if (!rows.length) {
       const initial = buildFreshState();
@@ -489,6 +509,7 @@ function buildFreshState() {
     officers: OFFICERS.slice(),
     assignments: {},
     notes: {},
+    notes_meta: {},
     updated_at: new Date().toISOString(),
   };
 }
@@ -504,6 +525,7 @@ async function safeQuery(sql, params = []) {
 
   const conn = await withTimeout(pool.getConnection(), ACQUIRE_MS, "db_acquire_timeout");
   try {
+    await withTimeout(conn.query("SET NAMES utf8mb4 COLLATE utf8mb4_unicode_ci"), QUERY_MS + 500, "db_query_timeout");
     // mysql2 aceita timeout por query quando enviado como objeto { sql, timeout }
     const queryObj = (typeof sql === "string") ? { sql, timeout: QUERY_MS } : { ...sql, timeout: QUERY_MS };
     const [rows] = await withTimeout(conn.query(queryObj, params), QUERY_MS + 500, "db_query_timeout");
@@ -641,7 +663,7 @@ function buildAssignmentsAndNotesFromLancamentos(rows, validDates) {
     assignments[key] = code;
 
     // observação só faz sentido em OUTROS e códigos terminados em *
-    const obs = (r.observacao == null) ? "" : String(r.observacao).trim();
+    const obs = (r.observacao == null) ? "" : fixText(String(r.observacao)).trim();
     if (obs && (code === "OUTROS" || /\*$/.test(code))) {
       notes[key] = obs;
 
@@ -658,6 +680,100 @@ function buildAssignmentsAndNotesFromLancamentos(rows, validDates) {
   return { assignments, notes, notes_meta };
 }
 
+
+function buildRecoveredStateFromChangeLogs(rows, validDates) {
+  const valid = new Set(validDates || []);
+  const validCodes = new Set(CODES);
+  const latest = new Map();
+
+  for (const r of rows || []) {
+    const iso = isoFromDbDate(r.data);
+    if (!valid.has(iso)) continue;
+    const canonical = resolveCanonicalFromDbOfficer(r.target_name);
+    if (!canonical) continue;
+
+    const key = `${canonical}|${iso}`;
+    const cur = latest.get(key) || { codigo: "", observacao: "", meta: null };
+    const field = String(r.field_name || "").trim().toLowerCase();
+    const afterValue = r.after_value == null ? "" : fixText(String(r.after_value));
+
+    if (field === "codigo") {
+      let code = afterValue.trim().replace(/\s+/g, "");
+      if (/^FO\.?$/i.test(code)) code = "FO";
+      if (/^FOJ$/i.test(code)) code = "FOJ";
+      if (/^FO\*$/i.test(code)) code = "FO*";
+      if (/^CFP_DIA$/i.test(code)) code = "CFP_DIA";
+      if (/^CFP_NOITE$/i.test(code)) code = "CFP_NOITE";
+      if (/^SS$/i.test(code)) code = "SS";
+      if (/^EXP_SS$/i.test(code)) code = "EXP_SS";
+      if (/^PF$/i.test(code)) code = "PF";
+      if (/^FERIAS$/i.test(code)) code = "FÉRIAS";
+      cur.codigo = validCodes.has(code) ? code : "";
+    } else if (field === "observacao") {
+      cur.observacao = afterValue.trim();
+    }
+
+    cur.meta = {
+      updated_at: r.at ? new Date(r.at).toISOString() : null,
+      updated_by: r.actor_name ? String(r.actor_name) : null,
+      created_by: r.actor_name ? String(r.actor_name) : null,
+    };
+    latest.set(key, cur);
+  }
+
+  const assignments = {};
+  const notes = {};
+  const notes_meta = {};
+  for (const [key, cur] of latest.entries()) {
+    if (!cur.codigo) continue;
+    assignments[key] = cur.codigo;
+    if ((cur.codigo === "OUTROS" || /\*$/.test(cur.codigo)) && cur.observacao) {
+      notes[key] = cur.observacao;
+      if (cur.meta) notes_meta[key] = cur.meta;
+    }
+  }
+  return { assignments, notes, notes_meta };
+}
+
+async function enrichStateWithDatabaseAndRecovery(st) {
+  const baseAssignments = (st.assignments && typeof st.assignments === "object") ? { ...st.assignments } : {};
+  const baseNotes = (st.notes && typeof st.notes === "object") ? { ...st.notes } : {};
+  const baseMeta = (st.notes_meta && typeof st.notes_meta === "object") ? { ...st.notes_meta } : {};
+
+  let assignments = { ...baseAssignments };
+  let notes = { ...baseNotes };
+  let notes_meta = { ...baseMeta };
+
+  try {
+    const rows = await fetchLancamentosForPeriod(st.period.start, st.period.end);
+    if (rows && rows.length) {
+      const built = buildAssignmentsAndNotesFromLancamentos(rows, st.dates);
+      assignments = { ...assignments, ...(built.assignments || {}) };
+      notes = { ...notes, ...(built.notes || {}) };
+      notes_meta = { ...notes_meta, ...(built.notes_meta || {}) };
+    }
+  } catch (_e) {}
+
+  try {
+    const rows = await fetchChangeLogsForPeriod(st.period.start, st.period.end, 2000);
+    if (rows && rows.length) {
+      const recovered = buildRecoveredStateFromChangeLogs(rows, st.dates);
+      for (const [k, v] of Object.entries(recovered.assignments || {})) {
+        if (!assignments[k]) assignments[k] = v;
+      }
+      for (const [k, v] of Object.entries(recovered.notes || {})) {
+        const cur = notes[k] == null ? "" : String(notes[k]).trim();
+        if (!cur) notes[k] = v;
+      }
+      for (const [k, v] of Object.entries(recovered.notes_meta || {})) {
+        if (!notes_meta[k]) notes_meta[k] = v;
+      }
+    }
+  } catch (_e) {}
+
+  return { assignments, notes, notes_meta };
+}
+
 async function getStateAutoReset() {
   const rows = await safeQuery("SELECT payload FROM state_store WHERE id=1 LIMIT 1");
   let st = rows.length ? safeJsonParse(rows[0].payload) : null;
@@ -666,16 +782,7 @@ async function getStateAutoReset() {
   const needReset = !st || !st.period || st.period.start !== currentWeek.start || st.period.end !== currentWeek.end;
 
   if (needReset) {
-    // se existia uma semana anterior registrada, significa virada de semana → limpar lançamentos (domingo fecha e apaga tudo)
-    // não remove usuários nem logs, apenas a tabela de registros da escala.
-    try {
-      if (st && st.period && (st.period.start || st.period.end)) {
-        await safeQuery("DELETE FROM escala_lancamentos");
-      }
-    } catch (_e) {
-      // ignora se a tabela não existir em algum ambiente
-    }
-
+    // virada de semana: inicia uma nova semana vazia na interface, sem apagar histórico do banco.
     st = buildFreshState();
     await safeQuery(
       "INSERT INTO state_store (id, payload) VALUES (1, ?) ON DUPLICATE KEY UPDATE payload=VALUES(payload), updated_at=CURRENT_TIMESTAMP",
@@ -695,6 +802,7 @@ async function getStateAutoReset() {
   st.dates = buildDatesForWeek(currentWeek.start);
   st.assignments = st.assignments && typeof st.assignments === "object" ? st.assignments : {};
   st.notes = st.notes && typeof st.notes === "object" ? st.notes : {};
+  st.notes_meta = st.notes_meta && typeof st.notes_meta === "object" ? st.notes_meta : {};
   return { st, didReset: false };
 
 }
@@ -958,49 +1066,7 @@ app.get("/api/state", authRequired(true), async (req, res) => {
   try {
     const { st } = await getStateAutoReset();
     const holidays = getHolidaysForWeek(st.dates);
-
-    // se houver lançamentos no MySQL (escala_lancamentos), eles prevalecem
-    let assignments = st.assignments || {};
-    const baseNotes = (st.notes && typeof st.notes === "object") ? st.notes : {};
-    const baseMeta = (st.notes_meta && typeof st.notes_meta === "object") ? st.notes_meta : {};
-    let notes = baseNotes;
-    let notes_meta = baseMeta;
-    try {
-      const rows = await fetchLancamentosForPeriod(st.period.start, st.period.end);
-      const built = buildAssignmentsAndNotesFromLancamentos(rows, st.dates);
-      if (Object.keys(built.assignments).length) {
-        assignments = built.assignments;
-        notes = built.notes;
-        notes_meta = built.notes_meta || {};
-      }
-    } catch (_e) {
-      // se a tabela ainda não existir em algum ambiente, mantém state_store
-    }
-
-    // merge de descrições: mantém state_store.notes quando o MySQL vier sem observação
-    try {
-      const baseNotes = (st.notes && typeof st.notes === "object") ? st.notes : {};
-      const baseMeta = (st.notes_meta && typeof st.notes_meta === "object") ? st.notes_meta : {};
-      // se não veio nada do DB, usa o state_store
-      if (!notes || Object.keys(notes).length === 0) {
-        notes = { ...baseNotes };
-      } else {
-        for (const k of Object.keys(baseNotes)) {
-          const v = String(baseNotes[k] || "").trim();
-          if (!v) continue;
-          const cur = (notes[k] == null) ? "" : String(notes[k]).trim();
-          if (!cur) notes[k] = v;
-        }
-      }
-      if (!notes_meta || Object.keys(notes_meta).length === 0) {
-        notes_meta = { ...baseMeta };
-      } else {
-        for (const k of Object.keys(baseMeta)) {
-          if (!notes_meta[k]) notes_meta[k] = baseMeta[k];
-        }
-      }
-    } catch (_e) {}
-
+    const enriched = await enrichStateWithDatabaseAndRecovery(st);
     const periodLabel = `período: ${fmtDDMMYYYY(st.period.start)} a ${fmtDDMMYYYY(st.period.end)}`;
 
     return res.json({
@@ -1020,9 +1086,9 @@ app.get("/api/state", authRequired(true), async (req, res) => {
       officers: fixDentRanks(OFFICERS).map(o => ({ ...o, rank: fixText(o.rank), name: officerNameNoAccents(o.name) })),
       dates: st.dates,
       codes: CODES,
-      assignments,
-      notes,
-      notes_meta,
+      assignments: enriched.assignments,
+      notes: enriched.notes,
+      notes_meta: enriched.notes_meta,
     });
   } catch (err) {
     return res.status(500).json({ error: "erro ao carregar", details: err.message });
@@ -1129,7 +1195,7 @@ app.put("/api/assignments", authRequired(false), async (req, res) => {
         target = actor;
       }
 
-      let code = String(u.code || "").trim();
+      let code = fixText(String(u.code || "")).trim();
       if (!code) code = ""; // limpar
       if (code && !validCodes.has(code)) continue;
 
@@ -1139,7 +1205,7 @@ app.put("/api/assignments", authRequired(false), async (req, res) => {
       const beforeObs = (st.notes && st.notes[key]) ? String(st.notes[key]) : "";
 
       const needObs = (code === "OUTROS" || /\*$/.test(code));
-      const newObs = needObs ? String(u.observacao == null ? "" : u.observacao).trim() : "";
+      const newObs = needObs ? fixText(String(u.observacao == null ? "" : u.observacao)).trim() : "";
 
       // atualiza state_store (permite limpar)
       st.assignments = st.assignments || {};
@@ -1257,56 +1323,18 @@ app.get("/api/pdf", pdfAuth, async (req, res) => {
     doc.moveDown(0.6);
 
     const dates = st.dates || [];
+    const enriched = await enrichStateWithDatabaseAndRecovery(st);
+    const assignments = enriched.assignments;
+    const notes = enriched.notes;
+    const notes_meta = enriched.notes_meta;
 
-    // prefere dados do MySQL (escala_lancamentos); fallback para state_store
-    let assignments = st.assignments || {};
-    // descrições (OUTROS/códigos com asterisco) salvas no state_store (fallback)
-    const baseNotes = (st.notes && typeof st.notes === "object") ? st.notes : {};
-    const baseMeta = (st.notes_meta && typeof st.notes_meta === "object") ? st.notes_meta : {};
-
-    // inicia com state_store para garantir que o PDF sempre mostre o que aparece no front
-    let notes = { ...baseNotes };
-    let notes_meta = { ...baseMeta };
-    let usedDb = false;
+    let changeLogs = [];
     try {
-      const rows = await fetchLancamentosForPeriod(st.period.start, st.period.end);
-      const built = buildAssignmentsAndNotesFromLancamentos(rows, dates);
-      if (Object.keys(built.assignments).length) {
-        assignments = built.assignments;
-        // DB passa a ser a fonte primária, mas fazemos merge defensivo com o state_store
-        notes = (built.notes && typeof built.notes === "object") ? built.notes : {};
-        notes_meta = (built.notes_meta && typeof built.notes_meta === "object") ? built.notes_meta : {};
-        usedDb = true;
-        // merge defensivo: se o DB não tiver observação (ou vier NULL/vazio), mantém o state_store
-        for (const k of Object.keys(baseNotes)) {
-          const codeNow = assignments && assignments[k] ? String(assignments[k]) : "";
-          if (codeNow !== "OUTROS" && !/\*$/.test(codeNow)) continue;
-          const dbVal = (notes && notes[k] != null) ? String(notes[k]).trim() : "";
-          if (!dbVal) {
-            const v = String(baseNotes[k] || "").trim();
-            if (v) notes[k] = v;
-          }
-        }
-        // mantém metadados do state_store quando o DB não tiver
-        for (const k of Object.keys(baseMeta)) {
-          if (!notes_meta[k]) notes_meta[k] = baseMeta[k];
-        }
-      }
+      const rows = await fetchChangeLogsForPeriod(st.period.start, st.period.end, 500);
+      changeLogs = Array.isArray(rows) ? rows : [];
     } catch (_e) {
-      // mantém fallback
+      changeLogs = [];
     }
-
-
-// histórico para PDF (quando houver DB)
-let changeLogs = [];
-if (usedDb) {
-  try {
-    const rows = await fetchChangeLogsForPeriod(st.period.start, st.period.end, 500);
-    changeLogs = Array.isArray(rows) ? rows : [];
-  } catch (_e) {
-    changeLogs = [];
-  }
-}
 
 // último registro (nome + data/hora) para rodapé do PDF
 let lastActor = (st && st.last_edit_actor) ? officerNameNoAccents(st.last_edit_actor) : "";
