@@ -8,7 +8,7 @@
     me: null,
     meta: null,
     locked: false,
-    officers: [],
+    officers: [,"TJM"],
     dates: [],
     codes: [],
     assignments: {},
