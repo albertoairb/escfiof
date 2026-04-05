@@ -103,7 +103,7 @@ function ddmmyyyy_hhmm(isoOrDate) {
 }
 
   function dayNameBR(idx) {
-    const names = ["EXP", "SR", "MA", "VE", "FOJ", "FO*", "SV*", "LP", "FÉRIAS", "FERIADO", "CONVALESCENÇA", "CURSO", "CFP_DIA", "CFP_NOITE", "OUTROS", "SS", "EXP_SS", "FO", "PF", "CAO", "EAP", "CSP", "PPJM", "DS"];
+    const names = ["EXP", "SR", "MA", "VE", "FOJ", "FO*", "SV*", "LP", "FÉRIAS", "FERIADO", "CONVALESCENÇA", "CURSO", "CFP_DIA", "CFP_NOITE", "OUTROS", "SS", "EXP_SS", "FO", "PF", "CAO", "EAP", "CSP", "PPJM", "DS", "TJM"];
     return names[idx] || "";
   }
 
