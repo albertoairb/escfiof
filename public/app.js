@@ -8,7 +8,7 @@
     me: null,
     meta: null,
     locked: false,
-    officers: [,"TJM"],
+    officers: [],
     dates: [],
     codes: [],
     assignments: {},
@@ -177,6 +177,12 @@ function ddmmyyyy_hhmm(isoOrDate) {
       "CSP": "CSP",
       "PPJM": "PPJM",
       "DS": "DS",
+      "CFT": "CFT",
+      "TJM": "TJM",
+      "LUTO": "luto",
+      "LICENÇA PATERNIDADE": "licença paternidade",
+      "NÚPCIAS": "licença núpcias",
+      "LICENÇA ADOÇÃO": "licença adoção",
       "FT": "Força tática"
     };
 
