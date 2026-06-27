@@ -116,7 +116,7 @@ function ddmmyyyy_hhmm(isoOrDate) {
 }
 
   function dayNameBR(idx) {
-    const names = ["EXP", "SR", "MA", "VE", "FOJ", "FO*", "SV*", "LP", "FERIAS", "FERIADO", "CONVALESCENCA", "CURSO", "CFP_DIA", "CFP_NOITE", "OUTROS", "SS", "EXP_SS", "FO", "PF", "CAO", "EAP", "CSP", "PPJM", "DS", "CFT", "TJM", "LUTO", "LICENCA PATERNIDADE", "NUPCIAS", "LICENCA ADOCAO"];
+    const names = ["SEGUNDA", "TERCA", "QUARTA", "QUINTA", "SEXTA", "SABADO", "DOMINGO"];
     return names[idx] || "";
   }
 

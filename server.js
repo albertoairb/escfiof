@@ -529,7 +529,7 @@ function buildFreshState() {
   const w = getWeekRangeISO();
   const dates = buildDatesForWeek(w.start);
 
-  return {
+  const fresh = {
     meta: {
       system_name: fixText(SYSTEM_NAME),
       footer_mark: `© ${COPYRIGHT_YEAR} - ${fixText(AUTHOR)}`,
@@ -1002,7 +1002,13 @@ app.post("/api/change_password", authRequired(true), async (req, res) => {
 // estado: todos autenticados podem ver (mesmo com must_change)
 app.get("/api/state", authRequired(true), async (req, res) => {
   try {
-    const { st } = await getStateAutoReset();
+    let st;
+    try {
+      ({ st } = await getStateAutoReset());
+    } catch (e) {
+      console.error('[WARN] Falha ao carregar estado persistido; usando estado inicial seguro:', e && e.message ? e.message : e);
+      st = buildFreshState();
+    }
     const holidays = getHolidaysForWeek(st.dates);
 
     // se houver lanÃ§amentos no MySQL (escala_lancamentos), eles prevalecem
@@ -1071,7 +1077,31 @@ app.get("/api/state", authRequired(true), async (req, res) => {
       notes_meta,
     });
   } catch (err) {
-    return res.status(500).json({ error: "erro ao carregar", details: err.message });
+    console.error('[ERRO] /api/state:', err && err.stack ? err.stack : err);
+    try {
+      const st = buildFreshState();
+      const holidays = getHolidaysForWeek(st.dates);
+      return res.json({
+        ok: true,
+        me: { canonical_name: req.user.canonical_name, is_admin: req.user.is_admin },
+        meta: {
+          system_name: fixText(SYSTEM_NAME),
+          footer_mark: `© ${COPYRIGHT_YEAR} - ${fixText(AUTHOR)}`,
+          period_label: `periodo: ${fmtDDMMYYYY(st.period.start)} a ${fmtDDMMYYYY(st.period.end)}`,
+          signatures: defaultSignatures(),
+        },
+        locked: isClosedNow(),
+        holidays,
+        officers: fixDentRanks(OFFICERS).map(o => ({ ...o, rank: fixText(o.rank), name: officerNameNoAccents(o.name) })),
+        dates: st.dates,
+        codes: CODES,
+        assignments: st.assignments || {},
+        notes: st.notes || {},
+        notes_meta: {},
+      });
+    } catch (_fallbackErr) {
+      return res.status(500).json({ error: "erro ao carregar", details: err && err.message ? err.message : String(err) });
+    }
   }
 });
 
