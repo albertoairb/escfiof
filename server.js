@@ -35,7 +35,7 @@ function defaultSignatures() {
     left_role: "",
     center_name: "ALBERTO FRANZINI NETO",
     center_role: "CAP PM CH P1/P5",
-    right_name: "EDUARDO MOSNA XAVIER",
+    right_name: "RICARDO SANTOS MEDEIROS",
     right_role: "MAJ PM SUBCMT",
   };
 }
@@ -58,27 +58,25 @@ const DB_NAME = (process.env.DB_NAME || process.env.DB_DATABASE || "escala").tri
 // - name: nome completo a exibir
 // ===============================
 const OFFICERS = [
-  { canonical_name: "Helder AntÃ´nio de Paula", rank: "Ten Cel PM", name: "Helder AntÃ´nio de Paula" },
-  { canonical_name: "Eduardo Mosna Xavier", rank: "Maj PM", name: "Eduardo Mosna Xavier" },
-  { canonical_name: "Alessandra Paula Tonolli", rank: "Maj PM", name: "Alessandra Paula Tonolli" },
-  { canonical_name: "Carlos Bordim Neto", rank: "Cap PM", name: "Carlos Bordim Neto" },
-  { canonical_name: "Alberto Franzini Neto", rank: "Cap PM", name: "Alberto Franzini Neto" },
+  { canonical_name: "Helder Antonio de Paula", rank: "Ten Cel PM", name: "Helder Antonio de Paula" },
+  { canonical_name: "Ricardo Santos Medeiros", rank: "Maj PM", name: "Ricardo Santos Medeiros" },
+  { canonical_name: "Carlos Bordim Neto", rank: "Maj PM", name: "Carlos Bordim Neto" },
   { canonical_name: "Marcio Saito Essaki", rank: "Cap PM", name: "Marcio Saito Essaki" },
+  { canonical_name: "Jose Antonio Marciano Neto", rank: "Cap PM", name: "Jose Antonio Marciano Neto" },
+  { canonical_name: "Alberto Franzini Neto", rank: "Cap PM", name: "Alberto Franzini Neto" },
+  { canonical_name: "Vinicio Augusto Voltarelli Tavares", rank: "Cap PM", name: "Vinicio Augusto Voltarelli Tavares" },
+  { canonical_name: "Andre Santarelli de Paula", rank: "Cap PM", name: "Andre Santarelli de Paula" },
+  { canonical_name: "Iuri Filipe dos Santos", rank: "Cap PM", name: "Iuri Filipe dos Santos" },
   { canonical_name: "Daniel Alves de Siqueira", rank: "1º Ten PM", name: "Daniel Alves de Siqueira" },
-  { canonical_name: "Mateus Pedro Teodoro", rank: "1º Ten PM", name: "Mateus Pedro Teodoro" },
   { canonical_name: "Fernanda Bruno Pomponio Martignago", rank: "1º Ten Dent PM", name: "Fernanda Bruno Pomponio Martignago" },
   { canonical_name: "Dayana de Oliveira Silva Almeida", rank: "1º Ten Dent PM", name: "Dayana de Oliveira Silva Almeida" },
-
-  { canonical_name: "AndrÃ© Santarelli de Paula", rank: "Cap PM", name: "AndrÃ© Santarelli de Paula" },
-  { canonical_name: "Vinicio Augusto Voltarelli Tavares", rank: "Cap PM", name: "Vinicio Augusto Voltarelli Tavares" },
-  { canonical_name: "Jose Antonio Marciano Neto", rank: "Cap PM", name: "Jose Antonio Marciano Neto" },
-
-  { canonical_name: "Uri Filipe dos Santos", rank: "1º Ten PM", name: "Uri Filipe dos Santos" },
-  { canonical_name: "AntÃ´nio OvÃ­dio Ferrucio Cardoso", rank: "1º Ten PM", name: "AntÃ´nio OvÃ­dio Ferrucio Cardoso" },
-  { canonical_name: "Bruno AntÃ£o de Oliveira", rank: "1º Ten PM", name: "Bruno AntÃ£o de Oliveira" },
+  { canonical_name: "Antonio Ovidio Ferruccio Cardoso", rank: "1º Ten PM", name: "Antonio Ovidio Ferruccio Cardoso" },
+  { canonical_name: "Bruno Antao de Oliveira", rank: "1º Ten PM", name: "Bruno Antao de Oliveira" },
   { canonical_name: "Larissa Amadeu Leite", rank: "1º Ten PM", name: "Larissa Amadeu Leite" },
   { canonical_name: "Renato Fernandes Freire", rank: "1º Ten PM", name: "Renato Fernandes Freire" },
   { canonical_name: "Raphael Mecca Sampaio", rank: "1º Ten PM", name: "Raphael Mecca Sampaio" },
+  { canonical_name: "Jose Sebastiao dos Santos Neto", rank: "Asp Of PM", name: "Jose Sebastiao dos Santos Neto" },
+  { canonical_name: "Lenise Helena Tragante de Souza Cristo", rank: "Asp Of PM", name: "Lenise Helena Tragante de Souza Cristo" },
 ];
             
 // override visual para postos (Ten Dent) — garante exibiÃ§Ã£o correta no state e no PDF
@@ -92,13 +90,14 @@ function fixDentRanks(list) {
 }
 
 
-// ApÃ³s fechamento (sexta 15h+), somente estes podem alterar (qualquer oficial)
+// ApÃ³s fechamento (sexta 11h+), somente estes podem alterar (qualquer oficial)
 const ADMIN_NAMES = new Set([
-  "Fernandes",
   "Alberto Franzini Neto",
-  "Eduardo Mosna Xavier",
-  "Felipe",
-  "Danielle",
+  "Helder Antonio de Paula",
+  "Ricardo Santos Medeiros",
+  "Marcio Saito Essaki",
+  "Iuri Filipe dos Santos",
+  "Daniel Alves de Siqueira",
 ]);
 
 // CÃ³digos vÃ¡lidos (tudo em MAIÃšSCULO, conforme regra)
@@ -273,7 +272,7 @@ function buildDatesForWeek(startYYYYMMDD) {
   return dates;
 }
 
-// Fechamento: sexta-feira às 15h (SÃ£o Paulo) atÃ© domingo
+// Fechamento: sexta-feira às 11h (SÃ£o Paulo) atÃ© domingo
 function isClosedNow() {
   const now = new Date();
   const day = now.getDay(); // 5=sexta
@@ -641,7 +640,7 @@ async function getStateAutoReset() {
   const needReset = !st || !st.period || st.period.start !== currentWeek.start || st.period.end !== currentWeek.end;
 
   if (needReset) {
-    // se existia uma semana anterior registrada, significa virada de semana â†’ limpar lanÃ§amentos (domingo fecha e apaga tudo)
+    // se existia uma semana anterior registrada, significa virada de semana â†’ limpar lanÃ§amentos (segunda-feira inicia nova semana e limpa somente a escala semanal)
     // nÃ£o remove usuÃ¡rios nem logs, apenas a tabela de registros da escala.
     try {
       if (st && st.period && (st.period.start || st.period.end)) {
@@ -1083,7 +1082,7 @@ app.put("/api/assignments", authRequired(false), async (req, res) => {
     const actor = req.user.canonical_name;
 
     if (locked && !req.user.is_admin) {
-      return res.status(423).json({ error: "ediÃ§Ã£o fechada (sexta 15h atÃ© domingo)" });
+      return res.status(423).json({ error: "ediÃ§Ã£o fechada (sexta 11h atÃ© domingo)" });
     }
 
     const validDates = new Set(st.dates || []);
