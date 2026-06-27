@@ -17,6 +17,19 @@
     pending: new Map() // key -> { code, observacao }
   };
 
+  const TOKEN_KEY = "escfiof_token";
+
+  function getStoredToken() {
+    try { return localStorage.getItem(TOKEN_KEY) || ""; } catch (_e) { return ""; }
+  }
+
+  function setStoredToken(token) {
+    try {
+      if (token) localStorage.setItem(TOKEN_KEY, token);
+      else localStorage.removeItem(TOKEN_KEY);
+    } catch (_e) {}
+  }
+
   // modal de descrição (OUTROS / FO*)
   const descModal = {
     open: false,
@@ -484,10 +497,33 @@ async function loadChangeLogs() {
     table.appendChild(tbody);
   }
 
+  function resetToLogin(message = "") {
+    state.token = null;
+    state.me = null;
+    state.meta = null;
+    state.pending.clear();
+    setStoredToken("");
+    show("loginBox", true);
+    show("changeBox", false);
+    show("appBox", false);
+    if ($("loginMsg")) $("loginMsg").textContent = message;
+    if ($("saveMsg")) $("saveMsg").textContent = "";
+  }
+
   async function loadState() {
+    if (!state.token) {
+      resetToLogin("faça login para carregar a escala.");
+      return;
+    }
+
     const r = await api("/api/state", { method: "GET" });
     if (!r.ok) {
-      $("saveMsg").textContent = (r.data && (r.data.error || r.data.details)) ? (r.data.error || r.data.details) : "erro ao carregar";
+      const msg = (r.data && (r.data.error || r.data.details)) ? (r.data.error || r.data.details) : "erro ao carregar";
+      if (r.status === 401 || /autenticado|token/i.test(msg)) {
+        resetToLogin("sessao expirada. faça login novamente.");
+        return;
+      }
+      $("saveMsg").textContent = msg;
       return;
     }
 
@@ -594,6 +630,7 @@ async function loadChangeLogs() {
     }
 
     state.token = r.data.token;
+    setStoredToken(state.token);
     state.me = r.data.me;
 
     // força troca de senha
@@ -668,15 +705,8 @@ async function loadChangeLogs() {
   }
 
 function logout() {
-    state.token = null;
-    state.me = null;
-    state.meta = null;
-    state.pending.clear();
-    show("loginBox", true);
-    show("changeBox", false);
-    show("appBox", false);
+    resetToLogin("");
     $("loginPass").value = "";
-    $("loginMsg").textContent = "";
   }
 
   async function openPdf() {
@@ -736,8 +766,12 @@ function logout() {
   const btnSig = $("btnSigSave");
   if (btnSig) btnSig.addEventListener("click", saveSignatures);
 
-  // start: mostra login
-  show("loginBox", true);
-  show("changeBox", false);
-  show("appBox", false);
+  // start: reaproveita sessão válida; se não houver token, mostra login.
+  (async function start() {
+    state.token = getStoredToken();
+    show("loginBox", !state.token);
+    show("changeBox", false);
+    show("appBox", !!state.token);
+    if (state.token) await loadState();
+  })();
 })();
