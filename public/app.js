@@ -363,7 +363,7 @@ async function loadChangeLogs() {
 
     const tbody = document.createElement("tbody");
 
-    for (const off of state.officers) {
+    for (const [offIndex, off] of (state.officers || []).entries()) {
       const tr = document.createElement("tr");
 
       const tdRank = document.createElement("td");
@@ -371,7 +371,7 @@ async function loadChangeLogs() {
       tr.appendChild(tdRank);
 
       const tdName = document.createElement("td");
-      tdName.innerHTML = `<b>${off.name}</b>`;
+      tdName.innerHTML = `<b>${offIndex + 1}. ${off.name}</b>`;
       tr.appendChild(tdName);
 
       const editable = canEditOfficer(off.canonical_name);
