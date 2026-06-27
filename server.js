@@ -70,7 +70,7 @@ const OFFICERS = [
   { canonical_name: "Daniel Alves de Siqueira", rank: "1º Ten PM", name: "Daniel Alves de Siqueira" },
   { canonical_name: "Fernanda Bruno Pomponio Martignago", rank: "1º Ten Dent PM", name: "Fernanda Bruno Pomponio Martignago" },
   { canonical_name: "Dayana de Oliveira Silva Almeida", rank: "1º Ten Dent PM", name: "Dayana de Oliveira Silva Almeida" },
-  { canonical_name: "Antonio Ovidio Ferruccio Cardoso", rank: "1º Ten PM", name: "Antonio Ovidio Ferruccio Cardoso" },
+  { canonical_name: "Antonio Ovidio Ferrucio Cardoso", rank: "1º Ten PM", name: "Antonio Ovidio Ferrucio Cardoso" },
   { canonical_name: "Bruno Antao de Oliveira", rank: "1º Ten PM", name: "Bruno Antao de Oliveira" },
   { canonical_name: "Larissa Amadeu Leite", rank: "1º Ten PM", name: "Larissa Amadeu Leite" },
   { canonical_name: "Renato Fernandes Freire", rank: "1º Ten PM", name: "Renato Fernandes Freire" },
