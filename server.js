@@ -299,7 +299,11 @@ function isClosedNow() {
 
   if (day < 5) return false;
   if (day === 5) return hour >= CLOSE_FRIDAY_HOUR;
-  return true; // sÃ¡bado/domingo
+  return true; // sabado/domingo
+}
+
+function shouldRunAutoFillNow() {
+  return isClosedNow();
 }
 
 function isAdminName(canonicalName) {
