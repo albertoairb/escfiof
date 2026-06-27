@@ -24,7 +24,7 @@
     <section id="loginBox" class="card">
       <h1>acesso</h1>
       <label>
-        login: posto + nome completo (maiúsculo)
+        login: posto + nome completo (maiusculo)
         <input id="loginName" placeholder="Ex: CAP PM ALBERTO FRANZINI NETO" />
       </label>
       <label>
@@ -36,7 +36,7 @@
     </section>
 
     <section id="changeBox" class="card" style="display:none;">
-      <h1>troca obrigatória de senha</h1>
+      <h1>troca obrigatoria de senha</h1>
       <div class="muted">primeiro acesso: defina uma nova senha para continuar.</div>
       <label>
         nova senha
@@ -69,15 +69,15 @@
 
 
 <details id="descBox" class="descbox" style="display:none;">
-  <summary>descrições (OUTROS / FO* / SV*)</summary>
-  <div class="muted">as descrições digitadas em OUTROS, FO* e SV* aparecem aqui e também no PDF.</div>
+  <summary>descricoes (OUTROS / FO* / SV*)</summary>
+  <div class="muted">as descricoes digitadas em OUTROS, FO* e SV* aparecem aqui e tambem no PDF.</div>
   <div id="descNotes" class="descnotes"></div>
 </details>
 
 
 <details id="historyBox" class="descbox" style="display:none;">
-  <summary>histórico de alterações</summary>
-  <div class="muted">visível apenas para administrador. registra quem alterou, quando, e o que foi alterado.</div>
+  <summary>historico de alteracoes</summary>
+  <div class="muted">visivel apenas para administrador. registra quem alterou, quando, e o que foi alterado.</div>
   <div id="historyTable" class="descnotes"></div>
 </details>
 
@@ -86,7 +86,7 @@
 
 <details id="sigBox" class="descbox" style="display:none;">
   <summary>assinaturas do PDF</summary>
-  <div class="muted">somente responsáveis autorizados podem editar. os nomes e cargos aparecem no rodapé do PDF.</div>
+  <div class="muted">somente responsaveis autorizados podem editar. os cargos aparecem no rodape do PDF.</div>
   <div class="siggrid">
     <div class="sigcard">
       <div class="sigtitle">assinatura 1</div>
@@ -95,7 +95,7 @@
         <input id="sigCenterName" placeholder="ex.: ALBERTO FRANZINI NETO" />
       </label>
       <label>
-        cargo/função
+        cargo/funcao
         <input id="sigCenterRole" placeholder="ex.: CAP PM CH P1/P5" />
       </label>
     </div>
@@ -106,7 +106,7 @@
         <input id="sigRightName" placeholder="ex.: EDUARDO MOSNA XAVIER" />
       </label>
       <label>
-        cargo/função
+        cargo/funcao
         <input id="sigRightRole" placeholder="ex.: MAJ PM SUBCMT" />
       </label>
     </div>
@@ -124,11 +124,11 @@
   </main>
 
 
-  <!-- modal: descrição (OUTROS / FO*) -->
+  <!-- modal: descricao (OUTROS / FO*) -->
   <div id="outrosModal" class="modal" style="display:none;">
     <div class="modal__card">
-      <h3 id="descModalTitle">descrição</h3>
-      <div class="muted" id="descModalHint">digite a descrição (aparecerá integralmente no PDF).</div>
+      <h3 id="descModalTitle">descricao</h3>
+      <div class="muted" id="descModalHint">digite a descricao (aparecera integralmente no PDF).</div>
       <textarea id="outrosText" rows="6" placeholder="descreva aqui..."></textarea>
       <div class="muted" id="outrosMsg"></div>
       <div class="modal__actions">

@@ -33,10 +33,10 @@ function defaultSignatures() {
   return {
     left_name: "",
     left_role: "",
-    center_name: "ALBERTO FRANZINI NETO",
-    center_role: "CAP PM CH P1/P5",
-    right_name: "RICARDO SANTOS MEDEIROS",
-    right_role: "MAJ PM SUBCMT",
+    center_name: "",
+    center_role: "CH P1/P5",
+    right_name: "",
+    right_role: "SUBCMT",
   };
 }
 
@@ -103,7 +103,26 @@ const ADMIN_NAMES = new Set([
 // CÃ³digos vÃ¡lidos (tudo em MAIÃšSCULO, conforme regra)
 // - códigos terminados em * permitem descrição
 // - FOJ: sem descrição
-const CODES = ["EXP", "SR", "MA", "VE", "FOJ", "FO*", "SV*", "LP", "FÉRIAS", "FERIADO", "CONVALESCENÇA", "CURSO", "CFP_DIA", "CFP_NOITE", "OUTROS", "SS", "EXP_SS", "FO", "PF", "CAO", "EAP", "CSP", "PPJM", "DS", "CFT", "TJM", "LUTO", "LICENÇA PATERNIDADE", "NÚPCIAS", "LICENÇA ADOÇÃO"];
+const CODES = ["EXP", "SR", "MA", "VE", "FOJ", "FO*", "SV*", "LP", "FERIAS", "FERIADO", "CONVALESCENCA", "CURSO", "CFP_DIA", "CFP_NOITE", "OUTROS", "SS", "EXP_SS", "FO", "PF", "CAO", "EAP", "CSP", "PPJM", "DS", "CFT", "TJM", "LUTO", "LICENCA PATERNIDADE", "NUPCIAS", "LICENCA ADOCAO"];
+
+function normalizeCodeValue(value) {
+  let code = stripAccents(String(value || "")).trim().replace(/\s+/g, " ").toUpperCase();
+  if (!code) return "";
+  const compact = code.replace(/[\s._-]+/g, "");
+  if (compact === "FO") return "FO";
+  if (compact === "FOJ") return "FOJ";
+  if (compact === "FO*") return "FO*";
+  if (compact === "SV*") return "SV*";
+  if (compact === "CFPDIA") return "CFP_DIA";
+  if (compact === "CFPNOITE") return "CFP_NOITE";
+  if (compact === "EXPSS") return "EXP_SS";
+  if (compact === "FERIAS") return "FERIAS";
+  if (compact === "CONVALESCENCA") return "CONVALESCENCA";
+  if (compact === "LICENCAPATERNIDADE") return "LICENCA PATERNIDADE";
+  if (compact === "LICENCAADOCAO" || compact === "LICENAADDO" || compact === "LICENCAADDO") return "LICENCA ADOCAO";
+  if (compact === "NUPCIAS") return "NUPCIAS";
+  return code;
+}
 
 // ===============================
 // APP
@@ -287,6 +306,20 @@ function isAdminName(canonicalName) {
   return ADMIN_NAMES.has(String(canonicalName || "").trim());
 }
 
+function officerRankValue(off) {
+  const r = stripAccents(String((off && off.rank) || "")).toLowerCase();
+  if (r.includes("ten cel")) return 1;
+  if (r.includes("maj")) return 2;
+  if (r.includes("cap")) return 3;
+  if (r.includes("ten")) return 4;
+  if (r.includes("asp")) return 5;
+  return 9;
+}
+
+function isCapOrAbove(off) {
+  return officerRankValue(off) <= 3;
+}
+
 // ===============================
 // FERIADOS (Brasil - nacionais + mÃ³veis)
 // ===============================
@@ -324,36 +357,81 @@ function getHolidaysForWeek(weekDates) {
   const year = Number(weekDates[0].slice(0,4));
   const set = new Map();
 
-  // Fixos
+  // Feriados nacionais fixos, sem acentos para evitar problema de codificacao.
   const fixed = [
-    ["01-01", "ConfraternizaÃ§Ã£o Universal"],
+    ["01-01", "Confraternizacao Universal"],
     ["21-04", "Tiradentes"],
     ["01-05", "Dia do Trabalhador"],
-    ["07-09", "IndependÃªncia do Brasil"],
+    ["07-09", "Independencia do Brasil"],
     ["12-10", "Nossa Senhora Aparecida"],
     ["02-11", "Finados"],
-    ["15-11", "ProclamaÃ§Ã£o da RepÃºblica"],
+    ["15-11", "Proclamacao da Republica"],
     ["25-12", "Natal"],
   ];
-  for (const [md, name] of fixed) {
-    set.set(`${year}-${md}`, name);
-  }
+  for (const [md, name] of fixed) set.set(`${year}-${md}`, { name, type: "FERIADO" });
 
-  // MÃ³veis (referÃªncia nacional)
+  // Moveis nacionais.
   const easter = easterDate(year);
-  const carnaval = addDays(easter, -47); // terÃ§a de carnaval (aprox)
+  const carnaval = addDays(easter, -47);
   const sextaSanta = addDays(easter, -2);
   const corpusChristi = addDays(easter, 60);
 
-  set.set(isoFromDate(carnaval), "Carnaval");
-  set.set(isoFromDate(sextaSanta), "PaixÃ£o de Cristo");
-  set.set(isoFromDate(corpusChristi), "Corpus Christi");
+  set.set(isoFromDate(carnaval), { name: "Carnaval", type: "FERIADO" });
+  set.set(isoFromDate(sextaSanta), { name: "Paixao de Cristo", type: "FERIADO" });
+  set.set(isoFromDate(corpusChristi), { name: "Corpus Christi", type: "FERIADO" });
+
+  // Ponto facultativo automatico:
+  // feriado na terca => segunda anterior PF; feriado na quinta => sexta posterior PF.
+  const pf = new Map();
+  for (const [iso, info] of Array.from(set.entries())) {
+    const [y, m, d] = iso.split("-").map(Number);
+    const dt = new Date(y, m - 1, d);
+    const day = dt.getDay();
+    if (day === 2) {
+      pf.set(isoFromDate(addDays(dt, -1)), { name: `Ponto facultativo anterior a ${info.name}`, type: "PF" });
+    }
+    if (day === 4) {
+      pf.set(isoFromDate(addDays(dt, 1)), { name: `Ponto facultativo posterior a ${info.name}`, type: "PF" });
+    }
+  }
 
   const out = [];
   for (const iso of weekDates) {
-    if (set.has(iso)) out.push({ date: iso, name: set.get(iso) });
+    if (set.has(iso)) out.push({ date: iso, ...set.get(iso) });
+    if (pf.has(iso) && !set.has(iso)) out.push({ date: iso, ...pf.get(iso) });
   }
   return out;
+}
+
+function autoCodeForOfficerDate(off, iso, holidays) {
+  if (!isCapOrAbove(off)) return "";
+  const h = (holidays || []).find(x => x.date === iso);
+  if (h && h.type === "PF") return "PF";
+  if (h && h.type === "FERIADO") return "FERIADO";
+  const [y, m, d] = iso.split("-").map(Number);
+  const day = new Date(y, m - 1, d).getDay();
+  if (day === 0 || day === 6) return "FO";
+  return "EXP";
+}
+
+function applyAutoFill(st) {
+  if (!st || !shouldRunAutoFillNow()) return false;
+  st.assignments = st.assignments && typeof st.assignments === "object" ? st.assignments : {};
+  const holidays = getHolidaysForWeek(st.dates || []);
+  let changed = false;
+  for (const off of OFFICERS) {
+    if (!isCapOrAbove(off)) continue;
+    for (const iso of st.dates || []) {
+      const key = `${off.canonical_name}|${iso}`;
+      if (String(st.assignments[key] || "").trim()) continue;
+      const code = autoCodeForOfficerDate(off, iso, holidays);
+      if (code) {
+        st.assignments[key] = code;
+        changed = true;
+      }
+    }
+  }
+  return changed;
 }
 
 // ===============================
@@ -465,6 +543,8 @@ function buildFreshState() {
     notes: {},
     updated_at: new Date().toISOString(),
   };
+  applyAutoFill(fresh);
+  return fresh;
 }
 
 async function safeQuery(sql, params = []) {
@@ -587,24 +667,8 @@ function buildAssignmentsAndNotesFromLancamentos(rows, validDates) {
     const canonical = resolveCanonicalFromDbOfficer(r.oficial);
     if (!canonical) continue;
 
-    // normaliza cÃ³digo vindo do DB (legado)
-    let code = String(r.codigo || "").trim();
-    // remove espaÃ§os estranhos
-    code = code.replace(/\s+/g, "");
-    // mantém FO simples e FOJ como códigos distintos
-    if (/^FO\.?$/i.test(code)) code = "FO";
-    if (/^FOJ$/i.test(code)) code = "FOJ";
-    // mantÃ©m exatamente FO* (asterisco) e demais
-    if (/^FO\*$/i.test(code)) code = "FO*";
-    // mantÃ©m CFP_DIA/CFP_NOITE (case)
-    if (/^CFP_DIA$/i.test(code)) code = "CFP_DIA";
-    if (/^CFP_NOITE$/i.test(code)) code = "CFP_NOITE";
-    // mantém SS/EXP_SS/PF
-    if (/^SS$/i.test(code)) code = "SS";
-    if (/^EXP_SS$/i.test(code)) code = "EXP_SS";
-    if (/^PF$/i.test(code)) code = "PF";
-    // mantém FÉRIAS (aceita FERIAS)
-    if (/^FERIAS$/i.test(code)) code = "FÉRIAS";
+    // normaliza codigo vindo do DB (legado), sempre sem acento.
+    let code = normalizeCodeValue(r.codigo);
 
     if (!validCodes.has(code)) {
       // ignora cÃ³digos desconhecidos/antigos
@@ -669,6 +733,14 @@ async function getStateAutoReset() {
   st.dates = buildDatesForWeek(currentWeek.start);
   st.assignments = st.assignments && typeof st.assignments === "object" ? st.assignments : {};
   st.notes = st.notes && typeof st.notes === "object" ? st.notes : {};
+
+  if (applyAutoFill(st)) {
+    st.updated_at = new Date().toISOString();
+    await safeQuery(
+      "INSERT INTO state_store (id, payload) VALUES (1, ?) ON DUPLICATE KEY UPDATE payload=VALUES(payload), updated_at=CURRENT_TIMESTAMP",
+      [JSON.stringify(st)]
+    );
+  }
   return { st, didReset: false };
 
 }
@@ -943,7 +1015,7 @@ app.get("/api/state", authRequired(true), async (req, res) => {
       const rows = await fetchLancamentosForPeriod(st.period.start, st.period.end);
       const built = buildAssignmentsAndNotesFromLancamentos(rows, st.dates);
       if (Object.keys(built.assignments).length) {
-        assignments = built.assignments;
+        assignments = { ...(st.assignments || {}), ...built.assignments };
         notes = built.notes;
         notes_meta = built.notes_meta || {};
       }
@@ -975,7 +1047,7 @@ app.get("/api/state", authRequired(true), async (req, res) => {
       }
     } catch (_e) {}
 
-    const periodLabel = `período: ${fmtDDMMYYYY(st.period.start)} a ${fmtDDMMYYYY(st.period.end)}`;
+    const periodLabel = `periodo: ${fmtDDMMYYYY(st.period.start)} a ${fmtDDMMYYYY(st.period.end)}`;
 
     return res.json({
       ok: true,
@@ -1018,9 +1090,8 @@ app.put("/api/signatures", authRequired(true), async (req, res) => {
     const right_name = String(req.body && req.body.right_name ? req.body.right_name : cur.right_name).trim();
     const right_role = String(req.body && req.body.right_role ? req.body.right_role : cur.right_role).trim();
 
-    if (!center_name || !right_name) return res.status(400).json({ error: "nome das assinaturas é obrigatório" });
     if (left_name.length > 120 || center_name.length > 120 || right_name.length > 120) return res.status(400).json({ error: "nome muito longo" });
-    if (left_role.length > 120 || center_role.length > 120 || right_role.length > 120) return res.status(400).json({ error: "cargo/função muito longa" });
+    if (left_role.length > 120 || center_role.length > 120 || right_role.length > 120) return res.status(400).json({ error: "cargo/funcao muito longa" });
 
     st.meta = st.meta || {};
     st.meta.signatures = {
@@ -1082,7 +1153,7 @@ app.put("/api/assignments", authRequired(false), async (req, res) => {
     const actor = req.user.canonical_name;
 
     if (locked && !req.user.is_admin) {
-      return res.status(423).json({ error: "ediÃ§Ã£o fechada (sexta 11h atÃ© domingo)" });
+      return res.status(423).json({ error: "edicao fechada (sexta 11h ate domingo)" });
     }
 
     const validDates = new Set(st.dates || []);
@@ -1103,7 +1174,7 @@ app.put("/api/assignments", authRequired(false), async (req, res) => {
         target = actor;
       }
 
-      let code = String(u.code || "").trim();
+      let code = normalizeCodeValue(u.code);
       if (!code) code = ""; // limpar
       if (code && !validCodes.has(code)) continue;
 
@@ -1227,7 +1298,7 @@ app.get("/api/pdf", pdfAuth, async (req, res) => {
     // cabeÃ§alho
     doc.fontSize(16).text(fixText(SYSTEM_NAME), { align: "center" });
     doc.moveDown(0.2);
-    doc.fontSize(10).text(`Período: ${fmtDDMMYYYY(st.period.start)} a ${fmtDDMMYYYY(st.period.end)}`, { align: "center" });
+    doc.fontSize(10).text(`Periodo: ${fmtDDMMYYYY(st.period.start)} a ${fmtDDMMYYYY(st.period.end)}`, { align: "center" });
     doc.moveDown(0.6);
 
     const dates = st.dates || [];
@@ -1246,7 +1317,7 @@ app.get("/api/pdf", pdfAuth, async (req, res) => {
       const rows = await fetchLancamentosForPeriod(st.period.start, st.period.end);
       const built = buildAssignmentsAndNotesFromLancamentos(rows, dates);
       if (Object.keys(built.assignments).length) {
-        assignments = built.assignments;
+        assignments = { ...(st.assignments || {}), ...built.assignments };
         // DB passa a ser a fonte primÃ¡ria, mas fazemos merge defensivo com o state_store
         notes = (built.notes && typeof built.notes === "object") ? built.notes : {};
         notes_meta = (built.notes_meta && typeof built.notes_meta === "object") ? built.notes_meta : {};
@@ -1348,20 +1419,15 @@ const lastStamp = fmtDDMMYYYYHHmm(lastAt);
 
       const rawSig = (st.meta && st.meta.signatures) ? st.meta.signatures : defaultSignatures();
       const sig = {
-        center_name: String(rawSig.center_name || "").trim() || defaultSignatures().center_name,
         center_role: String(rawSig.center_role || "").trim() || defaultSignatures().center_role,
-        right_name: String(rawSig.right_name || "").trim() || defaultSignatures().right_name,
         right_role: String(rawSig.right_role || "").trim() || defaultSignatures().right_role,
       };
 
       doc.moveTo(xCenter, yLine).lineTo(xCenter + lineW, yLine).stroke();
       doc.moveTo(xRight, yLine).lineTo(xRight + lineW, yLine).stroke();
 
-      doc.fontSize(10).text(String(sig.center_name || "").toUpperCase(), xCenter, yLine + 6, { width: lineW, align: "center" });
-      doc.fontSize(9).text(String(sig.center_role || "").toUpperCase(), xCenter, yLine + 22, { width: lineW, align: "center" });
-
-      doc.fontSize(10).text(String(sig.right_name || "").toUpperCase(), xRight, yLine + 6, { width: lineW, align: "center" });
-      doc.fontSize(9).text(String(sig.right_role || "").toUpperCase(), xRight, yLine + 22, { width: lineW, align: "center" });
+      doc.fontSize(10).text(String(sig.center_role || "").toUpperCase(), xCenter, yLine + 14, { width: lineW, align: "center" });
+      doc.fontSize(10).text(String(sig.right_role || "").toUpperCase(), xRight, yLine + 14, { width: lineW, align: "center" });
     }
 
     // detalhamento de descrições (OUTROS e códigos com asterisco)

@@ -103,7 +103,7 @@ function ddmmyyyy_hhmm(isoOrDate) {
 }
 
   function dayNameBR(idx) {
-    const names = ["EXP", "SR", "MA", "VE", "FOJ", "FO*", "SV*", "LP", "FÉRIAS", "FERIADO", "CONVALESCENÇA", "CURSO", "CFP_DIA", "CFP_NOITE", "OUTROS", "SS", "EXP_SS", "FO", "PF", "CAO", "EAP", "CSP", "PPJM", "DS", "TJM"];
+    const names = ["EXP", "SR", "MA", "VE", "FOJ", "FO*", "SV*", "LP", "FERIAS", "FERIADO", "CONVALESCENCA", "CURSO", "CFP_DIA", "CFP_NOITE", "OUTROS", "SS", "EXP_SS", "FO", "PF", "CAO", "EAP", "CSP", "PPJM", "DS", "CFT", "TJM", "LUTO", "LICENCA PATERNIDADE", "NUPCIAS", "LICENCA ADOCAO"];
     return names[idx] || "";
   }
 
@@ -141,7 +141,7 @@ function ddmmyyyy_hhmm(isoOrDate) {
       return;
     }
     bar.style.display = "";
-    bar.textContent = `ALERTA DE FERIADO NA SEMANA: ${holidays.map(h => `${ddmmyyyy(h.date)} - ${h.name}`).join(" | ")}`;
+    bar.textContent = `ALERTA DE FERIADO/PONTO FACULTATIVO NA SEMANA: ${holidays.map(h => `${ddmmyyyy(h.date)} - ${h.name}`).join(" | ")}`;
   }
 
   function setHeader() {
@@ -158,16 +158,16 @@ function ddmmyyyy_hhmm(isoOrDate) {
     const help = {
       "EXP": "expediente",
       "SR": "supervisor regional",
-      "MA": "trabalha manhã",
+      "MA": "trabalha manha",
       "VE": "trabalha tarde",
-      "FOJ": "folga (sem descrição)",
-      "FO*": "folga (com descrição)",
-      "LP": "licença-prêmio",
-      "FÉRIAS": "férias",
+      "FOJ": "folga (sem descricao)",
+      "FO*": "folga (com descricao)",
+      "LP": "licenca-premio",
+      "FERIAS": "ferias",
       "CURSO": "curso",
       "CFP_DIA": "CFP (dia)",
       "CFP_NOITE": "CFP (noite)",
-      "OUTROS": "com descrição",
+      "OUTROS": "com descricao",
       "SS": "superior de sobreaviso",
       "EXP_SS": "expediente superior de sobreaviso",
       "FO": "folga",
@@ -180,10 +180,10 @@ function ddmmyyyy_hhmm(isoOrDate) {
       "CFT": "CFT",
       "TJM": "TJM",
       "LUTO": "luto",
-      "LICENÇA PATERNIDADE": "licença paternidade",
-      "NÚPCIAS": "licença núpcias",
-      "LICENÇA ADOÇÃO": "licença adoção",
-      "FT": "Força tática"
+      "LICENCA PATERNIDADE": "licenca paternidade",
+      "NUPCIAS": "nupcias",
+      "LICENCA ADOCAO": "licenca adocao",
+      "FT": "Forca tatica"
     };
 
     for (const c of (state.codes || [])) {
@@ -197,15 +197,15 @@ function ddmmyyyy_hhmm(isoOrDate) {
 
   function setLockMsg() {
     if (state.locked) {
-      $("lockMsg").textContent = "edição fechada (sexta 15h até domingo). após isso, somente responsáveis autorizados.";
+      $("lockMsg").textContent = "edicao fechada (sexta 11h ate domingo). apos isso, somente responsaveis autorizados.";
     } else {
-      $("lockMsg").textContent = "edição liberada.";
+      $("lockMsg").textContent = "edicao liberada.";
     }
   }
 
   function setUserMsg() {
     if (!state.me) return;
-    $("userMsg").textContent = `usuário: ${state.me.canonical_name}`;
+    $("userMsg").textContent = `usuario: ${state.me.canonical_name}`;
   }
 
   function buildOpsNotes() {
@@ -298,7 +298,7 @@ async function loadChangeLogs() {
 
   const r = await api("/api/change_logs?limit=200");
   if (!r.ok) {
-    table.innerHTML = `<div class='muted'>${(r.data && (r.data.error || r.data.details)) ? (r.data.error || r.data.details) : "erro ao carregar histórico"}</div>`;
+    table.innerHTML = `<div class='muted'>${(r.data && (r.data.error || r.data.details)) ? (r.data.error || r.data.details) : "erro ao carregar historico"}</div>`;
     return;
   }
 
@@ -400,7 +400,7 @@ async function loadChangeLogs() {
         const pendingCode = (pending && typeof pending === "object") ? (pending.code || "") : pending;
         sel.value = (pendingCode !== null && pendingCode !== undefined) ? pendingCode : cur;
 
-        // tooltip com descrição (quando houver)
+        // tooltip com descricao (quando houver)
         const noteText = (state.notes && state.notes[key]) ? String(state.notes[key]) : "";
         sel.title = noteText || "";
 
@@ -408,13 +408,14 @@ async function loadChangeLogs() {
         const ta = document.createElement("textarea");
         ta.className = "noteInput";
         ta.rows = 3;
-        ta.placeholder = "descrição...";
+        ta.placeholder = "descricao...";
         ta.disabled = !editable;
 
         const pendingObs = (pending && typeof pending === "object" && pending.observacao != null) ? String(pending.observacao) : "";
         const savedObs = (state.notes && state.notes[key]) ? String(state.notes[key]) : "";
         ta.value = pendingObs || savedObs || "";
-        ta.style.display = (sel.value === "OUTROS" || /\*$/.test(sel.value)) ? "" : "none";
+        ta.style.display = "";
+        ta.style.visibility = (sel.value === "OUTROS" || /\*$/.test(sel.value)) ? "visible" : "hidden";
 
         ta.addEventListener("input", () => {
           const currentCode = String(sel.value || "");
@@ -423,7 +424,7 @@ async function loadChangeLogs() {
           state.pending.set(key, { code: currentCode, observacao: txt });
           td.classList.add("changed");
           sel.title = txt.trim();
-          $("saveMsg").textContent = `${state.pending.size} alteração(ões) pendente(s).`;
+          $("saveMsg").textContent = `${state.pending.size} alteracao(oes) pendente(s).`;
         });
 
         sel.addEventListener("change", () => {
@@ -431,7 +432,8 @@ async function loadChangeLogs() {
           const needObs = (v === "OUTROS" || /\*$/.test(v));
 
           // controla exibição do campo de descrição
-          ta.style.display = needObs ? "" : "none";
+          ta.style.display = "";
+          ta.style.visibility = needObs ? "visible" : "hidden";
           if (!needObs) {
             // se trocou para código sem descrição, limpa tooltip
             sel.title = "";
@@ -448,7 +450,7 @@ async function loadChangeLogs() {
               state.pending.delete(key);
               td.classList.remove("changed");
             }
-            $("saveMsg").textContent = `${state.pending.size} alteração(ões) pendente(s).`;
+            $("saveMsg").textContent = `${state.pending.size} alteracao(oes) pendente(s).`;
             return;
           }
 
@@ -459,7 +461,7 @@ async function loadChangeLogs() {
             sel.title = txt.trim();
             state.pending.set(key, { code: v, observacao: txt });
             td.classList.add("changed");
-            $("saveMsg").textContent = `${state.pending.size} alteração(ões) pendente(s).`;
+            $("saveMsg").textContent = `${state.pending.size} alteracao(oes) pendente(s).`;
             // foco rápido para digitar
             setTimeout(() => ta.focus(), 0);
             return;
@@ -468,7 +470,7 @@ async function loadChangeLogs() {
           // códigos sem descrição
           state.pending.set(key, { code: v, observacao: null });
           td.classList.add("changed");
-          $("saveMsg").textContent = `${state.pending.size} alteração(ões) pendente(s).`;
+          $("saveMsg").textContent = `${state.pending.size} alteracao(oes) pendente(s).`;
         });
 
         td.appendChild(sel);
@@ -547,7 +549,7 @@ async function loadChangeLogs() {
       if (sel) sel.value = cur;
       state.pending.delete(key);
       if (td) td.classList.remove("changed");
-      $("saveMsg").textContent = `${state.pending.size} alteração(ões) pendente(s).`;
+      $("saveMsg").textContent = `${state.pending.size} alteracao(oes) pendente(s).`;
     }
 
     descModal.open = false;
@@ -566,13 +568,13 @@ async function loadChangeLogs() {
 
     const txt = String($("outrosText").value || "").trim();
     if (!txt) {
-      $("outrosMsg").textContent = "a descrição não pode ficar em branco.";
+      $("outrosMsg").textContent = "a descricao nao pode ficar em branco.";
       return;
     }
 
     state.pending.set(key, { code: v, observacao: txt });
     if (td) td.classList.add("changed");
-    $("saveMsg").textContent = `${state.pending.size} alteração(ões) pendente(s).`;
+    $("saveMsg").textContent = `${state.pending.size} alteracao(oes) pendente(s).`;
 
     // tooltip imediato
     if (descModal.selectEl) descModal.selectEl.title = txt;
@@ -615,7 +617,7 @@ async function loadChangeLogs() {
     const p2 = $("newPass2").value;
 
     if (!p1 || p1.length < 6) { $("changeMsg").textContent = "a nova senha deve ter pelo menos 6 caracteres."; return; }
-    if (p1 !== p2) { $("changeMsg").textContent = "as senhas não conferem."; return; }
+    if (p1 !== p2) { $("changeMsg").textContent = "as senhas nao conferem."; return; }
 
     const r = await api("/api/change_password", { method: "POST", body: JSON.stringify({ new_password: p1 }) });
     if (!r.ok) {
@@ -635,7 +637,7 @@ async function loadChangeLogs() {
     // garante que mudanças recentes (ex.: fechar select) já entraram em pending
     await new Promise((resolve) => requestAnimationFrame(resolve));
 
-    if (!state.pending.size) { $("saveMsg").textContent = "nenhuma alteração pendente."; return; }
+    if (!state.pending.size) { $("saveMsg").textContent = "nenhuma alteracao pendente."; return; }
 
     state.saving = true;
     $("btnSave").disabled = true;
@@ -698,7 +700,7 @@ function logout() {
   async function saveSignatures() {
     $("sigMsg").textContent = "";
     if (!state.me || !state.me.is_admin) {
-      $("sigMsg").textContent = "sem permissão.";
+      $("sigMsg").textContent = "sem permissao.";
       return;
     }
 
