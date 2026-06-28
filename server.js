@@ -58,25 +58,25 @@ const DB_NAME = (process.env.DB_NAME || process.env.DB_DATABASE || "escala").tri
 // - name: nome completo a exibir
 // ===============================
 const OFFICERS = [
-  { canonical_name: "Helder Antonio de Paula", rank: "Ten Cel PM", name: "Helder Antonio de Paula" },
-  { canonical_name: "Ricardo Santos Medeiros", rank: "Maj PM", name: "Ricardo Santos Medeiros" },
-  { canonical_name: "Carlos Bordim Neto", rank: "Maj PM", name: "Carlos Bordim Neto" },
-  { canonical_name: "Marcio Saito Essaki", rank: "Cap PM", name: "Marcio Saito Essaki" },
-  { canonical_name: "Jose Antonio Marciano Neto", rank: "Cap PM", name: "Jose Antonio Marciano Neto" },
-  { canonical_name: "Alberto Franzini Neto", rank: "Cap PM", name: "Alberto Franzini Neto" },
-  { canonical_name: "Vinicio Augusto Voltarelli Tavares", rank: "Cap PM", name: "Vinicio Augusto Voltarelli Tavares" },
-  { canonical_name: "Andre Santarelli de Paula", rank: "Cap PM", name: "Andre Santarelli de Paula" },
-  { canonical_name: "Iuri Filipe dos Santos", rank: "Cap PM", name: "Iuri Filipe dos Santos" },
-  { canonical_name: "Daniel Alves de Siqueira", rank: "1º Ten PM", name: "Daniel Alves de Siqueira" },
-  { canonical_name: "Fernanda Bruno Pomponio Martignago", rank: "1º Ten Dent PM", name: "Fernanda Bruno Pomponio Martignago" },
-  { canonical_name: "Dayana de Oliveira Silva Almeida", rank: "1º Ten Dent PM", name: "Dayana de Oliveira Silva Almeida" },
-  { canonical_name: "Antonio Ovidio Ferruccio Cardoso", rank: "1º Ten PM", name: "Antonio Ovidio Ferruccio Cardoso" },
-  { canonical_name: "Bruno Antao de Oliveira", rank: "1º Ten PM", name: "Bruno Antao de Oliveira" },
-  { canonical_name: "Larissa Amadeu Leite", rank: "1º Ten PM", name: "Larissa Amadeu Leite" },
-  { canonical_name: "Renato Fernandes Freire", rank: "1º Ten PM", name: "Renato Fernandes Freire" },
-  { canonical_name: "Raphael Mecca Sampaio", rank: "1º Ten PM", name: "Raphael Mecca Sampaio" },
-  { canonical_name: "Jose Sebastiao dos Santos Neto", rank: "Asp Of PM", name: "Jose Sebastiao dos Santos Neto" },
-  { canonical_name: "Lenise Helena Tragante de Souza Cristo", rank: "Asp Of PM", name: "Lenise Helena Tragante de Souza Cristo" },
+  { canonical_name: "Helder Antonio de Paula", rank: "Ten Cel PM", name: "Helder Antonio de Paula", aliases: ["Helder"] },
+  { canonical_name: "Ricardo Santos Medeiros", rank: "Maj PM", name: "Ricardo Santos Medeiros", aliases: ["Medeiros"] },
+  { canonical_name: "Carlos Bordim Neto", rank: "Maj PM", name: "Carlos Bordim Neto", aliases: ["Bordim"] },
+  { canonical_name: "Marcio Saito Essaki", rank: "Cap PM", name: "Marcio Saito Essaki", aliases: ["Essaki"] },
+  { canonical_name: "Jose Antonio Marciano Neto", rank: "Cap PM", name: "Jose Antonio Marciano Neto", aliases: ["Jose Antonio"] },
+  { canonical_name: "Alberto Franzini Neto", rank: "Cap PM", name: "Alberto Franzini Neto", aliases: ["Franzini"] },
+  { canonical_name: "Vinicio Augusto Voltarelli Tavares", rank: "Cap PM", name: "Vinicio Augusto Voltarelli Tavares", aliases: ["Voltarelli"] },
+  { canonical_name: "Andre Santarelli de Paula", rank: "Cap PM", name: "Andre Santarelli de Paula", aliases: ["Santarelli"] },
+  { canonical_name: "Iuri Filipe dos Santos", rank: "Cap PM", name: "Iuri Filipe dos Santos", aliases: ["Iuri"] },
+  { canonical_name: "Daniel Alves de Siqueira", rank: "1º Ten PM", name: "Daniel Alves de Siqueira", aliases: ["Siqueira"] },
+  { canonical_name: "Fernanda Bruno Pomponio Martignago", rank: "1º Ten Dent PM", name: "Fernanda Bruno Pomponio Martignago", aliases: ["Pomponio"] },
+  { canonical_name: "Dayana de Oliveira Silva Almeida", rank: "1º Ten Dent PM", name: "Dayana de Oliveira Silva Almeida", aliases: ["Dayana"] },
+  { canonical_name: "Antonio Ovidio Ferruccio Cardoso", rank: "1º Ten PM", name: "Antonio Ovidio Ferruccio Cardoso", aliases: ["Ferrucio"] },
+  { canonical_name: "Bruno Antao de Oliveira", rank: "1º Ten PM", name: "Bruno Antao de Oliveira", aliases: ["Antao"] },
+  { canonical_name: "Larissa Amadeu Leite", rank: "1º Ten PM", name: "Larissa Amadeu Leite", aliases: ["Amadeu"] },
+  { canonical_name: "Renato Fernandes Freire", rank: "1º Ten PM", name: "Renato Fernandes Freire", aliases: ["Freire"] },
+  { canonical_name: "Raphael Mecca Sampaio", rank: "1º Ten PM", name: "Raphael Mecca Sampaio", aliases: ["Mecca"] },
+  { canonical_name: "Jose Sebastiao dos Santos Neto", rank: "Asp Of PM", name: "Jose Sebastiao dos Santos Neto", aliases: ["Neto"] },
+  { canonical_name: "Lenise Helena Tragante de Souza Cristo", rank: "Asp Of PM", name: "Lenise Helena Tragante de Souza Cristo", aliases: ["Tragante"] },
 ];
             
 // override visual para postos (Ten Dent) — garante exibiÃ§Ã£o correta no state e no PDF
@@ -839,52 +839,41 @@ async function findOrCreateUser(canonical_name) {
   return created[0];
 }
 
-function resolveOfficerFromInput(nameInput) {
-  const nk = normKey(nameInput);
-  if (!nk) return null;
-
-  // aceita "posto + nome" ou sÃ³ "nome"
-  // remove posto do inÃ­cio se bater com algum rank
-  const stripped = nk
+function stripRankFromLogin(input) {
+  return normKey(input)
     .replace(/^tenente\-coronel pm\s+/, "")
     .replace(/^tenente coronel pm\s+/, "")
+    .replace(/^ten cel pm\s+/, "")
     .replace(/^major pm\s+/, "")
+    .replace(/^maj pm\s+/, "")
     .replace(/^capit(ao|Ã£o) pm\s+/, "")
+    .replace(/^cap pm\s+/, "")
+    .replace(/^1º tenente dent pm\s+/, "")
+    .replace(/^1º ten dent pm\s+/, "")
     .replace(/^1º tenente pm\s+/, "")
+    .replace(/^1º ten pm\s+/, "")
     .replace(/^2º tenente pm\s+/, "")
+    .replace(/^2º ten pm\s+/, "")
+    .replace(/^aspirante oficial pm\s+/, "")
+    .replace(/^asp of pm\s+/, "")
     .replace(/\s+/g, " ")
     .trim();
+}
 
-  const targetNk = stripped || nk;
-
-  let best = null;
-  let bestScore = 0;
+function resolveOfficerFromInput(nameInput) {
+  const targetNk = stripRankFromLogin(nameInput);
+  if (!targetNk) return null;
 
   for (const off of OFFICERS) {
-    const ok = normKey(off.canonical_name);
-    // score: tokens em comum
-    const a = new Set(targetNk.split(" ").filter(Boolean));
-    const b = new Set(ok.split(" ").filter(Boolean));
-    const inter = [...a].filter(t => b.has(t)).length;
-    const union = new Set([...a, ...b]).size || 1;
-    let score = inter / union;
+    if (targetNk === normKey(off.canonical_name)) return off;
 
-    const aParts = targetNk.split(" ").filter(Boolean);
-    const bParts = ok.split(" ").filter(Boolean);
-    if (aParts.length && bParts.length) {
-      if (aParts[0] === bParts[0]) score += 0.10;
-      if (aParts[aParts.length-1] === bParts[bParts.length-1]) score += 0.15;
-    }
-
-    if (score > bestScore) {
-      bestScore = score;
-      best = off;
+    const aliases = Array.isArray(off.aliases) ? off.aliases : [];
+    for (const alias of aliases) {
+      if (targetNk === normKey(alias)) return off;
     }
   }
 
-  // exige mÃ­nimo razoÃ¡vel para evitar erro de pessoa
-  if (!best || bestScore < 0.65) return null;
-  return best;
+  return null;
 }
 
 // ===============================
@@ -962,7 +951,7 @@ app.post("/api/login", async (req, res) => {
     const password = (req.body && req.body.password ? req.body.password : "").toString();
 
     const off = resolveOfficerFromInput(name);
-    if (!off) return res.status(403).json({ error: "nome nÃ£o reconhecido. use posto + nome completo." });
+    if (!off) return res.status(403).json({ error: "nome nÃ£o reconhecido. use nome completo ou nome de guerra." });
 
     const userRow = await findOrCreateUser(off.canonical_name);
 
