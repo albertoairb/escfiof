@@ -114,6 +114,8 @@ function ddmmyyyy_hhmm(isoOrDate) {
     return "";
   }
 }
+function fmtDateCompact(iso){ const [y,m,d]=iso.split("-"); const mons=["JAN","FEV","MAR","ABR","MAI","JUN","JUL","AGO","SET","OUT","NOV","DEZ"]; return `${d}${mons[parseInt(m)-1]}${y.slice(2)}`; }
+
 
   function dayNameBR(idx) {
     const names = ["SEGUNDA", "TERCA", "QUARTA", "QUINTA", "SEXTA", "SABADO", "DOMINGO"];
@@ -154,7 +156,7 @@ function ddmmyyyy_hhmm(isoOrDate) {
       return;
     }
     bar.style.display = "";
-    bar.textContent = `ALERTA DE FERIADO NA SEMANA: ${holidays.map(h => `${ddmmyyyy(h.date)} - ${h.name}`).join(" | ")}`;
+    bar.textContent = holidays.map(h => `FERIADO: ${fmtDateCompact(h.date)}`).join(" | ");
   }
 
   function setHeader() {
