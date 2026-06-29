@@ -384,25 +384,9 @@ function getHolidaysForWeek(weekDates) {
   set.set(isoFromDate(sextaSanta), { name: "Paixao de Cristo", type: "FERIADO" });
   set.set(isoFromDate(corpusChristi), { name: "Corpus Christi", type: "FERIADO" });
 
-  // Ponto facultativo automatico:
-  // feriado na terca => segunda anterior PF; feriado na quinta => sexta posterior PF.
-  const pf = new Map();
-  for (const [iso, info] of Array.from(set.entries())) {
-    const [y, m, d] = iso.split("-").map(Number);
-    const dt = new Date(y, m - 1, d);
-    const day = dt.getDay();
-    if (day === 2) {
-      pf.set(isoFromDate(addDays(dt, -1)), { name: `Ponto facultativo anterior a ${info.name}`, type: "PF" });
-    }
-    if (day === 4) {
-      pf.set(isoFromDate(addDays(dt, 1)), { name: `Ponto facultativo posterior a ${info.name}`, type: "PF" });
-    }
-  }
-
   const out = [];
   for (const iso of weekDates) {
     if (set.has(iso)) out.push({ date: iso, ...set.get(iso) });
-    if (pf.has(iso) && !set.has(iso)) out.push({ date: iso, ...pf.get(iso) });
   }
   return out;
 }
@@ -1393,6 +1377,27 @@ if (!lastAt || !lastActor) {
 }
 
 const lastStamp = fmtDDMMYYYYHHmm(lastAt);
+
+    function renderPdfCellText(text, x, y, width) {
+      const raw = String(text || "-").trim() || "-";
+      const longWithSpace = raw.length > 10 && raw.includes(" ");
+      const veryLong = raw.length > 14;
+      if (longWithSpace || veryLong) {
+        const parts = raw.split(/\s+/).filter(Boolean);
+        let lines = [];
+        if (parts.length >= 2) {
+          lines = [parts[0], parts.slice(1).join(" ")];
+        } else {
+          lines = [raw];
+        }
+        doc.fontSize(5.2);
+        doc.text(lines.join("\n"), x, y + 1, { width, align: "center", lineGap: 0 });
+        doc.fontSize(8);
+        return;
+      }
+      doc.fontSize(8).text(raw, x, y, { width, align: "center" });
+    }
+
     // tabela
     const left = doc.page.margins.left;
     const top = doc.y;
@@ -1418,7 +1423,7 @@ const lastStamp = fmtDDMMYYYYHHmm(lastAt);
       for (let i = 0; i < dates.length; i++) {
         const k = `${off.canonical_name}|${dates[i]}`;
         const code = assignments[k] ? String(assignments[k]) : "";
-        doc.text(code || "-", left + colWName + i * colWDay, y, { width: colWDay, align: "center" });
+        renderPdfCellText(code || "-", left + colWName + i * colWDay, y, colWDay);
       }
 
       const rowLineY = y + 12;

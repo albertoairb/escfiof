@@ -154,7 +154,7 @@ function ddmmyyyy_hhmm(isoOrDate) {
       return;
     }
     bar.style.display = "";
-    bar.textContent = `ALERTA DE FERIADO/PONTO FACULTATIVO NA SEMANA: ${holidays.map(h => `${ddmmyyyy(h.date)} - ${h.name}`).join(" | ")}`;
+    bar.textContent = `ALERTA DE FERIADO NA SEMANA: ${holidays.map(h => `${ddmmyyyy(h.date)} - ${h.name}`).join(" | ")}`;
   }
 
   function setHeader() {
