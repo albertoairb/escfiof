@@ -67,6 +67,7 @@ const OFFICERS = [
   { canonical_name: "Vinicio Augusto Voltarelli Tavares", rank: "Cap PM", name: "Vinicio Augusto Voltarelli Tavares", aliases: ["Voltarelli"] },
   { canonical_name: "Andre Santarelli de Paula", rank: "Cap PM", name: "Andre Santarelli de Paula", aliases: ["Santarelli"] },
   { canonical_name: "Iuri Filipe dos Santos", rank: "Cap PM", name: "Iuri Filipe dos Santos", aliases: ["Iuri"] },
+  { canonical_name: "Mateus Pedro Teodoro", rank: "Cap PM", name: "Mateus Pedro Teodoro", aliases: ["Teodoro"] },
   { canonical_name: "Daniel Alves de Siqueira", rank: "1º Ten PM", name: "Daniel Alves de Siqueira", aliases: ["Siqueira"] },
   { canonical_name: "Fernanda Bruno Pomponio Martignago", rank: "1º Ten Dent PM", name: "Fernanda Bruno Pomponio Martignago", aliases: ["Pomponio"] },
   { canonical_name: "Dayana de Oliveira Silva Almeida", rank: "1º Ten Dent PM", name: "Dayana de Oliveira Silva Almeida", aliases: ["Dayana"] },
