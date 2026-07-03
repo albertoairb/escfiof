@@ -23,7 +23,7 @@ const WEEK_START_OVERRIDE = (process.env.WEEK_START_OVERRIDE || "").trim();
 const JWT_SECRET = (process.env.JWT_SECRET || "troque-este-segredo").trim();
 const DEFAULT_PASSWORD = (process.env.DEFAULT_PASSWORD || "sr123").trim();
 
-const CLOSE_FRIDAY_HOUR = Number(process.env.CLOSE_FRIDAY_HOUR || 11);
+const CLOSE_FRIDAY_HOUR = Number(process.env.CLOSE_FRIDAY_HOUR || 15);
 
 const SYSTEM_NAME = (process.env.SYSTEM_NAME || "ESCALA DE OFICIAIS DO 4º BPM/M").trim();
 const AUTHOR = (process.env.AUTHOR || "Desenvolvido por Alberto Franzini Neto").trim();
@@ -91,7 +91,7 @@ function fixDentRanks(list) {
 }
 
 
-// ApÃ³s fechamento (sexta 11h+), somente estes podem alterar (qualquer oficial)
+// ApÃ³s fechamento (sexta 15h+), somente estes podem alterar (qualquer oficial)
 const ADMIN_NAMES = new Set([
   "Alberto Franzini Neto",
   "Helder Antonio de Paula",
@@ -292,7 +292,7 @@ function buildDatesForWeek(startYYYYMMDD) {
   return dates;
 }
 
-// Fechamento: sexta-feira às 11h (SÃ£o Paulo) atÃ© domingo
+// Fechamento: sexta-feira às 15h (SÃ£o Paulo) atÃ© domingo
 function isClosedNow() {
   const now = new Date();
   const day = now.getDay(); // 5=sexta
@@ -1161,7 +1161,7 @@ app.put("/api/assignments", authRequired(false), async (req, res) => {
     const actor = req.user.canonical_name;
 
     if (locked && !req.user.is_admin) {
-      return res.status(423).json({ error: "edicao fechada (sexta 11h ate domingo)" });
+      return res.status(423).json({ error: "edicao fechada (sexta 15h ate domingo)" });
     }
 
     const validDates = new Set(st.dates || []);
