@@ -299,7 +299,16 @@ function buildDescNotes() {
 }
 
 function canViewAudit() {
-  return !!(state.me && state.me.can_view_audit);
+  if (!state.me) return false;
+  if (state.me.can_view_audit) return true;
+
+  // reforco de seguranca/compatibilidade: se o backend antigo nao mandar
+  // can_view_audit, libera a exibicao apenas para o usuario Franzini.
+  const name = String(state.me.canonical_name || state.me.name || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase();
+  return name.includes("franzini");
 }
 
 function hideAuditLogs() {

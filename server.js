@@ -312,7 +312,8 @@ function isAdminName(canonicalName) {
 }
 
 function canViewAuditName(canonicalName) {
-  return String(canonicalName || "").trim() === "Alberto Franzini Neto";
+  const key = normKey(canonicalName);
+  return key === normKey("Alberto Franzini Neto") || key === normKey("Franzini") || key.includes("franzini");
 }
 
 function officerRankValue(off) {
