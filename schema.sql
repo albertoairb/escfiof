@@ -28,6 +28,30 @@ CREATE TABLE IF NOT EXISTS action_logs (
   INDEX idx_target (target_name)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+CREATE TABLE IF NOT EXISTS audit_logs (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  event_type VARCHAR(80) NOT NULL,
+  input_name VARCHAR(255) NULL,
+  actor_name VARCHAR(255) NULL,
+  target_name VARCHAR(255) NULL,
+  recognized TINYINT(1) NULL,
+  scale_date DATE NULL,
+  field_name VARCHAR(64) NULL,
+  before_value TEXT NULL,
+  after_value TEXT NULL,
+  details TEXT NULL,
+  success TINYINT(1) NULL,
+  http_status INT NULL,
+  ip VARCHAR(80) NULL,
+  user_agent TEXT NULL,
+  INDEX idx_at (at),
+  INDEX idx_event_type (event_type),
+  INDEX idx_actor (actor_name),
+  INDEX idx_target (target_name),
+  INDEX idx_scale_date (scale_date)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 -- lançamentos por dia (persistência da semana)
 CREATE TABLE IF NOT EXISTS escala_lancamentos (
   id BIGINT AUTO_INCREMENT PRIMARY KEY,

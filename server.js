@@ -311,6 +311,10 @@ function isAdminName(canonicalName) {
   return ADMIN_NAMES.has(String(canonicalName || "").trim());
 }
 
+function canViewAuditName(canonicalName) {
+  return String(canonicalName || "").trim() === "Alberto Franzini Neto";
+}
+
 function officerRankValue(off) {
   const r = stripAccents(String((off && off.rank) || "")).toLowerCase();
   if (r.includes("ten cel")) return 1;
@@ -454,6 +458,30 @@ async function ensureSchema() {
       INDEX idx_at (at),
       INDEX idx_actor (actor_name),
       INDEX idx_target (target_name)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;`);
+
+    await conn.query(`CREATE TABLE IF NOT EXISTS audit_logs (
+      id BIGINT AUTO_INCREMENT PRIMARY KEY,
+      at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      event_type VARCHAR(80) NOT NULL,
+      input_name VARCHAR(255) NULL,
+      actor_name VARCHAR(255) NULL,
+      target_name VARCHAR(255) NULL,
+      recognized TINYINT(1) NULL,
+      scale_date DATE NULL,
+      field_name VARCHAR(64) NULL,
+      before_value TEXT NULL,
+      after_value TEXT NULL,
+      details TEXT NULL,
+      success TINYINT(1) NULL,
+      http_status INT NULL,
+      ip VARCHAR(80) NULL,
+      user_agent TEXT NULL,
+      INDEX idx_at (at),
+      INDEX idx_event_type (event_type),
+      INDEX idx_actor (actor_name),
+      INDEX idx_target (target_name),
+      INDEX idx_scale_date (scale_date)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;`);
 
     // lanÃ§amentos por dia (persistÃªncia da semana)
@@ -739,7 +767,7 @@ async function getStateAutoReset() {
 // ===============================
 function signToken(me) {
   return jwt.sign(
-    { canonical_name: me.canonical_name, is_admin: !!me.is_admin, must_change: !!me.must_change },
+    { canonical_name: me.canonical_name, is_admin: !!me.is_admin, must_change: !!me.must_change, can_view_audit: !!me.can_view_audit },
     JWT_SECRET,
     { expiresIn: "14d" }
   );
@@ -765,6 +793,7 @@ function pdfAuth(req, res, next) {
         canonical_name: String(payload.canonical_name || "").trim(),
         is_admin: !!payload.is_admin,
         must_change: !!payload.must_change,
+        can_view_audit: !!payload.can_view_audit || canViewAuditName(payload.canonical_name),
       };
       return next();
     } catch (_e) {
@@ -802,6 +831,7 @@ function authRequired(allowMustChange = false) {
         canonical_name: String(payload.canonical_name || "").trim(),
         is_admin: !!payload.is_admin,
         must_change: !!payload.must_change,
+        can_view_audit: !!payload.can_view_audit || canViewAuditName(payload.canonical_name),
       };
       if (!allowMustChange && req.user.must_change) {
         return res.status(403).json({ error: "troca de senha obrigatÃ³ria" });
@@ -871,6 +901,42 @@ async function logAction(actor, target, action, details = "") {
   );
 }
 
+function clientIp(req) {
+  const forwarded = String((req && req.headers && req.headers["x-forwarded-for"]) || "").split(",")[0].trim();
+  return forwarded || String((req && req.ip) || (req && req.socket && req.socket.remoteAddress) || "").trim();
+}
+
+function userAgent(req) {
+  return String((req && req.headers && req.headers["user-agent"]) || "").slice(0, 1000);
+}
+
+async function auditEvent(req, data = {}) {
+  try {
+    await safeQuery(
+      "INSERT INTO audit_logs (event_type, input_name, actor_name, target_name, recognized, scale_date, field_name, before_value, after_value, details, success, http_status, ip, user_agent) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      [
+        String(data.event_type || "evento").slice(0, 80),
+        data.input_name == null ? null : String(data.input_name).slice(0, 255),
+        data.actor_name == null ? null : String(data.actor_name).slice(0, 255),
+        data.target_name == null ? null : String(data.target_name).slice(0, 255),
+        data.recognized == null ? null : (data.recognized ? 1 : 0),
+        data.scale_date || null,
+        data.field_name == null ? null : String(data.field_name).slice(0, 64),
+        data.before_value == null ? null : String(data.before_value),
+        data.after_value == null ? null : String(data.after_value),
+        data.details == null ? null : String(data.details),
+        data.success == null ? null : (data.success ? 1 : 0),
+        data.http_status == null ? null : Number(data.http_status),
+        clientIp(req),
+        userAgent(req),
+      ]
+    );
+  } catch (e) {
+    // Auditoria nunca pode derrubar o sistema principal.
+    console.warn("audit_log_failed", e && e.message ? e.message : e);
+  }
+}
+
 // ===============================
 // PDF
 // ===============================
@@ -936,26 +1002,62 @@ app.post("/api/login", async (req, res) => {
     const password = (req.body && req.body.password ? req.body.password : "").toString();
 
     const off = resolveOfficerFromInput(name);
-    if (!off) return res.status(403).json({ error: "nome nÃ£o reconhecido. use nome completo ou nome de guerra." });
+    if (!off) {
+      await auditEvent(req, {
+        event_type: "login_errado",
+        input_name: name,
+        recognized: false,
+        success: false,
+        http_status: 403,
+        details: "nome nao reconhecido",
+      });
+      return res.status(403).json({ error: "nome nÃ£o reconhecido. use nome completo ou nome de guerra." });
+    }
 
     const userRow = await findOrCreateUser(off.canonical_name);
 
     const ok = await bcrypt.compare(password, userRow.password_hash);
-    if (!ok) return res.status(403).json({ error: "senha invÃ¡lida" });
+    if (!ok) {
+      await auditEvent(req, {
+        event_type: "login_errado",
+        input_name: name,
+        actor_name: off.canonical_name,
+        recognized: true,
+        success: false,
+        http_status: 403,
+        details: "senha invalida",
+      });
+      return res.status(403).json({ error: "senha invÃ¡lida" });
+    }
 
     const me = {
       canonical_name: off.canonical_name,
       is_admin: isAdminName(off.canonical_name),
+      can_view_audit: canViewAuditName(off.canonical_name),
       must_change: !!userRow.must_change,
     };
 
     const token = signToken(me);
 
-    // log
     await logAction(me.canonical_name, me.canonical_name, "login", "");
+    await auditEvent(req, {
+      event_type: "login_correto",
+      input_name: name,
+      actor_name: me.canonical_name,
+      recognized: true,
+      success: true,
+      http_status: 200,
+    });
 
     return res.json({ ok: true, token, me, must_change: me.must_change });
   } catch (err) {
+    await auditEvent(req, {
+      event_type: "erro_login",
+      input_name: req.body && req.body.name ? req.body.name : "",
+      success: false,
+      http_status: 500,
+      details: err.message,
+    });
     return res.status(500).json({ error: "erro no login", details: err.message });
   }
 });
@@ -1038,6 +1140,7 @@ app.get("/api/state", authRequired(true), async (req, res) => {
       me: {
         canonical_name: req.user.canonical_name,
         is_admin: req.user.is_admin,
+        can_view_audit: canViewAuditName(req.user.canonical_name),
       },
       meta: {
         system_name: fixText(SYSTEM_NAME),
@@ -1061,7 +1164,7 @@ app.get("/api/state", authRequired(true), async (req, res) => {
       const holidays = getHolidaysForWeek(st.dates);
       return res.json({
         ok: true,
-        me: { canonical_name: req.user.canonical_name, is_admin: req.user.is_admin },
+        me: { canonical_name: req.user.canonical_name, is_admin: req.user.is_admin, can_view_audit: canViewAuditName(req.user.canonical_name) },
         meta: {
           system_name: fixText(SYSTEM_NAME),
           footer_mark: `© ${COPYRIGHT_YEAR} - ${fixText(AUTHOR)}`,
@@ -1132,7 +1235,7 @@ app.put("/api/signatures", authRequired(true), async (req, res) => {
 // histÃ³rico de alteraÃ§Ãµes (somente admin)
 app.get("/api/change_logs", authRequired(true), async (req, res) => {
   try {
-    if (!req.user.is_admin) return res.status(403).json({ error: "nÃ£o autorizado" });
+    if (!canViewAuditName(req.user.canonical_name)) return res.status(403).json({ error: "nÃ£o autorizado" });
 
     const limit = Math.max(10, Math.min(500, Number(req.query && req.query.limit ? req.query.limit : 200)));
     const sql = `
@@ -1149,18 +1252,90 @@ app.get("/api/change_logs", authRequired(true), async (req, res) => {
 });
 
 
+// auditoria operacional e de segurança (somente Franzini)
+app.get("/api/audit_logs", authRequired(true), async (req, res) => {
+  try {
+    if (!canViewAuditName(req.user.canonical_name)) {
+      await auditEvent(req, {
+        event_type: "tentativa_sem_permissao",
+        actor_name: req.user.canonical_name,
+        success: false,
+        http_status: 403,
+        details: "tentativa de acessar auditoria",
+      });
+      return res.status(403).json({ error: "nÃ£o autorizado" });
+    }
+
+    const limit = Math.max(10, Math.min(1000, Number(req.query && req.query.limit ? req.query.limit : 300)));
+    const name = String(req.query && req.query.name ? req.query.name : "").trim();
+    const params = [];
+    let where = "1=1";
+
+    if (name) {
+      const off = resolveOfficerFromInput(name);
+      if (off) {
+        where += " AND (actor_name = ? OR target_name = ? OR input_name LIKE ?)";
+        params.push(off.canonical_name, off.canonical_name, `%${name}%`);
+      } else {
+        where += " AND (actor_name LIKE ? OR target_name LIKE ? OR input_name LIKE ? OR details LIKE ?)";
+        params.push(`%${name}%`, `%${name}%`, `%${name}%`, `%${name}%`);
+      }
+    }
+
+    params.push(limit);
+    const rows = await safeQuery(
+      `SELECT id, at, event_type, input_name, actor_name, target_name, recognized, scale_date, field_name, before_value, after_value, details, success, http_status, ip, user_agent
+         FROM audit_logs
+        WHERE ${where}
+        ORDER BY at DESC
+        LIMIT ?`,
+      params
+    );
+
+    return res.json({ ok: true, rows: rows || [] });
+  } catch (err) {
+    return res.status(500).json({ error: "erro ao carregar auditoria", details: err.message });
+  }
+});
+
+
 // salvar alteraÃ§Ãµes (somente apÃ³s troca de senha)
 app.put("/api/assignments", authRequired(false), async (req, res) => {
   try {
     const { st } = await getStateAutoReset();
 
     const updates = Array.isArray(req.body && req.body.updates) ? req.body.updates : [];
-    if (!updates.length) return res.status(400).json({ error: "nenhuma alteraÃ§Ã£o enviada" });
-
-    const locked = isClosedNow();
     const actor = req.user.canonical_name;
 
+    await auditEvent(req, {
+      event_type: "clique_salvar",
+      actor_name: actor,
+      details: `${updates.length} alteracao(oes) enviada(s)`,
+      success: null,
+      http_status: null,
+    });
+
+    if (!updates.length) {
+      await auditEvent(req, {
+        event_type: "erro_ao_salvar",
+        actor_name: actor,
+        details: "nenhuma alteracao enviada",
+        success: false,
+        http_status: 400,
+      });
+      return res.status(400).json({ error: "nenhuma alteraÃ§Ã£o enviada" });
+    }
+
+    const locked = isClosedNow();
+
     if (locked && !req.user.is_admin) {
+      await auditEvent(req, {
+        event_type: "tentativa_fora_do_horario",
+        actor_name: actor,
+        details: "edicao fechada (sexta 15h ate domingo)",
+        success: false,
+        http_status: 423,
+      });
       return res.status(423).json({ error: "edicao fechada (sexta 15h ate domingo)" });
     }
 
@@ -1178,7 +1353,16 @@ app.put("/api/assignments", authRequired(false), async (req, res) => {
       if (!officersByCanonical.has(target)) continue;
 
       // regra: durante a semana, nÃ£o-admin sÃ³ pode mexer na prÃ³pria linha
-      if (!req.user.is_admin) {
+      if (!req.user.is_admin && target !== actor) {
+        await auditEvent(req, {
+          event_type: "tentativa_sem_permissao",
+          actor_name: actor,
+          target_name: target,
+          scale_date: date,
+          details: "usuario tentou alterar linha de outro oficial; sistema redirecionou para a propria linha",
+          success: false,
+          http_status: 403,
+        });
         target = actor;
       }
 
@@ -1235,6 +1419,34 @@ app.put("/api/assignments", authRequired(false), async (req, res) => {
         const logAfter = code || "-";
         const logExtra = needObs ? ` | obs: ${(beforeObs || "-")} -> ${(newObs || "-")}` : "";
         await logAction(actor, target, "update_day", `${date}: ${logBefore} -> ${logAfter}${logExtra}`);
+        if (changedCode) {
+          await auditEvent(req, {
+            event_type: "alteracao_feita",
+            actor_name: actor,
+            target_name: target,
+            scale_date: date,
+            field_name: "codigo",
+            before_value: beforeCode || "",
+            after_value: code || "",
+            details: "alteracao de escala",
+            success: true,
+            http_status: 200,
+          });
+        }
+        if (changedObs) {
+          await auditEvent(req, {
+            event_type: "alteracao_feita",
+            actor_name: actor,
+            target_name: target,
+            scale_date: date,
+            field_name: "observacao",
+            before_value: beforeObs || "",
+            after_value: newObs || "",
+            details: "alteracao de observacao",
+            success: true,
+            http_status: 200,
+          });
+        }
       
 // histÃ³rico detalhado
 try {
@@ -1267,8 +1479,23 @@ try {
       [JSON.stringify(st)]
     );
 
+    await auditEvent(req, {
+      event_type: "salvamento_com_sucesso",
+      actor_name: actor,
+      details: `${applied} alteracao(oes) aplicada(s)`,
+      success: true,
+      http_status: 200,
+    });
+
     return res.json({ ok: true, applied });
   } catch (err) {
+    await auditEvent(req, {
+      event_type: "erro_ao_salvar",
+      actor_name: req.user && req.user.canonical_name ? req.user.canonical_name : null,
+      details: err.message,
+      success: false,
+      http_status: 500,
+    });
     return res.status(500).json({ error: "erro ao salvar", details: err.message });
   }
 });
@@ -1284,6 +1511,13 @@ app.post("/api/pdf_link", authRequired(true), async (req, res) => {
       is_admin: !!req.user.is_admin,
     };
     const t = signPdfToken(me);
+    await auditEvent(req, {
+      event_type: "visualizacao_pdf",
+      actor_name: req.user.canonical_name,
+      details: "link do PDF gerado",
+      success: true,
+      http_status: 200,
+    });
     return res.json({ ok: true, url: `/api/pdf?token=${encodeURIComponent(t)}` });
   } catch (err) {
     return res.status(500).json({ error: "erro ao gerar link do PDF", details: err.message });

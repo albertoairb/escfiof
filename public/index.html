@@ -75,10 +75,14 @@
 </details>
 
 
-<details id="historyBox" class="descbox" style="display:none;">
-  <summary>historico de alteracoes</summary>
-  <div class="muted">visivel apenas para administrador. registra quem alterou, quando, e o que foi alterado.</div>
-  <div id="historyTable" class="descnotes"></div>
+<details id="auditBox" class="descbox" style="display:none;">
+  <summary>auditoria operacional e de seguranca</summary>
+  <div class="muted">visivel somente para Franzini. pesquise por nome de guerra ou nome completo.</div>
+  <div class="row row--actions">
+    <input id="auditName" placeholder="nome de guerra: ex. Franzini, Essaki, Siqueira" />
+    <button id="btnAuditRefresh" class="btn">consultar</button>
+  </div>
+  <div id="auditTable" class="descnotes"></div>
 </details>
 
 

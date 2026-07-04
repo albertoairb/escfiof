@@ -212,7 +212,7 @@ function fmtDateCompact(iso){ const [y,m,d]=iso.split("-"); const mons=["JAN","F
 
   function setLockMsg() {
     if (state.locked) {
-      $("lockMsg").textContent = "edicao fechada (sexta 11h ate domingo). apos isso, somente responsaveis autorizados.";
+      $("lockMsg").textContent = "edicao fechada (sexta 15h ate domingo). apos isso, somente responsaveis autorizados.";
     } else {
       $("lockMsg").textContent = "edicao liberada.";
     }
@@ -284,36 +284,50 @@ function buildDescNotes() {
     body.textContent = it.text;
     div.appendChild(body);
 
+    const meta = state.notes_meta && state.notes_meta[it.key] ? state.notes_meta[it.key] : null;
+    if (meta && (meta.updated_at || meta.updated_by || meta.created_by)) {
+      const metaLine = document.createElement("div");
+      metaLine.className = "muted";
+      const dt = meta.updated_at ? ddmmyyyy_hhmm(meta.updated_at) : "";
+      const by = meta.updated_by || meta.created_by || "";
+      metaLine.textContent = `${dt ? "atualizado em " + dt : ""}${(dt && by) ? " por " : ""}${by ? by : ""}`.trim();
+      if (metaLine.textContent) div.appendChild(metaLine);
+    }
 
-const meta = state.notes_meta && state.notes_meta[it.key] ? state.notes_meta[it.key] : null;
-if (meta && (meta.updated_at || meta.updated_by || meta.created_by)) {
-  const metaLine = document.createElement("div");
-  metaLine.className = "muted";
-  const dt = meta.updated_at ? ddmmyyyy_hhmm(meta.updated_at) : "";
-  const by = meta.updated_by || meta.created_by || "";
-  metaLine.textContent = `${dt ? "atualizado em " + dt : ""}${(dt && by) ? " por " : ""}${by ? by : ""}`.trim();
-  if (metaLine.textContent) div.appendChild(metaLine);
+    box.appendChild(div);
+  }
 }
 
+function canViewAudit() {
+  return !!(state.me && state.me.can_view_audit);
+}
 
-function hideChangeLogs() {
-  const box = $("historyBox");
+function hideAuditLogs() {
+  const box = $("auditBox");
   if (box) box.style.display = "none";
-  const table = $("historyTable");
+  const table = $("auditTable");
   if (table) table.innerHTML = "";
 }
 
-async function loadChangeLogs() {
-  const box = $("historyBox");
-  const table = $("historyTable");
+async function loadAuditLogs() {
+  const box = $("auditBox");
+  const table = $("auditTable");
   if (!box || !table) return;
+  if (!canViewAudit()) {
+    hideAuditLogs();
+    return;
+  }
 
   box.style.display = "block";
   table.innerHTML = "<div class='muted'>carregando…</div>";
 
-  const r = await api("/api/change_logs?limit=200");
+  const qName = $("auditName") ? String($("auditName").value || "").trim() : "";
+  const params = new URLSearchParams({ limit: "300" });
+  if (qName) params.set("name", qName);
+
+  const r = await api(`/api/audit_logs?${params.toString()}`);
   if (!r.ok) {
-    table.innerHTML = `<div class='muted'>${(r.data && (r.data.error || r.data.details)) ? (r.data.error || r.data.details) : "erro ao carregar historico"}</div>`;
+    table.innerHTML = `<div class='muted'>${(r.data && (r.data.error || r.data.details)) ? (r.data.error || r.data.details) : "erro ao carregar auditoria"}</div>`;
     return;
   }
 
@@ -323,29 +337,28 @@ async function loadChangeLogs() {
     return;
   }
 
-  const esc = (s) => String(s == null ? "" : s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
-  let html = "<table class='hist'><thead><tr><th>data/hora</th><th>ator</th><th>alvo</th><th>dia</th><th>campo</th><th>antes</th><th>depois</th></tr></thead><tbody>";
-  for (const r of rows) {
-    const at = r.at ? ddmmyyyy_hhmm(r.at) : "";
-    const day = r.data ? ddmmyyyy(String(r.data).slice(0,10).replaceAll('/','-')) : "";
+  const esc = (v) => String(v == null ? "" : v).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+  let html = "<table class='hist'><thead><tr><th>data/hora</th><th>evento</th><th>nome digitado</th><th>usuário</th><th>alvo</th><th>dia</th><th>campo</th><th>antes</th><th>depois</th><th>IP</th><th>dispositivo</th></tr></thead><tbody>";
+  for (const row of rows) {
+    const at = row.at ? ddmmyyyy_hhmm(row.at) : "";
+    const day = row.scale_date ? ddmmyyyy(String(row.scale_date).slice(0,10).replaceAll('/','-')) : "";
     html += "<tr>";
     html += `<td>${esc(at)}</td>`;
-    html += `<td>${esc(r.actor_name || "")}</td>`;
-    html += `<td>${esc(r.target_name || "")}</td>`;
+    html += `<td>${esc(row.event_type || "")}</td>`;
+    html += `<td>${esc(row.input_name || "")}</td>`;
+    html += `<td>${esc(row.actor_name || "")}</td>`;
+    html += `<td>${esc(row.target_name || "")}</td>`;
     html += `<td>${esc(day)}</td>`;
-    html += `<td>${esc(r.field_name || "")}</td>`;
-    html += `<td>${esc(r.before_value || "")}</td>`;
-    html += `<td>${esc(r.after_value || "")}</td>`;
+    html += `<td>${esc(row.field_name || "")}</td>`;
+    html += `<td>${esc(row.before_value || "")}</td>`;
+    html += `<td>${esc(row.after_value || "")}</td>`;
+    html += `<td>${esc(row.ip || "")}</td>`;
+    html += `<td>${esc(row.user_agent || "")}</td>`;
     html += "</tr>";
   }
   html += "</tbody></table>";
   table.innerHTML = html;
 }
-
-    box.appendChild(div);
-  }
-}
-
 
   function canEditOfficer(officerCanonical) {
     if (!state.me) return false;
@@ -548,11 +561,11 @@ async function loadChangeLogs() {
     buildOpsNotes();
     buildDescNotes();
 
-    // histórico (somente admin)
-    if (state.me && state.me.is_admin) {
-      await loadChangeLogs();
+    // auditoria (somente Franzini)
+    if (canViewAudit()) {
+      await loadAuditLogs();
     } else {
-      hideChangeLogs();
+      hideAuditLogs();
     }
 
     // assinaturas
@@ -754,6 +767,10 @@ function logout() {
   $("btnLogin").addEventListener("click", doLogin);
   $("btnChange").addEventListener("click", changePassword);
   $("btnSave").addEventListener("click", (e) => { e.preventDefault(); requestAnimationFrame(() => save()); });
+  const btnAuditRefresh = $("btnAuditRefresh");
+  if (btnAuditRefresh) btnAuditRefresh.addEventListener("click", (e) => { e.preventDefault(); loadAuditLogs(); });
+  const auditName = $("auditName");
+  if (auditName) auditName.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); loadAuditLogs(); } });
   $("btnLogout").addEventListener("click", logout);
   $("btnPdf").addEventListener("click", openPdf);
 
