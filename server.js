@@ -22,6 +22,7 @@ const WEEK_START_OVERRIDE = (process.env.WEEK_START_OVERRIDE || "").trim();
 
 const JWT_SECRET = (process.env.JWT_SECRET || "troque-este-segredo").trim();
 const DEFAULT_PASSWORD = (process.env.DEFAULT_PASSWORD || "sr123").trim();
+const ONE_TIME_PASSWORD_RESET_MARKER = "reset_senhas_20260826_franzini_voltarelli";
 
 const CLOSE_FRIDAY_HOUR = Number(process.env.CLOSE_FRIDAY_HOUR || 15);
 
@@ -538,6 +539,58 @@ await conn.query(`CREATE TABLE IF NOT EXISTS escala_change_log (
       const initial = buildFreshState();
       await conn.query("INSERT INTO state_store (id, payload) VALUES (1, ?)", [JSON.stringify(initial)]);
     }
+  } finally {
+    conn.release();
+  }
+}
+
+
+async function runOneTimePasswordReset() {
+  const targets = [
+    "Alberto Franzini Neto",
+    "Vinicio Augusto Voltarelli Tavares",
+  ];
+
+  const conn = await pool.getConnection();
+  try {
+    await conn.beginTransaction();
+
+    const [alreadyDone] = await conn.query(
+      "SELECT id FROM action_logs WHERE action=? LIMIT 1 FOR UPDATE",
+      [ONE_TIME_PASSWORD_RESET_MARKER]
+    );
+
+    if (alreadyDone.length) {
+      await conn.commit();
+      return false;
+    }
+
+    const hash = await bcrypt.hash("sr123", 10);
+    const [result] = await conn.query(
+      "UPDATE users SET password_hash=?, must_change=1 WHERE canonical_name IN (?, ?)",
+      [hash, targets[0], targets[1]]
+    );
+
+    if (Number(result.affectedRows || 0) !== 2) {
+      throw new Error(`reset_senhas_abortado: esperado 2 usuarios, alterados ${Number(result.affectedRows || 0)}`);
+    }
+
+    await conn.query(
+      "INSERT INTO action_logs (actor_name, target_name, action, details) VALUES (?, ?, ?, ?)",
+      [
+        "SYSTEM",
+        targets.join("; "),
+        ONE_TIME_PASSWORD_RESET_MARKER,
+        "Reset unico para sr123 com troca obrigatoria no proximo login",
+      ]
+    );
+
+    await conn.commit();
+    console.log("[OK] Reset unico de senha aplicado a Franzini e Voltarelli.");
+    return true;
+  } catch (e) {
+    try { await conn.rollback(); } catch (_e) {}
+    throw e;
   } finally {
     conn.release();
   }
@@ -1802,6 +1855,7 @@ app.get("*", (_req, res) => {
 (async () => {
   try {
     await ensureSchema();
+    await runOneTimePasswordReset();
     app.listen(PORT, () => {
       console.log(`[OK] Escala online em :${PORT} (TZ=${process.env.TZ})`);
     });
