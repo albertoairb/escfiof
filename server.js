@@ -1553,7 +1553,9 @@ app.get("/api/audit_logs", authRequired(true), async (req, res) => {
 
     params.push(limit);
     const rows = await safeQuery(
-      `SELECT id, at, event_type, input_name, actor_name, target_name, recognized, scale_date, field_name, before_value, after_value, details, success, http_status, ip, user_agent
+      `SELECT id,
+              DATE_FORMAT(CONVERT_TZ(at, '+00:00', '-03:00'), '%Y-%m-%dT%H:%i:%s-03:00') AS at,
+              event_type, input_name, actor_name, target_name, recognized, scale_date, field_name, before_value, after_value, details, success, http_status, ip, user_agent
          FROM audit_logs
         WHERE ${where}
         ORDER BY at DESC
