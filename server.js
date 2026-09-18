@@ -1,6 +1,7 @@
 "use strict";
 
 const path = require("path");
+const fs = require("fs");
 const express = require("express");
 const helmet = require("helmet");
 const compression = require("compression");
@@ -24,7 +25,10 @@ const JWT_SECRET = (process.env.JWT_SECRET || "troque-este-segredo").trim();
 const DEFAULT_PASSWORD = (process.env.DEFAULT_PASSWORD || "sr123").trim();
 const ONE_TIME_PASSWORD_RESET_MARKER = "reset_senhas_20260826_franzini_voltarelli";
 
-const CLOSE_FRIDAY_HOUR = Number(process.env.CLOSE_FRIDAY_HOUR || 15);
+const AUTOFILL_FRIDAY_HOUR = Number(process.env.AUTOFILL_FRIDAY_HOUR || 17);
+const SPECIAL_READONLY_USER = "p1";
+const SPECIAL_READONLY_PASSWORD = "aux123";
+const INITIAL_PREVIOUS_PDF = path.join(__dirname, "history", "escala_anterior_original_2026-09-14_a_2026-09-20.pdf");
 
 const SYSTEM_NAME = (process.env.SYSTEM_NAME || "ESCALA DE OFICIAIS DO 4º BPM/M").trim();
 const AUTHOR = (process.env.AUTHOR || "Desenvolvido por Alberto Franzini Neto").trim();
@@ -92,7 +96,7 @@ function fixDentRanks(list) {
 }
 
 
-// ApÃ³s fechamento (sexta 15h+), somente estes podem alterar (qualquer oficial)
+// Administradores mantêm as permissões atuais para alterar qualquer oficial
 const ADMIN_NAMES = new Set([
   "Alberto Franzini Neto",
   "Helder Antonio de Paula",
@@ -293,19 +297,20 @@ function buildDatesForWeek(startYYYYMMDD) {
   return dates;
 }
 
-// Fechamento: sexta-feira às 15h (SÃ£o Paulo) atÃ© domingo
+// A escala atual permanece editável em todos os dias/horários.
 function isClosedNow() {
-  const now = new Date();
-  const day = now.getDay(); // 5=sexta
-  const hour = now.getHours();
-
-  if (day < 5) return false;
-  if (day === 5) return hour >= CLOSE_FRIDAY_HOUR;
-  return true; // sabado/domingo
+  return false;
 }
 
+// O horário de sexta-feira às 17h é apenas o gatilho do autopreenchimento.
+// Depois do gatilho, a rotina continua válida no sábado e domingo para preencher
+// somente campos que ainda estejam vazios.
 function shouldRunAutoFillNow() {
-  return isClosedNow();
+  const now = new Date();
+  const day = now.getDay(); // 5=sexta, 6=sábado, 0=domingo
+  const hour = now.getHours();
+  if (day === 5) return hour >= AUTOFILL_FRIDAY_HOUR;
+  return day === 6 || day === 0;
 }
 
 function isAdminName(canonicalName) {
@@ -365,31 +370,33 @@ function isoFromDate(d) {
 
 function getHolidaysForWeek(weekDates) {
   if (!Array.isArray(weekDates) || !weekDates.length) return [];
-  const year = Number(weekDates[0].slice(0,4));
+  const year = Number(weekDates[0].slice(0, 4));
   const set = new Map();
 
-  // Feriados nacionais fixos, sem acentos para evitar problema de codificacao.
-  const fixed = [
-    ["01-01", "Confraternizacao Universal"],
-    ["21-04", "Tiradentes"],
-    ["01-05", "Dia do Trabalhador"],
-    ["07-09", "Independencia do Brasil"],
-    ["12-10", "Nossa Senhora Aparecida"],
-    ["02-11", "Finados"],
-    ["15-11", "Proclamacao da Republica"],
-    ["25-12", "Natal"],
+  // Feriados nacionais.
+  const fixedNational = [
+    ["01-01", "Confraternização Universal", "NACIONAL"],
+    ["21-04", "Tiradentes", "NACIONAL"],
+    ["01-05", "Dia Mundial do Trabalho", "NACIONAL"],
+    ["07-09", "Independência do Brasil", "NACIONAL"],
+    ["12-10", "Nossa Senhora Aparecida", "NACIONAL"],
+    ["02-11", "Finados", "NACIONAL"],
+    ["15-11", "Proclamação da República", "NACIONAL"],
+    ["20-11", "Dia Nacional de Zumbi e da Consciência Negra", "NACIONAL"],
+    ["25-12", "Natal", "NACIONAL"],
   ];
-  for (const [md, name] of fixed) set.set(`${year}-${md}`, { name, type: "FERIADO" });
+  for (const [md, name, scope] of fixedNational) {
+    set.set(`${year}-${md}`, { name, type: "FERIADO", scope });
+  }
 
-  // Moveis nacionais.
+  // Estado de São Paulo.
+  set.set(`${year}-07-09`, { name: "REVOLUÇÃO CONSTITUCIONALISTA", type: "FERIADO", scope: "ESTADUAL" });
+
+  // Município de São Paulo.
+  set.set(`${year}-01-25`, { name: "Aniversário da Cidade de São Paulo", type: "FERIADO", scope: "MUNICIPAL" });
   const easter = easterDate(year);
-  const carnaval = addDays(easter, -47);
-  const sextaSanta = addDays(easter, -2);
-  const corpusChristi = addDays(easter, 60);
-
-  set.set(isoFromDate(carnaval), { name: "Carnaval", type: "FERIADO" });
-  set.set(isoFromDate(sextaSanta), { name: "Paixao de Cristo", type: "FERIADO" });
-  set.set(isoFromDate(corpusChristi), { name: "Corpus Christi", type: "FERIADO" });
+  set.set(isoFromDate(addDays(easter, -2)), { name: "Paixão de Cristo", type: "FERIADO", scope: "MUNICIPAL" });
+  set.set(isoFromDate(addDays(easter, 60)), { name: "Corpus Christi", type: "FERIADO", scope: "MUNICIPAL" });
 
   const out = [];
   for (const iso of weekDates) {
@@ -398,11 +405,8 @@ function getHolidaysForWeek(weekDates) {
   return out;
 }
 
-function autoCodeForOfficerDate(off, iso, holidays) {
+function autoCodeForOfficerDate(off, iso) {
   if (!isCapOrAbove(off)) return "";
-  const h = (holidays || []).find(x => x.date === iso);
-  if (h && h.type === "PF") return "PF";
-  if (h && h.type === "FERIADO") return "FERIADO";
   const [y, m, d] = iso.split("-").map(Number);
   const day = new Date(y, m - 1, d).getDay();
   if (day === 0 || day === 6) return "FO";
@@ -412,16 +416,17 @@ function autoCodeForOfficerDate(off, iso, holidays) {
 function applyAutoFill(st) {
   if (!st || !shouldRunAutoFillNow()) return false;
   st.assignments = st.assignments && typeof st.assignments === "object" ? st.assignments : {};
-  const holidays = getHolidaysForWeek(st.dates || []);
+  st.auto_assignments = st.auto_assignments && typeof st.auto_assignments === "object" ? st.auto_assignments : {};
   let changed = false;
   for (const off of OFFICERS) {
     if (!isCapOrAbove(off)) continue;
     for (const iso of st.dates || []) {
       const key = `${off.canonical_name}|${iso}`;
       if (String(st.assignments[key] || "").trim()) continue;
-      const code = autoCodeForOfficerDate(off, iso, holidays);
+      const code = autoCodeForOfficerDate(off, iso);
       if (code) {
         st.assignments[key] = code;
+        st.auto_assignments[key] = true;
         changed = true;
       }
     }
@@ -539,6 +544,13 @@ await conn.query(`CREATE TABLE IF NOT EXISTS escala_change_log (
       const initial = buildFreshState();
       await conn.query("INSERT INTO state_store (id, payload) VALUES (1, ?)", [JSON.stringify(initial)]);
     }
+
+    // Usuário técnico P1: somente leitura, senha fixa inicial e sem troca obrigatória.
+    const [p1Rows] = await conn.query("SELECT id FROM users WHERE LOWER(canonical_name)=LOWER(?) LIMIT 1", [SPECIAL_READONLY_USER]);
+    if (!p1Rows.length) {
+      const p1Hash = await bcrypt.hash(SPECIAL_READONLY_PASSWORD, 10);
+      await conn.query("INSERT INTO users (canonical_name, password_hash, must_change) VALUES (?, ?, 0)", [SPECIAL_READONLY_USER, p1Hash]);
+    }
   } finally {
     conn.release();
   }
@@ -612,6 +624,7 @@ function buildFreshState() {
     officers: OFFICERS.slice(),
     assignments: {},
     notes: {},
+    auto_assignments: {},
     updated_at: new Date().toISOString(),
   };
   applyAutoFill(fresh);
@@ -767,6 +780,43 @@ function buildAssignmentsAndNotesFromLancamentos(rows, validDates) {
   return { assignments, notes, notes_meta };
 }
 
+async function hydrateStateFromCurrentLaunches(st) {
+  if (!st || !st.period || !st.period.start || !st.period.end) return st;
+  try {
+    const rows = await fetchLancamentosForPeriod(st.period.start, st.period.end);
+    const built = buildAssignmentsAndNotesFromLancamentos(rows, st.dates || []);
+    st.assignments = { ...(st.assignments || {}), ...(built.assignments || {}) };
+    st.notes = { ...(st.notes || {}), ...(built.notes || {}) };
+    st.notes_meta = { ...(st.notes_meta || {}), ...(built.notes_meta || {}) };
+    // Tudo que veio da tabela de lançamentos foi gravado/alterado por usuário e
+    // deixa de ser marcado como autopreenchimento.
+    st.auto_assignments = st.auto_assignments && typeof st.auto_assignments === "object" ? st.auto_assignments : {};
+    for (const key of Object.keys(built.assignments || {})) delete st.auto_assignments[key];
+  } catch (_e) {
+    // Fallback seguro: conserva a fotografia existente em state_store.
+  }
+  return st;
+}
+
+async function savePreviousSnapshot(st) {
+  if (!st || !st.period || !st.period.start || !st.period.end) return false;
+  const frozen = JSON.parse(JSON.stringify(await hydrateStateFromCurrentLaunches(st)));
+  frozen.read_only = true;
+  frozen.original = true;
+  frozen.frozen_at = new Date().toISOString();
+  await safeQuery(
+    "INSERT INTO state_store (id, payload) VALUES (2, ?) ON DUPLICATE KEY UPDATE payload=VALUES(payload), updated_at=CURRENT_TIMESTAMP",
+    [JSON.stringify(frozen)]
+  );
+  return true;
+}
+
+async function getPreviousSnapshot() {
+  const rows = await safeQuery("SELECT payload FROM state_store WHERE id=2 LIMIT 1");
+  if (!rows.length) return null;
+  return safeJsonParse(rows[0].payload);
+}
+
 async function getStateAutoReset() {
   const rows = await safeQuery("SELECT payload FROM state_store WHERE id=1 LIMIT 1");
   let st = rows.length ? safeJsonParse(rows[0].payload) : null;
@@ -775,14 +825,12 @@ async function getStateAutoReset() {
   const needReset = !st || !st.period || st.period.start !== currentWeek.start || st.period.end !== currentWeek.end;
 
   if (needReset) {
-    // se existia uma semana anterior registrada, significa virada de semana â†’ limpar lanÃ§amentos (segunda-feira inicia nova semana e limpa somente a escala semanal)
-    // nÃ£o remove usuÃ¡rios nem logs, apenas a tabela de registros da escala.
-    try {
-      if (st && st.period && (st.period.start || st.period.end)) {
-        await safeQuery("DELETE FROM escala_lancamentos");
-      }
-    } catch (_e) {
-      // ignora se a tabela nÃ£o existir em algum ambiente
+    // Virada de semana: primeiro congela a fotografia integral da semana atual.
+    // Só depois de confirmar a gravação da ESCALA ANTERIOR ORIGINAL é que os
+    // lançamentos da semana corrente são limpos para iniciar a nova semana.
+    if (st && st.period && (st.period.start || st.period.end)) {
+      await savePreviousSnapshot(st);
+      await safeQuery("DELETE FROM escala_lancamentos WHERE data BETWEEN ? AND ?", [st.period.start, st.period.end]);
     }
 
     st = buildFreshState();
@@ -804,6 +852,7 @@ async function getStateAutoReset() {
   st.dates = buildDatesForWeek(currentWeek.start);
   st.assignments = st.assignments && typeof st.assignments === "object" ? st.assignments : {};
   st.notes = st.notes && typeof st.notes === "object" ? st.notes : {};
+  st.auto_assignments = st.auto_assignments && typeof st.auto_assignments === "object" ? st.auto_assignments : {};
 
   if (applyAutoFill(st)) {
     st.updated_at = new Date().toISOString();
@@ -821,7 +870,7 @@ async function getStateAutoReset() {
 // ===============================
 function signToken(me) {
   return jwt.sign(
-    { canonical_name: me.canonical_name, is_admin: !!me.is_admin, must_change: !!me.must_change, can_view_audit: !!me.can_view_audit },
+    { canonical_name: me.canonical_name, is_admin: !!me.is_admin, is_readonly: !!me.is_readonly, must_change: !!me.must_change, can_view_audit: !!me.can_view_audit },
     JWT_SECRET,
     { expiresIn: "14d" }
   );
@@ -830,7 +879,7 @@ function signToken(me) {
 // token curto e especÃ­fico para abrir PDF via URL (window.open nÃ£o envia headers)
 function signPdfToken(me) {
   return jwt.sign(
-    { canonical_name: me.canonical_name, is_admin: !!me.is_admin, scope: "pdf" },
+    { canonical_name: me.canonical_name, is_admin: !!me.is_admin, is_readonly: !!me.is_readonly, scope: "pdf" },
     JWT_SECRET,
     { expiresIn: "2m" }
   );
@@ -846,6 +895,7 @@ function pdfAuth(req, res, next) {
       req.user = {
         canonical_name: String(payload.canonical_name || "").trim(),
         is_admin: !!payload.is_admin,
+        is_readonly: !!payload.is_readonly,
         must_change: !!payload.must_change,
         can_view_audit: !!payload.can_view_audit || canViewAuditName(payload.canonical_name),
       };
@@ -865,6 +915,7 @@ function pdfAuth(req, res, next) {
     req.user = {
       canonical_name: String(payload.canonical_name || "").trim(),
       is_admin: !!payload.is_admin,
+      is_readonly: !!payload.is_readonly,
       must_change: false,
     };
     return next();
@@ -884,6 +935,7 @@ function authRequired(allowMustChange = false) {
       req.user = {
         canonical_name: String(payload.canonical_name || "").trim(),
         is_admin: !!payload.is_admin,
+        is_readonly: !!payload.is_readonly,
         must_change: !!payload.must_change,
         can_view_audit: !!payload.can_view_audit || canViewAuditName(payload.canonical_name),
       };
@@ -1003,6 +1055,163 @@ function requirePdfKitOr501(res) {
   }
 }
 
+
+function drawReferenceHours(doc, startY) {
+  const x = doc.page.margins.left;
+  const width = doc.page.width - doc.page.margins.left - doc.page.margins.right;
+  let y = Number(startY || doc.y);
+  doc.font("Helvetica-Bold").fontSize(7.2).text("HORÁRIOS DE REFERÊNCIA", x, y, { width, align: "left" });
+  y += 11;
+  doc.font("Helvetica").fontSize(6.7);
+  const lines = [
+    "EXP - DAS 08H00 ÀS 18H00 / DAS 09H00 ÀS 18H00, NO MESMO DIA.",
+    "CFP_DIA - DAS 05H00 ÀS 17H15, NO MESMO DIA - REGIME 12X36.",
+    "CFP_NOITE - DAS 17H00 DO DIA DE INÍCIO ÀS 05H15 DO DIA SEGUINTE.",
+    "SR - DIAS ÚTEIS: DAS 17H30 DO DIA DE INÍCIO ÀS 08H00 DO DIA SEGUINTE.",
+    "SR - FINAIS DE SEMANA E FERIADOS (24H): DAS 08H00 DO DIA DE INÍCIO ÀS 08H00 DO DIA SEGUINTE.",
+  ];
+  for (const line of lines) {
+    doc.text(line, x, y, { width, align: "left", lineGap: 0 });
+    y += 9;
+  }
+  doc.font("Helvetica-Bold").fontSize(6.7).text("PORTARIA DO CMT G Nº PM1-007/02/23", x, y, { width, align: "left" });
+  doc.font("Helvetica");
+  return y + 10;
+}
+
+function renderFrozenScalePdf(res, st, filename = "escala_anterior_original.pdf") {
+  const PDFDocument = requirePdfKitOr501(res);
+  if (!PDFDocument) return;
+
+  res.setHeader("Content-Type", "application/pdf");
+  res.setHeader("Content-Disposition", `inline; filename="${filename}"`);
+
+  const doc = new PDFDocument({ margin: 28, size: "A4", layout: "landscape" });
+  doc.pipe(res);
+
+  const dates = Array.isArray(st.dates) ? st.dates : [];
+  const assignments = (st.assignments && typeof st.assignments === "object") ? st.assignments : {};
+  const notes = (st.notes && typeof st.notes === "object") ? st.notes : {};
+  const notesMeta = (st.notes_meta && typeof st.notes_meta === "object") ? st.notes_meta : {};
+
+  doc.fontSize(16).text(fixText(SYSTEM_NAME), { align: "center" });
+  doc.moveDown(0.2);
+  doc.fontSize(10).text(`Periodo: ${fmtDDMMYYYY(st.period && st.period.start)} a ${fmtDDMMYYYY(st.period && st.period.end)}`, { align: "center" });
+  doc.moveDown(0.6);
+
+  const left = doc.page.margins.left;
+  const top = doc.y;
+  const colWName = 220;
+  const colWDay = 80;
+
+  const renderCell = (text, x, y, width) => {
+    const raw = String(text || "-").trim() || "-";
+    if ((raw.length > 10 && raw.includes(" ")) || raw.length > 14) {
+      const parts = raw.split(/\s+/).filter(Boolean);
+      const lines = parts.length >= 2 ? [parts[0], parts.slice(1).join(" ")] : [raw];
+      doc.fontSize(5.2).text(lines.join("\n"), x, y + 1, { width, align: "center", lineGap: 0 });
+      doc.fontSize(8);
+      return;
+    }
+    doc.fontSize(8).text(raw, x, y, { width, align: "center" });
+  };
+
+  doc.fontSize(9).text("OFICIAIS", left, top, { width: colWName, align: "left" });
+  for (let i = 0; i < dates.length; i++) {
+    doc.text(fmtDDMMYYYY(dates[i]), left + colWName + i * colWDay, top, { width: colWDay, align: "center" });
+  }
+  doc.moveTo(left, top + 14).lineTo(left + colWName + colWDay * dates.length, top + 14).stroke();
+
+  let y = top + 18;
+  doc.fontSize(8);
+  for (let offIndex = 0; offIndex < OFFICERS.length; offIndex++) {
+    const off = OFFICERS[offIndex];
+    const label = `${offIndex + 1}. ${fixText(off.rank)} ${officerNameNoAccents(off.name)}`;
+    doc.text(label, left, y, { width: colWName, align: "left" });
+    for (let i = 0; i < dates.length; i++) {
+      const key = `${off.canonical_name}|${dates[i]}`;
+      renderCell(assignments[key] || "-", left + colWName + i * colWDay, y, colWDay);
+    }
+    doc.moveTo(left, y + 12).lineTo(left + colWName + colWDay * dates.length, y + 12).stroke();
+    y += 14;
+  }
+
+  drawReferenceHours(doc, y + 7);
+
+  const usableW = doc.page.width - doc.page.margins.left - doc.page.margins.right;
+  const gap = 40;
+  const lineW = (usableW - gap) / 2;
+  const xCenter = doc.page.margins.left;
+  const xRight = xCenter + lineW + gap;
+  const yLine = doc.page.height - 72;
+  const rawSig = (st.meta && st.meta.signatures) ? st.meta.signatures : defaultSignatures();
+  const centerRole = String(rawSig.center_role || "").trim() || defaultSignatures().center_role;
+  const rightRole = String(rawSig.right_role || "").trim() || defaultSignatures().right_role;
+  doc.moveTo(xCenter, yLine).lineTo(xCenter + lineW, yLine).stroke();
+  doc.moveTo(xRight, yLine).lineTo(xRight + lineW, yLine).stroke();
+  doc.fontSize(9).text(centerRole.toUpperCase(), xCenter, yLine + 10, { width: lineW, align: "center" });
+  doc.fontSize(9).text(rightRole.toUpperCase(), xRight, yLine + 10, { width: lineW, align: "center" });
+
+  // Página 2 - descrições/registro, preservando a lógica institucional já existente.
+  const noteEntries = [];
+  for (const key of Object.keys(notes)) {
+    const [canonical, iso] = key.split("|");
+    const off = OFFICERS.find(o => o.canonical_name === canonical);
+    if (!off) continue;
+    const code = assignments[key] ? String(assignments[key]) : "";
+    if (code !== "OUTROS" && !/\*$/.test(code)) continue;
+    noteEntries.push({ iso, off, code, text: notes[key], meta: notesMeta[key] || null });
+  }
+  noteEntries.sort((a, b) => a.iso.localeCompare(b.iso));
+
+  doc.addPage({ margin: 36, size: "A4", layout: "portrait" });
+  doc.fontSize(14).text("DESCRIÇÕES (OUTROS / CÓDIGOS COM ASTERISCO)", { align: "center" });
+  doc.moveDown(0.6);
+  const lastStamp = fmtDDMMYYYYHHmm(st.last_edit_at || st.updated_at || st.frozen_at);
+  const lastActor = st.last_edit_actor ? officerNameNoAccents(st.last_edit_actor) : "";
+  if (lastStamp) {
+    doc.fontSize(9).text(lastActor ? `Último registro: ${lastActor} — ${lastStamp}` : `Último registro: ${lastStamp}`, { align: "center" });
+    doc.moveDown(0.6);
+  }
+  if (!noteEntries.length) {
+    doc.fontSize(10).text("SEM DESCRIÇÕES REGISTRADAS.", { align: "center" });
+  } else {
+    doc.fontSize(10);
+    for (const it of noteEntries) {
+      doc.font("Helvetica-Bold").text(`${fmtDDMMYYYY(it.iso)} - ${fixText(it.off.rank)} ${officerNameNoAccents(it.off.name)} (${it.code})`);
+      doc.font("Helvetica").text(String(it.text || ""));
+      if (it.meta && (it.meta.updated_at || it.meta.updated_by || it.meta.created_by)) {
+        const dt = it.meta.updated_at ? fmtDDMMYYYYHHmm(it.meta.updated_at) : "";
+        const by = it.meta.updated_by || it.meta.created_by || "";
+        const suffix = [dt ? `atualizado em ${dt}` : "", by ? `por ${by}` : ""].filter(Boolean).join(" ");
+        if (suffix) doc.fontSize(8).fillColor("#555555").text(suffix).fontSize(10).fillColor("black");
+      }
+      doc.moveDown(0.6);
+    }
+  }
+
+  // Página 3 - alterações operacionais, sem alterar a regra atual.
+  doc.addPage({ margin: 36, size: "A4", layout: "portrait" });
+  doc.fontSize(14).text("ALTERAÇÕES OPERACIONAIS", { align: "center" });
+  doc.moveDown(0.8);
+  const weekdayLabels = ["SEGUNDA", "TERÇA", "QUARTA", "QUINTA", "SEXTA", "SÁBADO", "DOMINGO"];
+  const lineStartX = doc.page.margins.left;
+  const lineEndX = doc.page.width - doc.page.margins.right;
+  doc.fontSize(10);
+  for (let i = 0; i < dates.length && i < weekdayLabels.length; i++) {
+    doc.font("Helvetica-Bold").text(`${weekdayLabels[i]} - ${fmtDDMMYYYY(dates[i])}`);
+    doc.moveDown(0.25);
+    for (let j = 0; j < 4; j++) {
+      const lineY = doc.y + 8;
+      doc.moveTo(lineStartX, lineY).lineTo(lineEndX, lineY).stroke();
+      doc.y = lineY + 14;
+    }
+    doc.moveDown(0.35);
+  }
+  doc.font("Helvetica");
+  doc.end();
+}
+
 // ===============================
 // ROTAS
 // ===============================
@@ -1034,8 +1243,8 @@ app.get("/api/status", async (_req, res) => {
       ok: true,
       tz: process.env.TZ,
       week,
-      locked: isClosedNow(),
-      close_friday_hour: CLOSE_FRIDAY_HOUR,
+      locked: false,
+      autofill_friday_hour: AUTOFILL_FRIDAY_HOUR,
       system_name: fixText(SYSTEM_NAME),
     });
   } catch (err) {
@@ -1055,8 +1264,9 @@ app.post("/api/login", async (req, res) => {
     const name = (req.body && req.body.name ? req.body.name : "").toString().trim();
     const password = (req.body && req.body.password ? req.body.password : "").toString();
 
-    const off = resolveOfficerFromInput(name);
-    if (!off) {
+    const isP1 = normKey(name) === normKey(SPECIAL_READONLY_USER);
+    const off = isP1 ? null : resolveOfficerFromInput(name);
+    if (!off && !isP1) {
       await auditEvent(req, {
         event_type: "login_errado",
         input_name: name,
@@ -1068,14 +1278,15 @@ app.post("/api/login", async (req, res) => {
       return res.status(403).json({ error: "nome nÃ£o reconhecido. use nome completo ou nome de guerra." });
     }
 
-    const userRow = await findOrCreateUser(off.canonical_name);
+    const loginCanonical = isP1 ? SPECIAL_READONLY_USER : off.canonical_name;
+    const userRow = await findOrCreateUser(loginCanonical);
 
     const ok = await bcrypt.compare(password, userRow.password_hash);
     if (!ok) {
       await auditEvent(req, {
         event_type: "login_errado",
         input_name: name,
-        actor_name: off.canonical_name,
+        actor_name: loginCanonical,
         recognized: true,
         success: false,
         http_status: 403,
@@ -1085,10 +1296,11 @@ app.post("/api/login", async (req, res) => {
     }
 
     const me = {
-      canonical_name: off.canonical_name,
-      is_admin: isAdminName(off.canonical_name),
-      can_view_audit: canViewAuditName(off.canonical_name),
-      must_change: !!userRow.must_change,
+      canonical_name: loginCanonical,
+      is_admin: isP1 ? false : isAdminName(loginCanonical),
+      is_readonly: isP1,
+      can_view_audit: isP1 ? false : canViewAuditName(loginCanonical),
+      must_change: isP1 ? false : !!userRow.must_change,
     };
 
     const token = signToken(me);
@@ -1119,6 +1331,7 @@ app.post("/api/login", async (req, res) => {
 // troca obrigatÃ³ria de senha
 app.post("/api/change_password", authRequired(true), async (req, res) => {
   try {
+    if (req.user.is_readonly) return res.status(403).json({ error: "senha deste usuário é administrada pelo sistema" });
     const newPass = (req.body && req.body.new_password ? req.body.new_password : "").toString();
     if (!newPass || newPass.length < 6) return res.status(400).json({ error: "senha muito curta (mÃ­nimo 6)" });
 
@@ -1194,6 +1407,7 @@ app.get("/api/state", authRequired(true), async (req, res) => {
       me: {
         canonical_name: req.user.canonical_name,
         is_admin: req.user.is_admin,
+        is_readonly: !!req.user.is_readonly,
         can_view_audit: canViewAuditName(req.user.canonical_name),
       },
       meta: {
@@ -1202,7 +1416,7 @@ app.get("/api/state", authRequired(true), async (req, res) => {
         period_label: periodLabel,
         signatures: (st.meta && st.meta.signatures) ? st.meta.signatures : defaultSignatures(),
       },
-      locked: isClosedNow(),
+      locked: false,
       holidays,
       officers: fixDentRanks(OFFICERS).map(o => ({ ...o, rank: fixText(o.rank), name: officerNameNoAccents(o.name) })),
       dates: st.dates,
@@ -1210,6 +1424,7 @@ app.get("/api/state", authRequired(true), async (req, res) => {
       assignments,
       notes,
       notes_meta,
+      auto_assignments: st.auto_assignments || {},
     });
   } catch (err) {
     console.error('[ERRO] /api/state:', err && err.stack ? err.stack : err);
@@ -1218,14 +1433,14 @@ app.get("/api/state", authRequired(true), async (req, res) => {
       const holidays = getHolidaysForWeek(st.dates);
       return res.json({
         ok: true,
-        me: { canonical_name: req.user.canonical_name, is_admin: req.user.is_admin, can_view_audit: canViewAuditName(req.user.canonical_name) },
+        me: { canonical_name: req.user.canonical_name, is_admin: req.user.is_admin, is_readonly: !!req.user.is_readonly, can_view_audit: canViewAuditName(req.user.canonical_name) },
         meta: {
           system_name: fixText(SYSTEM_NAME),
           footer_mark: `© ${COPYRIGHT_YEAR} - ${fixText(AUTHOR)}`,
           period_label: `periodo: ${fmtDDMMYYYY(st.period.start)} a ${fmtDDMMYYYY(st.period.end)}`,
           signatures: defaultSignatures(),
         },
-        locked: isClosedNow(),
+        locked: false,
         holidays,
         officers: fixDentRanks(OFFICERS).map(o => ({ ...o, rank: fixText(o.rank), name: officerNameNoAccents(o.name) })),
         dates: st.dates,
@@ -1361,6 +1576,17 @@ app.put("/api/assignments", authRequired(false), async (req, res) => {
     const updates = Array.isArray(req.body && req.body.updates) ? req.body.updates : [];
     const actor = req.user.canonical_name;
 
+    if (req.user.is_readonly) {
+      await auditEvent(req, {
+        event_type: "tentativa_sem_permissao",
+        actor_name: actor,
+        details: "usuario somente leitura tentou alterar a escala",
+        success: false,
+        http_status: 403,
+      });
+      return res.status(403).json({ error: "usuario somente leitura" });
+    }
+
     await auditEvent(req, {
       event_type: "clique_salvar",
       actor_name: actor,
@@ -1380,19 +1606,6 @@ app.put("/api/assignments", authRequired(false), async (req, res) => {
       return res.status(400).json({ error: "nenhuma alteraÃ§Ã£o enviada" });
     }
 
-    const locked = isClosedNow();
-
-    if (locked && !req.user.is_admin) {
-      await auditEvent(req, {
-        event_type: "tentativa_fora_do_horario",
-        actor_name: actor,
-        details: "edicao fechada (sexta 15h ate domingo)",
-        success: false,
-        http_status: 423,
-      });
-      return res.status(423).json({ error: "edicao fechada (sexta 15h ate domingo)" });
-    }
-
     const validDates = new Set(st.dates || []);
     const validCodes = new Set(CODES);
     const officersByCanonical = new Set(OFFICERS.map(o => o.canonical_name));
@@ -1406,18 +1619,19 @@ app.put("/api/assignments", authRequired(false), async (req, res) => {
       let target = String(u.canonical_name || "").trim();
       if (!officersByCanonical.has(target)) continue;
 
-      // regra: durante a semana, nÃ£o-admin sÃ³ pode mexer na prÃ³pria linha
+      // Usuário comum só pode alterar a própria linha. A tentativa é recusada;
+      // nunca redirecionamos silenciosamente uma alteração para outra célula.
       if (!req.user.is_admin && target !== actor) {
         await auditEvent(req, {
           event_type: "tentativa_sem_permissao",
           actor_name: actor,
           target_name: target,
           scale_date: date,
-          details: "usuario tentou alterar linha de outro oficial; sistema redirecionou para a propria linha",
+          details: "usuario tentou alterar linha de outro oficial",
           success: false,
           http_status: 403,
         });
-        target = actor;
+        continue;
       }
 
       let code = normalizeCodeValue(u.code);
@@ -1431,10 +1645,25 @@ app.put("/api/assignments", authRequired(false), async (req, res) => {
 
       const needObs = (code === "OUTROS" || /\*$/.test(code));
       const newObs = needObs ? String(u.observacao == null ? "" : u.observacao).trim() : "";
+      if (needObs && !newObs) {
+        await auditEvent(req, {
+          event_type: "erro_ao_salvar",
+          actor_name: actor,
+          target_name: target,
+          scale_date: date,
+          field_name: "observacao",
+          details: `${code} exige descricao`,
+          success: false,
+          http_status: 400,
+        });
+        return res.status(400).json({ error: `${code} exige descrição` });
+      }
 
       // atualiza state_store (permite limpar)
       st.assignments = st.assignments || {};
       st.notes = st.notes || {};
+      st.auto_assignments = st.auto_assignments && typeof st.auto_assignments === "object" ? st.auto_assignments : {};
+      delete st.auto_assignments[key];
 
       if (!code) {
         delete st.assignments[key];
@@ -1563,6 +1792,7 @@ app.post("/api/pdf_link", authRequired(true), async (req, res) => {
     const me = {
       canonical_name: req.user.canonical_name,
       is_admin: !!req.user.is_admin,
+      is_readonly: !!req.user.is_readonly,
     };
     const t = signPdfToken(me);
     await auditEvent(req, {
@@ -1575,6 +1805,45 @@ app.post("/api/pdf_link", authRequired(true), async (req, res) => {
     return res.json({ ok: true, url: `/api/pdf?token=${encodeURIComponent(t)}` });
   } catch (err) {
     return res.status(500).json({ error: "erro ao gerar link do PDF", details: err.message });
+  }
+});
+
+app.post("/api/previous_pdf_link", authRequired(true), async (req, res) => {
+  try {
+    const me = {
+      canonical_name: req.user.canonical_name,
+      is_admin: !!req.user.is_admin,
+      is_readonly: !!req.user.is_readonly,
+    };
+    const t = signPdfToken(me);
+    await auditEvent(req, {
+      event_type: "visualizacao_pdf_anterior",
+      actor_name: req.user.canonical_name,
+      details: "link da ESCALA ANTERIOR ORIGINAL gerado",
+      success: true,
+      http_status: 200,
+    });
+    return res.json({ ok: true, url: `/api/previous_pdf?token=${encodeURIComponent(t)}` });
+  } catch (err) {
+    return res.status(500).json({ error: "erro ao gerar link da escala anterior", details: err.message });
+  }
+});
+
+app.get("/api/previous_pdf", pdfAuth, async (req, res) => {
+  try {
+    const previous = await getPreviousSnapshot();
+    if (previous && previous.period && previous.period.start && previous.period.end) {
+      return renderFrozenScalePdf(res, previous, "escala_anterior_original.pdf");
+    }
+    // Ponte inicial: 14/09 a 20/09/2026, fornecida pelo usuário como PDF final.
+    if (fs.existsSync(INITIAL_PREVIOUS_PDF)) {
+      res.setHeader("Content-Type", "application/pdf");
+      res.setHeader("Content-Disposition", 'inline; filename="escala_anterior_original_14a20set2026.pdf"');
+      return res.sendFile(INITIAL_PREVIOUS_PDF);
+    }
+    return res.status(404).json({ error: "escala anterior ainda indisponível" });
+  } catch (err) {
+    return res.status(500).json({ error: "erro ao abrir escala anterior", details: err.message });
   }
 });
 
@@ -1724,6 +1993,9 @@ const lastStamp = fmtDDMMYYYYHHmm(lastAt);
         y = doc.y;
       }
     }
+    // Horários de referência na primeira página, sem repetir a legenda das situações.
+    drawReferenceHours(doc, y + 7);
+
     // assinaturas sempre na primeira página
     {
       const leftMargin = doc.page.margins.left;
@@ -1732,7 +2004,7 @@ const lastStamp = fmtDDMMYYYYHHmm(lastAt);
       const lineW = (usableW - gap) / 2;
       const xCenter = leftMargin;
       const xRight = xCenter + lineW + gap;
-      const yLine = doc.page.height - 100;
+      const yLine = doc.page.height - 72;
 
       const rawSig = (st.meta && st.meta.signatures) ? st.meta.signatures : defaultSignatures();
       const sig = {

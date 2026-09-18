@@ -7,32 +7,38 @@
   <link rel="stylesheet" href="./style.css" />
 </head>
 <body>
+  <div id="holidayBar" class="holiday" style="display:none;"></div>
+
   <header class="top">
     <div class="top__left">
       <div class="brand" id="systemName">ESCALA DE OFICIAIS DO 4º BPM/M</div>
       <div class="sub" id="period"></div>
     </div>
     <div class="top__right">
-      <button id="btnPdf" class="btn">PDF</button>
+      <button id="btnPreviousPdf" class="btn">ESCALA ANTERIOR ORIGINAL</button>
+      <button id="btnPdf" class="btn">PDF ATUAL</button>
       <button id="btnLogout" class="btn btn--ghost">sair</button>
     </div>
   </header>
 
-  <div id="holidayBar" class="holiday" style="display:none;"></div>
-
   <main class="wrap">
-    <section id="loginBox" class="card">
-      <h1>acesso</h1>
+    <section id="loginBox" class="card loginCard">
+      <div class="loginIdentity">
+        <img class="loginEmblem" src="./assets/emblema-4bpmm.png" alt="Emblema do 4º BPM/M Cel PM Luiz Nakaharada" />
+        <div class="loginVersion">ESCFIOF <span>V.2</span></div>
+        <div class="loginSubtitle">ESCALA DE OFICIAIS DO 4º BPM/M</div>
+      </div>
+      <h1>ACESSO</h1>
       <label>
-        login: nome completo ou nome de guerra
-        <input id="loginName" placeholder="Ex: ALBERTO FRANZINI NETO ou FRANZINI" />
+        LOGIN: NOME COMPLETO OU NOME DE GUERRA
+        <input id="loginName" autocomplete="username" placeholder="Ex: ALBERTO FRANZINI NETO ou FRANZINI" />
       </label>
       <label>
-        senha
-        <input id="loginPass" type="password" placeholder="sr123" />
+        SENHA
+        <input id="loginPass" type="password" autocomplete="current-password" placeholder="sr123" />
       </label>
-      <button id="btnLogin" class="btn btn--primary">entrar</button>
-      <div class="muted" id="loginMsg"></div>
+      <button id="btnLogin" class="btn btn--primary loginButton">ENTRAR</button>
+      <div class="muted loginMessage" id="loginMsg"></div>
     </section>
 
     <section id="changeBox" class="card" style="display:none;">
@@ -60,9 +66,24 @@
         <table id="table"></table>
       </div>
 
-      <div class="legend" id="legend"></div>
+      <section class="referenceSection" aria-labelledby="legendTitle">
+        <h2 id="legendTitle">LEGENDA DAS SITUAÇÕES</h2>
+        <div class="legend" id="legend"></div>
+      </section>
 
-      <div class="row row--actions">
+      <section class="referenceSection scheduleHours" aria-labelledby="hoursTitle">
+        <h2 id="hoursTitle">HORÁRIOS DE REFERÊNCIA</h2>
+        <div class="hoursGrid">
+          <div><strong>EXP</strong><span>DAS 08H00 ÀS 18H00 / DAS 09H00 ÀS 18H00, NO MESMO DIA.</span></div>
+          <div><strong>CFP_DIA</strong><span>DAS 05H00 ÀS 17H15, NO MESMO DIA - REGIME 12X36.</span></div>
+          <div><strong>CFP_NOITE</strong><span>DAS 17H00 DO DIA DE INÍCIO ÀS 05H15 DO DIA SEGUINTE.</span></div>
+          <div><strong>SR - DIAS ÚTEIS</strong><span>DAS 17H30 DO DIA DE INÍCIO ÀS 08H00 DO DIA SEGUINTE.</span></div>
+          <div><strong>SR - FINAIS DE SEMANA E FERIADOS (24H)</strong><span>DAS 08H00 DO DIA DE INÍCIO ÀS 08H00 DO DIA SEGUINTE.</span></div>
+        </div>
+        <div class="hoursSource">PORTARIA DO CMT G Nº PM1-007/02/23</div>
+      </section>
+
+      <div class="row row--actions" id="saveRow">
         <button id="btnSave" class="btn btn--primary">salvar</button>
         <div class="muted" id="saveMsg"></div>
       </div>

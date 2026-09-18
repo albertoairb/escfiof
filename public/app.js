@@ -14,6 +14,7 @@
     assignments: {},
     notes: {},
     notes_meta: {},
+    auto_assignments: {},
     pending: new Map() // key -> { code, observacao }
   };
 
@@ -156,7 +157,10 @@ function fmtDateCompact(iso){ const [y,m,d]=iso.split("-"); const mons=["JAN","F
       return;
     }
     bar.style.display = "";
-    bar.textContent = holidays.map(h => `FERIADO: ${fmtDateCompact(h.date)}`).join(" | ");
+    bar.textContent = holidays.map(h => {
+      const name = String(h.name || "FERIADO").toUpperCase();
+      return `⚠ FERIADO - ${ddmmyyyy(h.date)} - ${name} ⚠`;
+    }).join("   |   ");
   }
 
   function setHeader() {
@@ -171,34 +175,36 @@ function fmtDateCompact(iso){ const [y,m,d]=iso.split("-"); const mons=["JAN","F
     el.innerHTML = "";
 
     const help = {
-      "EXP": "expediente",
-      "SR": "supervisor regional",
-      "MA": "trabalha manha",
-      "VE": "trabalha tarde",
-      "FOJ": "folga (sem descricao)",
-      "FO*": "folga (com descricao)",
-      "LP": "licenca-premio",
-      "FERIAS": "ferias",
-      "CURSO": "curso",
-      "CFP_DIA": "CFP (dia)",
-      "CFP_NOITE": "CFP (noite)",
-      "OUTROS": "com descricao",
-      "SS": "superior de sobreaviso",
-      "EXP_SS": "expediente superior de sobreaviso",
-      "FO": "folga",
-      "PF": "ponto facultativo",
-      "CAO": "CAO",
-      "EAP": "EAP",
-      "CSP": "CSP",
-      "PPJM": "PPJM",
-      "DS": "DS",
-      "CFT": "CFT",
-      "TJM": "TJM",
-      "LUTO": "luto",
-      "LICENCA PATERNIDADE": "licenca paternidade",
-      "NUPCIAS": "nupcias",
-      "LICENCA ADOCAO": "licenca adocao",
-      "FT": "Forca tatica"
+      "EXP": "EXPEDIENTE",
+      "SR": "SUPERVISOR REGIONAL",
+      "MA": "TRABALHA MANHÃ",
+      "VE": "TRABALHA TARDE",
+      "FOJ": "FOLGA (SEM DESCRIÇÃO)",
+      "FO*": "FOLGA (COM DESCRIÇÃO)",
+      "SV*": "SERVIÇO (COM DESCRIÇÃO)",
+      "LP": "LICENÇA-PRÊMIO",
+      "FERIAS": "FÉRIAS",
+      "FERIADO": "FERIADO",
+      "CONVALESCENCA": "CONVALESCENÇA",
+      "CURSO": "CURSO",
+      "CFP_DIA": "CFP (DIA)",
+      "CFP_NOITE": "CFP (NOITE)",
+      "OUTROS": "COM DESCRIÇÃO",
+      "SS": "SUPERIOR DE SOBREAVISO",
+      "EXP_SS": "EXPEDIENTE SUPERIOR DE SOBREAVISO",
+      "FO": "FOLGA",
+      "PF": "PONTO FACULTATIVO",
+      "CAO": "CURSO DE APERFEIÇOAMENTO DE OFICIAIS",
+      "EAP": "ESTÁGIO DE APERFEIÇOAMENTO PROFISSIONAL",
+      "CSP": "CURSO SUPERIOR DE POLÍCIA",
+      "PPJM": "PLANTÃO DE POLÍCIA JUDICIÁRIA MILITAR",
+      "DS": "DISPENSA DE SERVIÇO",
+      "CFT": "COMANDO DE FORÇA TÁTICA",
+      "TJM": "TRIBUNAL DE JUSTIÇA MILITAR",
+      "LUTO": "LUTO",
+      "LICENCA PATERNIDADE": "LICENÇA-PATERNIDADE",
+      "NUPCIAS": "NÚPCIAS",
+      "LICENCA ADOCAO": "LICENÇA-ADOÇÃO"
     };
 
     for (const c of (state.codes || [])) {
@@ -211,11 +217,11 @@ function fmtDateCompact(iso){ const [y,m,d]=iso.split("-"); const mons=["JAN","F
   }
 
   function setLockMsg() {
-    if (state.locked) {
-      $("lockMsg").textContent = "edicao fechada (sexta 15h ate domingo). apos isso, somente responsaveis autorizados.";
-    } else {
-      $("lockMsg").textContent = "edicao liberada.";
+    if (state.me && state.me.is_readonly) {
+      $("lockMsg").textContent = "SOMENTE CONSULTA - ESTE USUÁRIO NÃO ALTERA A ESCALA.";
+      return;
     }
+    $("lockMsg").textContent = "EDIÇÃO LIBERADA - A ESCALA ATUAL PERMANECE EDITÁVEL.";
   }
 
   function setUserMsg() {
@@ -225,6 +231,7 @@ function fmtDateCompact(iso){ const [y,m,d]=iso.split("-"); const mons=["JAN","F
 
   function buildOpsNotes() {
     const box = $("opsNotes");
+    if (!box) return;
     box.innerHTML = "";
     for (let i = 0; i < state.dates.length; i++) {
       const iso = state.dates[i];
@@ -370,9 +377,9 @@ async function loadAuditLogs() {
 }
 
   function canEditOfficer(officerCanonical) {
-    if (!state.me) return false;
+    if (!state.me || state.me.is_readonly) return false;
     if (state.me.is_admin) return true;
-    return officerCanonical === state.me.canonical_name && !state.locked;
+    return officerCanonical === state.me.canonical_name;
   }
 
   function buildTable() {
@@ -559,6 +566,7 @@ async function loadAuditLogs() {
     state.codes = r.data.codes || [];
     state.assignments = r.data.assignments || {};
     state.notes = r.data.notes || {};
+    state.auto_assignments = r.data.auto_assignments || {};
     state.pending.clear();
 
     setHeader();
@@ -569,6 +577,9 @@ async function loadAuditLogs() {
     buildTable();
     buildOpsNotes();
     buildDescNotes();
+
+    const saveRow = $("saveRow");
+    if (saveRow) saveRow.style.display = (state.me && state.me.is_readonly) ? "none" : "";
 
     // auditoria (somente Franzini)
     if (canViewAudit()) {
@@ -710,6 +721,10 @@ async function loadAuditLogs() {
         const [canonical_name, date] = key.split("|");
         const code = fixText((item && typeof item === "object") ? (item.code || "") : String(item || ""));
         const observacao = (item && typeof item === "object") ? fixText(item.observacao) : null;
+        if ((code === "OUTROS" || /\*$/.test(code)) && !String(observacao || "").trim()) {
+          $("saveMsg").textContent = `${code} exige descrição.`;
+          return;
+        }
         updates.push({ canonical_name, date, code, observacao });
       }
 
@@ -751,6 +766,20 @@ function logout() {
     window.open(url, "_blank", "noopener,noreferrer");
   }
 
+  async function openPreviousPdf() {
+    if (!state.token) {
+      alert("Você precisa estar logado para abrir a escala anterior.");
+      return;
+    }
+    const r = await api("/api/previous_pdf_link", { method: "POST" });
+    if (!r.ok) {
+      const msg = (r.data && (r.data.error || r.data.details)) ? (r.data.error || r.data.details) : "Escala anterior indisponível";
+      alert(msg);
+      return;
+    }
+    window.open(r.data.url, "_blank", "noopener,noreferrer");
+  }
+
   async function saveSignatures() {
     $("sigMsg").textContent = "";
     if (!state.me || !state.me.is_admin) {
@@ -782,6 +811,8 @@ function logout() {
   if (auditName) auditName.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); loadAuditLogs(); } });
   $("btnLogout").addEventListener("click", logout);
   $("btnPdf").addEventListener("click", openPdf);
+  const btnPreviousPdf = $("btnPreviousPdf");
+  if (btnPreviousPdf) btnPreviousPdf.addEventListener("click", openPreviousPdf);
 
   // modal descrição
   $("outrosCancel").addEventListener("click", () => closeDescModal(true));

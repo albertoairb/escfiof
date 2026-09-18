@@ -128,3 +128,129 @@ table#table{width:100%;border-collapse:separate;border-spacing:0;min-width:1120p
 #table .noteInput{width:100%;height:46px;min-height:46px;max-height:46px;margin-top:6px;font-size:11px;line-height:1.15;padding:6px;border:1px solid #cfd6df;border-radius:8px;resize:none;box-sizing:border-box;overflow:auto;background:#fff}
 #table b{font-weight:700}
 .holiday{background:#fff3cd;border-bottom:1px solid #ffe69c;color:#664d03;padding:10px 16px;font-size:13px;font-weight:600}
+
+
+/* ===== ESCFIOF 2026-09: layout responsivo e referências ===== */
+.top__right{display:flex;gap:8px;align-items:center;flex-wrap:wrap;justify-content:flex-end}
+.holiday{
+  display:block;
+  background:#b00020;
+  color:#fff;
+  border:0;
+  padding:13px 16px;
+  font-size:15px;
+  font-weight:800;
+  text-align:center;
+  letter-spacing:.2px;
+  position:relative;
+  z-index:20;
+  animation:holidayBlink 1s step-end infinite;
+}
+@keyframes holidayBlink{0%,48%{opacity:1}49%,100%{opacity:.30}}
+@media (prefers-reduced-motion:reduce){.holiday{animation:none}}
+.referenceSection{margin-top:16px;border-top:1px solid #e6e9ee;padding-top:12px}
+.referenceSection h2{font-size:13px;letter-spacing:.25px;margin:0 0 9px}
+.legend{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:7px;margin-top:0}
+.pill{border:1px solid #dfe4ea;border-radius:8px;padding:7px 8px;font-size:11px;line-height:1.25;background:#fafbfc;white-space:normal}
+.hoursGrid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px 14px}
+.hoursGrid>div{display:grid;gap:3px;border:1px solid #e1e5ea;border-radius:9px;padding:8px 10px;background:#fafbfc;font-size:11px;line-height:1.3}
+.hoursGrid strong{font-size:11px}
+.hoursGrid span{text-transform:uppercase}
+.hoursSource{margin-top:9px;font-size:11px;font-weight:700;text-align:right}
+@media (max-width:900px){
+  .top{align-items:flex-start;gap:10px;flex-wrap:wrap}
+  .top__right{width:100%;justify-content:flex-start}
+  .legend{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .hoursGrid{grid-template-columns:1fr}
+}
+@media (max-width:560px){
+  .wrap{padding:10px}
+  .card{padding:10px;border-radius:10px}
+  .top{padding:11px 12px}
+  .top__right .btn{flex:1 1 auto;padding:9px 8px;font-size:12px}
+  .holiday{font-size:13px;padding:12px 10px}
+  .legend{grid-template-columns:1fr}
+  .pill{font-size:11px}
+  .hoursSource{text-align:left}
+  #table th,#table td{font-size:11px}
+}
+
+/* ===== ESCFIOF V.2: identidade visual da tela de entrada ===== */
+.loginCard{
+  width:min(440px,100%);
+  margin:clamp(18px,5vh,58px) auto 0;
+  padding:22px;
+  box-sizing:border-box;
+  border-color:#d9e0e8;
+  box-shadow:0 14px 38px rgba(31,42,68,.12);
+}
+.loginIdentity{
+  display:grid;
+  justify-items:center;
+  gap:7px;
+  margin-bottom:20px;
+  text-align:center;
+}
+.loginEmblem{
+  display:block;
+  width:clamp(132px,38vw,190px);
+  height:auto;
+  aspect-ratio:1/1;
+  object-fit:cover;
+  border-radius:50%;
+}
+.loginVersion{
+  color:#1f2a44;
+  font-size:clamp(25px,5vw,34px);
+  line-height:1;
+  font-weight:800;
+  letter-spacing:.5px;
+}
+.loginVersion span{
+  display:inline-block;
+  margin-left:4px;
+  padding:3px 7px;
+  border:1px solid #1f2a44;
+  border-radius:7px;
+  font-size:.55em;
+  vertical-align:middle;
+}
+.loginSubtitle{
+  color:#566174;
+  font-size:12px;
+  font-weight:700;
+  letter-spacing:.35px;
+}
+.loginCard h1{
+  margin-bottom:14px;
+  text-align:center;
+  letter-spacing:.5px;
+}
+.loginCard label{
+  color:#30394a;
+  font-size:11px;
+  font-weight:700;
+  letter-spacing:.2px;
+}
+.loginCard input{
+  min-height:42px;
+  box-sizing:border-box;
+  background:#fbfcfe;
+}
+.loginButton{
+  width:100%;
+  min-height:43px;
+  margin-top:2px;
+  font-weight:700;
+  letter-spacing:.4px;
+}
+.loginMessage{
+  min-height:18px;
+  margin-top:10px;
+  text-align:center;
+}
+@media (max-width:560px){
+  .loginCard{margin-top:12px;padding:18px 14px}
+  .loginIdentity{margin-bottom:16px}
+  .loginEmblem{width:145px}
+}

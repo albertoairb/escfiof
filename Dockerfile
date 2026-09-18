@@ -11,6 +11,7 @@ RUN npm config set registry https://registry.npmjs.org/ \
 
 COPY server.js /app/server.js
 COPY public /app/public
+COPY history /app/history
 
 ENV NODE_ENV=production
 EXPOSE 8080
