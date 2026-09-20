@@ -338,8 +338,12 @@ async function loadAuditLogs() {
   table.innerHTML = "<div class='muted'>carregando…</div>";
 
   const qName = $("auditName") ? String($("auditName").value || "").trim() : "";
+  const dateFrom = $("auditDateFrom") ? String($("auditDateFrom").value || "").trim() : "";
+  const dateTo = $("auditDateTo") ? String($("auditDateTo").value || "").trim() : "";
   const params = new URLSearchParams({ limit: "300" });
   if (qName) params.set("name", qName);
+  if (dateFrom) params.set("date_from", dateFrom);
+  if (dateTo) params.set("date_to", dateTo);
 
   const r = await api(`/api/audit_logs?${params.toString()}`);
   if (!r.ok) {
@@ -397,6 +401,10 @@ async function loadAuditLogs() {
     thN.textContent = "nome";
     trh.appendChild(thN);
 
+    const thSave = document.createElement("th");
+    thSave.textContent = "salvar";
+    trh.appendChild(thSave);
+
     for (const iso of state.dates) {
       const th = document.createElement("th");
       th.textContent = ddmmyyyy(iso);
@@ -419,6 +427,19 @@ async function loadAuditLogs() {
       tr.appendChild(tdName);
 
       const editable = canEditOfficer(off.canonical_name);
+
+      const tdSave = document.createElement("td");
+      const rowSave = document.createElement("button");
+      rowSave.type = "button";
+      rowSave.className = "btn btn--row-save";
+      rowSave.textContent = "SALVAR";
+      rowSave.disabled = !editable;
+      rowSave.addEventListener("click", (e) => {
+        e.preventDefault();
+        requestAnimationFrame(() => save(off.canonical_name));
+      });
+      tdSave.appendChild(rowSave);
+      tr.appendChild(tdSave);
 
       for (const iso of state.dates) {
         const td = document.createElement("td");
@@ -580,6 +601,8 @@ async function loadAuditLogs() {
 
     const saveRow = $("saveRow");
     if (saveRow) saveRow.style.display = (state.me && state.me.is_readonly) ? "none" : "";
+    const dailyBtn = $("btnDailySituation");
+    if (dailyBtn) dailyBtn.style.display = (state.me && state.me.is_readonly) ? "none" : "";
 
     // auditoria (somente Franzini)
     if (canViewAudit()) {
@@ -703,21 +726,26 @@ async function loadAuditLogs() {
     await loadState();
   }
 
-  async function save() {
+  async function save(onlyCanonical = null) {
     if (state.saving) return;
 
     // garante que mudanças recentes (ex.: fechar select) já entraram em pending
     await new Promise((resolve) => requestAnimationFrame(resolve));
 
-    if (!state.pending.size) { $("saveMsg").textContent = "nenhuma alteracao pendente."; return; }
+    const pendingEntries = Array.from(state.pending.entries()).filter(([key]) => {
+      if (!onlyCanonical) return true;
+      return key.startsWith(`${onlyCanonical}|`);
+    });
+    if (!pendingEntries.length) { $("saveMsg").textContent = onlyCanonical ? "nenhuma alteracao pendente nesta linha." : "nenhuma alteracao pendente."; return; }
 
     state.saving = true;
     $("btnSave").disabled = true;
+    document.querySelectorAll(".btn--row-save").forEach(btn => { btn.disabled = true; });
     $("saveMsg").textContent = "salvando...";
 
     try {
       const updates = [];
-      for (const [key, item] of state.pending.entries()) {
+      for (const [key, item] of pendingEntries) {
         const [canonical_name, date] = key.split("|");
         const code = fixText((item && typeof item === "object") ? (item.code || "") : String(item || ""));
         const observacao = (item && typeof item === "object") ? fixText(item.observacao) : null;
@@ -734,12 +762,27 @@ async function loadAuditLogs() {
         return;
       }
 
-      // marca salvo antes de recarregar o estado (se o /api/state demorar, o usuário não fica preso)
-      $("saveMsg").textContent = "salvo.";
+      // No salvamento individual, preserva na tela as alterações pendentes das outras linhas.
+      const remainingPending = onlyCanonical
+        ? new Map(Array.from(state.pending.entries()).filter(([key]) => !key.startsWith(`${onlyCanonical}|`)))
+        : new Map();
+
+      $("saveMsg").textContent = onlyCanonical ? "linha salva." : "todos salvos.";
       await loadState();
+
+      if (remainingPending.size) {
+        state.pending = remainingPending;
+        buildTable();
+        $("saveMsg").textContent = `linha salva. ${remainingPending.size} alteracao(oes) de outras linhas continuam pendentes.`;
+      }
     } finally {
       state.saving = false;
       $("btnSave").disabled = false;
+      document.querySelectorAll(".btn--row-save").forEach(btn => {
+        const row = btn.closest("tr");
+        const sel = row ? row.querySelector("select") : null;
+        btn.disabled = !sel || sel.disabled;
+      });
     }
   }
 
@@ -764,6 +807,20 @@ function logout() {
 
     const url = r.data.url || "/api/pdf";
     window.open(url, "_blank", "noopener,noreferrer");
+  }
+
+  async function openDailySituation() {
+    if (!state.token || !state.me || state.me.is_readonly) {
+      alert("A Situação do Dia Vigente é destinada aos Oficiais.");
+      return;
+    }
+    const r = await api("/api/daily_situation_pdf_link", { method: "POST" });
+    if (!r.ok) {
+      const msg = (r.data && (r.data.error || r.data.details)) ? (r.data.error || r.data.details) : "Situação do dia indisponível";
+      alert(msg);
+      return;
+    }
+    window.open(r.data.url, "_blank", "noopener,noreferrer");
   }
 
   async function openPreviousPdf() {
@@ -811,6 +868,8 @@ function logout() {
   if (auditName) auditName.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); loadAuditLogs(); } });
   $("btnLogout").addEventListener("click", logout);
   $("btnPdf").addEventListener("click", openPdf);
+  const btnDailySituation = $("btnDailySituation");
+  if (btnDailySituation) btnDailySituation.addEventListener("click", openDailySituation);
   const btnPreviousPdf = $("btnPreviousPdf");
   if (btnPreviousPdf) btnPreviousPdf.addEventListener("click", openPreviousPdf);
 

@@ -254,3 +254,11 @@ table#table{width:100%;border-collapse:separate;border-spacing:0;min-width:1120p
   .loginIdentity{margin-bottom:16px}
   .loginEmblem{width:145px}
 }
+
+/* ===== ESCFIOF: salvamento por oficial e filtros da auditoria ===== */
+#table th:nth-child(3),#table td:nth-child(3){width:92px;min-width:92px;max-width:92px;text-align:center}
+.btn--row-save{padding:7px 9px;font-size:11px;white-space:nowrap}
+.auditFilters{align-items:end;flex-wrap:wrap}
+.auditFilters label{display:grid;gap:4px;font-size:10px;font-weight:700}
+.auditFilters input[type="date"]{min-width:145px}
+@media (max-width:700px){.auditFilters>*{flex:1 1 180px}.auditFilters .btn{flex:0 0 auto}}

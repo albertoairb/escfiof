@@ -15,6 +15,7 @@
       <div class="sub" id="period"></div>
     </div>
     <div class="top__right">
+      <button id="btnDailySituation" class="btn">SITUAÇÃO DO DIA VIGENTE</button>
       <button id="btnPreviousPdf" class="btn">ESCALA ANTERIOR ORIGINAL</button>
       <button id="btnPdf" class="btn">PDF ATUAL</button>
       <button id="btnLogout" class="btn btn--ghost">sair</button>
@@ -84,7 +85,7 @@
       </section>
 
       <div class="row row--actions" id="saveRow">
-        <button id="btnSave" class="btn btn--primary">salvar</button>
+        <button id="btnSave" class="btn btn--primary">SALVAR TODOS</button>
         <div class="muted" id="saveMsg"></div>
       </div>
 
@@ -98,9 +99,11 @@
 
 <details id="auditBox" class="descbox" style="display:none;">
   <summary>auditoria operacional e de seguranca</summary>
-  <div class="muted">visivel somente para Franzini. pesquise por nome de guerra ou nome completo.</div>
-  <div class="row row--actions">
+  <div class="muted">visivel somente para Franzini. filtre por nome e/ou período; os registros históricos permanecem preservados.</div>
+  <div class="row row--actions auditFilters">
     <input id="auditName" placeholder="nome de guerra: ex. Franzini, Essaki, Siqueira" />
+    <label>DE <input id="auditDateFrom" type="date" /></label>
+    <label>ATÉ <input id="auditDateTo" type="date" /></label>
     <button id="btnAuditRefresh" class="btn">consultar</button>
   </div>
   <div id="auditTable" class="descnotes"></div>

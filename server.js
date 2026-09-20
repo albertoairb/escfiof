@@ -1537,6 +1537,12 @@ app.get("/api/audit_logs", authRequired(true), async (req, res) => {
 
     const limit = Math.max(10, Math.min(1000, Number(req.query && req.query.limit ? req.query.limit : 300)));
     const name = String(req.query && req.query.name ? req.query.name : "").trim();
+    const dateFrom = String(req.query && req.query.date_from ? req.query.date_from : "").trim();
+    const dateTo = String(req.query && req.query.date_to ? req.query.date_to : "").trim();
+    const isoDateRe = /^\d{4}-\d{2}-\d{2}$/;
+    if (dateFrom && !isoDateRe.test(dateFrom)) return res.status(400).json({ error: "data inicial inválida" });
+    if (dateTo && !isoDateRe.test(dateTo)) return res.status(400).json({ error: "data final inválida" });
+    if (dateFrom && dateTo && dateFrom > dateTo) return res.status(400).json({ error: "período inválido" });
     const params = [];
     let where = "1=1";
 
@@ -1549,6 +1555,15 @@ app.get("/api/audit_logs", authRequired(true), async (req, res) => {
         where += " AND (actor_name LIKE ? OR target_name LIKE ? OR input_name LIKE ? OR details LIKE ?)";
         params.push(`%${name}%`, `%${name}%`, `%${name}%`, `%${name}%`);
       }
+    }
+
+    if (dateFrom) {
+      where += " AND DATE(CONVERT_TZ(at, '+00:00', '-03:00')) >= ?";
+      params.push(dateFrom);
+    }
+    if (dateTo) {
+      where += " AND DATE(CONVERT_TZ(at, '+00:00', '-03:00')) <= ?";
+      params.push(dateTo);
     }
 
     params.push(limit);
@@ -1807,6 +1822,110 @@ app.post("/api/pdf_link", authRequired(true), async (req, res) => {
     return res.json({ ok: true, url: `/api/pdf?token=${encodeURIComponent(t)}` });
   } catch (err) {
     return res.status(500).json({ error: "erro ao gerar link do PDF", details: err.message });
+  }
+});
+
+function dailySituationDisplayCode(code) {
+  const c = String(code || "").trim();
+  if (c === "CFP_DIA") return "CFP DIURNO";
+  if (c === "CFP_NOITE") return "CFP NOTURNO";
+  if (c === "FERIAS") return "FÉRIAS";
+  if (c === "CONVALESCENCA") return "CONVALESCENÇA";
+  if (c === "NUPCIAS") return "NÚPCIAS";
+  if (c === "LICENCA PATERNIDADE") return "LICENÇA PATERNIDADE";
+  if (c === "LICENCA ADOCAO") return "LICENÇA ADOÇÃO";
+  return c || "-";
+}
+
+function dailySituationOfficerLabel(off) {
+  const alias = Array.isArray(off.aliases) && off.aliases.length ? off.aliases[0] : off.name;
+  let rank = fixText(off.rank || "").replace(/\s+PM$/i, "").trim();
+  if (/^Asp Of$/i.test(rank)) rank = "Asp";
+  return `${rank} ${officerNameNoAccents(alias)}`.trim();
+}
+
+function weekdayPtUpper(iso) {
+  const [y, m, d] = String(iso).split("-").map(Number);
+  const dt = new Date(y, m - 1, d, 12, 0, 0);
+  return new Intl.DateTimeFormat("pt-BR", { weekday: "long", timeZone: "America/Sao_Paulo" })
+    .format(dt).toUpperCase();
+}
+
+function renderDailySituationPdf(res, st, iso) {
+  const PDFDocument = requirePdfKitOr501(res);
+  if (!PDFDocument) return;
+  const dates = Array.isArray(st.dates) ? st.dates : [];
+  if (!dates.includes(iso)) return res.status(404).json({ error: "o dia vigente não pertence à escala anterior original" });
+
+  const assignments = st.assignments && typeof st.assignments === "object" ? st.assignments : {};
+  const notes = st.notes && typeof st.notes === "object" ? st.notes : {};
+  const startIndex = OFFICERS.findIndex(o => o.canonical_name === "Marcio Saito Essaki");
+  const officers = OFFICERS.slice(startIndex >= 0 ? startIndex : 0);
+
+  res.setHeader("Content-Type", "application/pdf");
+  res.setHeader("Content-Disposition", `inline; filename="situacao_do_dia_${iso}.pdf"`);
+  const doc = new PDFDocument({ margin: 42, size: "A4", layout: "portrait" });
+  doc.pipe(res);
+
+  const [yyyy, mm, dd] = iso.split("-");
+  const compact = `${dd}${["JAN","FEV","MAR","ABR","MAI","JUN","JUL","AGO","SET","OUT","NOV","DEZ"][Number(mm)-1]}${String(yyyy).slice(2)}`;
+  doc.font("Helvetica-Bold").fontSize(14).text(`SITUAÇÃO DOS OFICIAIS – ${compact} (${weekdayPtUpper(iso)})`, { align: "center" });
+  doc.moveDown(0.9);
+
+  for (const off of officers) {
+    const key = `${off.canonical_name}|${iso}`;
+    const code = String(assignments[key] || "").trim();
+    const displayCode = dailySituationDisplayCode(code);
+    doc.font("Helvetica").fontSize(11).text(`${dailySituationOfficerLabel(off)} – `, { continued: true });
+    doc.font("Helvetica-Bold").text(displayCode);
+    const note = String(notes[key] || "").trim();
+    if (note && (code === "OUTROS" || /\*$/.test(code))) {
+      doc.font("Helvetica-Oblique").fontSize(9).text(`Descrição: ${fixText(note)}`, { indent: 18 });
+    }
+    doc.moveDown(0.25);
+  }
+
+  doc.moveDown(0.8);
+  doc.font("Helvetica-Bold").fontSize(10).text("Fonte: Escala Online de Oficiais (ESCFIOF)", { align: "center" });
+  doc.moveDown(0.5);
+  doc.text("Desenvolvido por Alberto Franzini Neto", { align: "center" });
+  doc.text("Ch P1/P5", { align: "center" });
+  doc.end();
+}
+
+app.post("/api/daily_situation_pdf_link", authRequired(true), async (req, res) => {
+  try {
+    if (req.user.is_readonly || normKey(req.user.canonical_name) === normKey(SPECIAL_READONLY_USER)) {
+      return res.status(403).json({ error: "não autorizado" });
+    }
+    const previous = await getPreviousSnapshot();
+    if (!previous || !previous.period || !Array.isArray(previous.dates)) {
+      return res.status(404).json({ error: "escala anterior original ainda indisponível para a situação do dia" });
+    }
+    const today = fmtYYYYMMDD(new Date());
+    if (!previous.dates.includes(today)) {
+      return res.status(404).json({ error: "o dia vigente não pertence à escala anterior original armazenada" });
+    }
+    const t = signPdfToken(req.user);
+    return res.json({ ok: true, url: `/api/daily_situation_pdf?token=${encodeURIComponent(t)}` });
+  } catch (err) {
+    return res.status(500).json({ error: "erro ao gerar situação do dia", details: err.message });
+  }
+});
+
+app.get("/api/daily_situation_pdf", pdfAuth, async (req, res) => {
+  try {
+    if (req.user.is_readonly || normKey(req.user.canonical_name) === normKey(SPECIAL_READONLY_USER)) {
+      return res.status(403).json({ error: "não autorizado" });
+    }
+    const previous = await getPreviousSnapshot();
+    if (!previous || !previous.period || !Array.isArray(previous.dates)) {
+      return res.status(404).json({ error: "escala anterior original ainda indisponível" });
+    }
+    const today = fmtYYYYMMDD(new Date());
+    return renderDailySituationPdf(res, previous, today);
+  } catch (err) {
+    return res.status(500).json({ error: "erro ao abrir situação do dia", details: err.message });
   }
 });
 
