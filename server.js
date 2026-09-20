@@ -180,7 +180,7 @@ function fixText(s) {
   const str = String(s ?? "");
   if (!str) return "";
   // Corrige "mojibake" comum (UTF-8 interpretado como Latin-1 e regravado).
-  if (/[ÃÂ�]/.test(str)) {
+  if (/[ÃÂ ]/.test(str)) {
     try { return Buffer.from(str, "latin1").toString("utf8"); } catch (_e) {}
   }
   return str;
@@ -1934,7 +1934,7 @@ function renderDailySituationPdf(res, st, iso) {
   doc.moveDown(0.8);
   doc.font("Helvetica-Bold").fontSize(10).text("Fonte: Escala Online de Oficiais (ESCFIOF)", { align: "center" });
   doc.moveDown(0.5);
-  doc.text("Desenvolvido por Alberto Franzini Neto", { align: "center" });
+  doc.text("Alberto Franzini Neto", { align: "center" });
   doc.text("Ch P1/P5", { align: "center" });
   doc.end();
 }
