@@ -117,14 +117,14 @@ table.hist th {
 
 /* layout refinado da escala: linhas alinhadas e colunas uniformes */
 .tablewrap{overflow:auto;border:1px solid #e5e7eb;border-radius:12px;margin-top:12px;background:#fff}
-table#table{width:100%;border-collapse:separate;border-spacing:0;min-width:1120px;table-layout:fixed}
-#table th,#table td{border-bottom:1px solid #e9edf2;padding:8px 8px;font-size:12px;text-align:left;vertical-align:top;background:#fff}
+table#table{width:100%;border-collapse:separate;border-spacing:0;min-width:0;table-layout:fixed}
+#table th,#table td{border-bottom:1px solid #e9edf2;padding:6px 4px;font-size:11px;text-align:left;vertical-align:top;background:#fff}
 #table th{position:sticky;top:0;background:#f8fafc;z-index:1;font-weight:700;white-space:nowrap}
-#table th:nth-child(1),#table td:nth-child(1){width:58px;min-width:58px;max-width:58px;white-space:normal}
-#table th:nth-child(2),#table td:nth-child(2){width:132px;min-width:132px;max-width:132px;white-space:normal;line-height:1.12}
-#table td:nth-child(n+3),#table th:nth-child(n+3){width:118px;min-width:118px;max-width:118px}
+#table th:nth-child(1),#table td:nth-child(1){width:46px;min-width:46px;max-width:46px;white-space:normal}
+#table th:nth-child(2),#table td:nth-child(2){width:116px;min-width:116px;max-width:116px;white-space:normal;line-height:1.08}
+#table td:nth-child(n+4),#table th:nth-child(n+4){width:auto;min-width:0;max-width:none}
 #table tr{min-height:76px}
-#table select{width:100%;height:32px;min-width:0;padding:6px 8px;border-radius:9px;border:1px solid #cfd6df;font-size:12px;background:#fff}
+#table select{width:100%;height:30px;min-width:0;padding:4px 3px;border-radius:8px;border:1px solid #cfd6df;font-size:11px;background:#fff}
 #table .noteInput{width:100%;height:46px;min-height:46px;max-height:46px;margin-top:6px;font-size:11px;line-height:1.15;padding:6px;border:1px solid #cfd6df;border-radius:8px;resize:none;box-sizing:border-box;overflow:auto;background:#fff}
 #table b{font-weight:700}
 .holiday{background:#fff3cd;border-bottom:1px solid #ffe69c;color:#664d03;padding:10px 16px;font-size:13px;font-weight:600}
@@ -256,8 +256,8 @@ table#table{width:100%;border-collapse:separate;border-spacing:0;min-width:1120p
 }
 
 /* ===== ESCFIOF: salvamento por oficial e filtros da auditoria ===== */
-#table th:nth-child(3),#table td:nth-child(3){width:92px;min-width:92px;max-width:92px;text-align:center}
-.btn--row-save{padding:7px 9px;font-size:11px;white-space:nowrap}
+#table th:nth-child(3),#table td:nth-child(3){width:58px;min-width:58px;max-width:58px;text-align:center}
+.btn--row-save{padding:6px 5px;font-size:10px;white-space:nowrap;min-width:0}
 .auditFilters{align-items:end;flex-wrap:wrap}
 .auditFilters label{display:grid;gap:4px;font-size:10px;font-weight:700}
 .auditFilters input[type="date"]{min-width:145px}

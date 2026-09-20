@@ -817,6 +817,52 @@ async function getPreviousSnapshot() {
   return safeJsonParse(rows[0].payload);
 }
 
+// Ponte estruturada da primeira ESCALA ANTERIOR ORIGINAL (14 a 20/09/2026).
+// O arquivo histórico inicial existe apenas em PDF; estes dados permitem gerar
+// a SITUAÇÃO DO DIA VIGENTE em 20/09/2026 sem ler a escala futura em edição.
+function getInitialDailySituationSnapshot(iso) {
+  if (iso !== "2026-09-20") return null;
+  const values = {
+    "Marcio Saito Essaki": "FO",
+    "Jose Antonio Marciano Neto": "FO",
+    "Alberto Franzini Neto": "FO",
+    "Vinicio Augusto Voltarelli Tavares": "FERIAS",
+    "Andre Santarelli de Paula": "CAO",
+    "Iuri Filipe dos Santos": "FO",
+    "Mateus Pedro Teodoro": "LP",
+    "Daniel Alves de Siqueira": "FO",
+    "Fernanda Bruno Pomponio Martignago": "FO",
+    "Dayana de Oliveira Silva Almeida": "FERIAS",
+    "Antonio Ovidio Ferruccio Cardoso": "CFP_DIA",
+    "Bruno Antao de Oliveira": "FO",
+    "Larissa Amadeu Leite": "FO",
+    "Renato Fernandes Freire": "FERIAS",
+    "Raphael Mecca Sampaio": "CFP_NOITE",
+    "Jose Sebastiao dos Santos Neto": "FO*",
+    "Lenise Helena Tragante de Souza Cristo": "OUTROS",
+  };
+  const assignments = {};
+  for (const [name, code] of Object.entries(values)) assignments[`${name}|${iso}`] = code;
+  const notes = {
+    [`Jose Sebastiao dos Santos Neto|${iso}`]: "Folga mensal",
+    [`Lenise Helena Tragante de Souza Cristo|${iso}`]: "Estágio Permanência Corregedoria",
+  };
+  return {
+    period: { start: "2026-09-14", end: "2026-09-20" },
+    dates: [iso],
+    assignments,
+    notes,
+    read_only: true,
+    original: true,
+  };
+}
+
+async function getDailySituationSnapshot(iso) {
+  const previous = await getPreviousSnapshot();
+  if (previous && previous.period && Array.isArray(previous.dates) && previous.dates.includes(iso)) return previous;
+  return getInitialDailySituationSnapshot(iso);
+}
+
 async function getStateAutoReset() {
   const rows = await safeQuery("SELECT payload FROM state_store WHERE id=1 LIMIT 1");
   let st = rows.length ? safeJsonParse(rows[0].payload) : null;
@@ -1898,13 +1944,10 @@ app.post("/api/daily_situation_pdf_link", authRequired(true), async (req, res) =
     if (req.user.is_readonly || normKey(req.user.canonical_name) === normKey(SPECIAL_READONLY_USER)) {
       return res.status(403).json({ error: "não autorizado" });
     }
-    const previous = await getPreviousSnapshot();
-    if (!previous || !previous.period || !Array.isArray(previous.dates)) {
-      return res.status(404).json({ error: "escala anterior original ainda indisponível para a situação do dia" });
-    }
     const today = fmtYYYYMMDD(new Date());
-    if (!previous.dates.includes(today)) {
-      return res.status(404).json({ error: "o dia vigente não pertence à escala anterior original armazenada" });
+    const previous = await getDailySituationSnapshot(today);
+    if (!previous || !previous.period || !Array.isArray(previous.dates) || !previous.dates.includes(today)) {
+      return res.status(404).json({ error: "escala anterior original ainda indisponível para a situação do dia" });
     }
     const t = signPdfToken(req.user);
     return res.json({ ok: true, url: `/api/daily_situation_pdf?token=${encodeURIComponent(t)}` });
@@ -1918,11 +1961,11 @@ app.get("/api/daily_situation_pdf", pdfAuth, async (req, res) => {
     if (req.user.is_readonly || normKey(req.user.canonical_name) === normKey(SPECIAL_READONLY_USER)) {
       return res.status(403).json({ error: "não autorizado" });
     }
-    const previous = await getPreviousSnapshot();
-    if (!previous || !previous.period || !Array.isArray(previous.dates)) {
+    const today = fmtYYYYMMDD(new Date());
+    const previous = await getDailySituationSnapshot(today);
+    if (!previous || !previous.period || !Array.isArray(previous.dates) || !previous.dates.includes(today)) {
       return res.status(404).json({ error: "escala anterior original ainda indisponível" });
     }
-    const today = fmtYYYYMMDD(new Date());
     return renderDailySituationPdf(res, previous, today);
   } catch (err) {
     return res.status(500).json({ error: "erro ao abrir situação do dia", details: err.message });
