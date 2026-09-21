@@ -1925,6 +1925,42 @@ function weekdayPtUpper(iso) {
     .format(dt).toUpperCase();
 }
 
+function buildDailySituationWhatsAppText(st, iso) {
+  const assignments = st && st.assignments && typeof st.assignments === "object" ? st.assignments : {};
+  const notes = st && st.notes && typeof st.notes === "object" ? st.notes : {};
+  const startIndex = OFFICERS.findIndex(o => o.canonical_name === "Marcio Saito Essaki");
+  const officers = OFFICERS.slice(startIndex >= 0 ? startIndex : 0);
+
+  const [yyyy, mm, dd] = String(iso || "").split("-");
+  const months = ["JAN","FEV","MAR","ABR","MAI","JUN","JUL","AGO","SET","OUT","NOV","DEZ"];
+  const compact = `${dd}${months[Number(mm) - 1] || ""}${String(yyyy || "").slice(2)}`;
+  const lines = [`*SITUAÇÃO DOS OFICIAIS – ${compact} (${weekdayPtUpper(iso)})*`, ""];
+
+  for (const off of officers) {
+    const key = `${off.canonical_name}|${iso}`;
+    const code = String(assignments[key] || "").trim();
+    const displayCode = fixText(dailySituationDisplayCode(code));
+    lines.push(`${dailySituationOfficerLabel(off)} – *${displayCode}*`);
+
+    const note = fixText(notes[key] || "").trim();
+    if (note && (code === "OUTROS" || /\*$/.test(code))) {
+      lines.push(`Descrição: ${note}`);
+    }
+  }
+
+  lines.push("", "Fonte: Escala Online de Oficiais (ESCFIOF)", "Alberto Franzini Neto", "Ch P1/P5");
+  return lines.join("\n");
+}
+
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
 function renderDailySituationPdf(res, st, iso) {
   const PDFDocument = requirePdfKitOr501(res);
   if (!PDFDocument) return;
@@ -1985,9 +2021,87 @@ app.post("/api/daily_situation_pdf_link", authRequired(true), async (req, res) =
       return res.status(404).json({ error: "escala anterior original ainda indisponível para a situação do dia" });
     }
     const t = signPdfToken(req.user);
-    return res.json({ ok: true, url: `/api/daily_situation_pdf?token=${encodeURIComponent(t)}` });
+    return res.json({ ok: true, url: `/api/daily_situation_view?token=${encodeURIComponent(t)}` });
   } catch (err) {
     return res.status(500).json({ error: "erro ao gerar situação do dia", details: err.message });
+  }
+});
+
+app.get("/api/daily_situation_view", pdfAuth, async (req, res) => {
+  try {
+    if (req.user.is_readonly || normKey(req.user.canonical_name) === normKey(SPECIAL_READONLY_USER)) {
+      return res.status(403).send("Não autorizado");
+    }
+
+    const today = fmtYYYYMMDD(new Date());
+    const previous = await getDailySituationSnapshot(today);
+    if (!previous || !previous.period || !Array.isArray(previous.dates) || !previous.dates.includes(today)) {
+      return res.status(404).send("Escala anterior original ainda indisponível para a situação do dia");
+    }
+
+    const whatsappText = buildDailySituationWhatsAppText(previous, today);
+    const token = String((req.query && req.query.token) || "");
+    const pdfUrl = `/api/daily_situation_pdf?token=${encodeURIComponent(token)}`;
+    const safeJsonText = JSON.stringify(whatsappText).replace(/</g, "\u003c").replace(/>/g, "\u003e").replace(/&/g, "\u0026");
+
+    res.setHeader("Content-Type", "text/html; charset=utf-8");
+    res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
+    return res.send(`<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Situação do Dia Vigente</title>
+  <style>
+    *{box-sizing:border-box} body{margin:0;font-family:Arial,Helvetica,sans-serif;background:#f4f6f9;color:#172033} .bar{position:sticky;top:0;z-index:5;display:flex;gap:10px;align-items:center;flex-wrap:wrap;padding:12px 14px;background:#202b49;border-bottom:1px solid #111a30} .bar button,.bar a{appearance:none;border:0;border-radius:8px;padding:11px 16px;font-weight:700;font-size:14px;cursor:pointer;text-decoration:none} #copyBtn{background:#fff;color:#202b49} #openPdf{background:#e9edf7;color:#202b49} #copyMsg{color:#fff;font-size:13px;font-weight:700} .viewer{width:100%;height:calc(100vh - 66px);border:0;background:#fff} .fallback{display:none;padding:18px} @media(max-width:720px){.viewer{height:calc(100vh - 112px)} .bar{align-items:stretch}.bar button,.bar a{flex:1 1 150px;text-align:center}}
+  </style>
+</head>
+<body>
+  <div class="bar">
+    <button id="copyBtn" type="button">COPIAR WHATSAPP</button>
+    <a id="openPdf" href="${escapeHtml(pdfUrl)}" target="_blank" rel="noopener noreferrer">ABRIR PDF</a>
+    <span id="copyMsg" role="status" aria-live="polite"></span>
+  </div>
+  <iframe class="viewer" src="${escapeHtml(pdfUrl)}" title="Situação do Dia Vigente em PDF"></iframe>
+  <div class="fallback">Caso o PDF não seja exibido neste aparelho, use o botão <strong>ABRIR PDF</strong>.</div>
+  <script>
+    (() => {
+      const textToCopy = ${safeJsonText};
+      const btn = document.getElementById("copyBtn");
+      const msg = document.getElementById("copyMsg");
+
+      async function copyText() {
+        try {
+          if (navigator.clipboard && window.isSecureContext) {
+            await navigator.clipboard.writeText(textToCopy);
+          } else {
+            const ta = document.createElement("textarea");
+            ta.value = textToCopy;
+            ta.setAttribute("readonly", "");
+            ta.style.position = "fixed";
+            ta.style.opacity = "0";
+            document.body.appendChild(ta);
+            ta.select();
+            ta.setSelectionRange(0, ta.value.length);
+            const ok = document.execCommand("copy");
+            ta.remove();
+            if (!ok) throw new Error("copy_failed");
+          }
+          msg.textContent = "Texto copiado. Agora é só colar no WhatsApp.";
+          btn.textContent = "COPIADO";
+          setTimeout(() => { btn.textContent = "COPIAR WHATSAPP"; }, 1800);
+        } catch (_e) {
+          msg.textContent = "Não foi possível copiar automaticamente neste navegador.";
+        }
+      }
+
+      btn.addEventListener("click", copyText);
+    })();
+  </script>
+</body>
+</html>`);
+  } catch (err) {
+    return res.status(500).send(`Erro ao abrir situação do dia: ${escapeHtml(err && err.message ? err.message : String(err))}`);
   }
 });
 
