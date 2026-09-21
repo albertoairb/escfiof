@@ -15,10 +15,10 @@ const jwt = require("jsonwebtoken");
 const PORT = Number(process.env.PORT || 8080);
 process.env.TZ = (process.env.TZ || "America/Sao_Paulo").trim();
 
-// Semana mÃ­nima (segunda-feira) para iniciar o sistema automaticamente, sem precisar forÃ§ar via variÃ¡vel.
-// Ex.: quando a semana anterior jÃ¡ passou, iniciamos diretamente na prÃ³xima.
+// Semana mínima (segunda-feira) para iniciar o sistema automaticamente, sem precisar forçar via variável.
+// Ex.: quando a semana anterior já passou, iniciamos diretamente na próxima.
 const CUTOVER_WEEK_START = "2026-03-09";
-// Se quiser forÃ§ar manualmente a semana exibida (ex.: liberar semana futura), defina WEEK_START_OVERRIDE=YYYY-MM-DD (segunda-feira)
+// Se quiser forçar manualmente a semana exibida (ex.: liberar semana futura), defina WEEK_START_OVERRIDE=YYYY-MM-DD (segunda-feira)
 const WEEK_START_OVERRIDE = (process.env.WEEK_START_OVERRIDE || "").trim();
 
 const JWT_SECRET = (process.env.JWT_SECRET || "troque-este-segredo").trim();
@@ -49,7 +49,7 @@ function defaultSignatures() {
 // DB: Railway (URL) > Docker/local (DB_HOST...)
 const DB_URL = (process.env.DB_URL || process.env.MYSQL_URL || process.env.MYSQL_PUBLIC_URL || "").trim();
 
-// Defaults para Docker/local (quando DB_URL nÃ£o existir)
+// Defaults para Docker/local (quando DB_URL não existir)
 const DB_HOST = (process.env.DB_HOST || "db").trim();
 const DB_PORT = Number(process.env.DB_PORT || 3306);
 const DB_USER = (process.env.DB_USER || "app").trim();
@@ -58,8 +58,8 @@ const DB_NAME = (process.env.DB_NAME || process.env.DB_DATABASE || "escala").tri
 
 // ===============================
 // OFICIAIS (lista fixa)
-// - canonical_name: chave Ãºnica do oficial (sem posto)
-// - rank: posto/graduaÃ§Ã£o a exibir
+// - canonical_name: chave única do oficial (sem posto)
+// - rank: posto/graduação a exibir
 // - name: nome completo a exibir
 // ===============================
 const OFFICERS = [
@@ -85,7 +85,7 @@ const OFFICERS = [
   { canonical_name: "Lenise Helena Tragante de Souza Cristo", rank: "Asp Of PM", name: "Lenise Helena Tragante de Souza Cristo", aliases: ["Tragante"] },
 ];
             
-// override visual para postos (Ten Dent) — garante exibiÃ§Ã£o correta no state e no PDF
+// override visual para postos (Ten Dent) — garante exibição correta no state e no PDF
 function fixDentRanks(list) {
   return (Array.isArray(list) ? list : []).map(o => {
     if (!o || typeof o !== "object") return o;
@@ -106,7 +106,7 @@ const ADMIN_NAMES = new Set([
   "Daniel Alves de Siqueira",
 ]);
 
-// CÃ³digos vÃ¡lidos (tudo em MAIÃšSCULO, conforme regra)
+// Códigos válidos (tudo em MAIÚSCULO, conforme regra)
 // - códigos terminados em * permitem descrição
 // - FOJ: sem descrição
 const CODES = ["EXP", "SR", "MA", "VE", "FOJ", "FO*", "SV*", "LP", "FERIAS", "FERIADO", "CONVALESCENCA", "CURSO", "CFP_DIA", "CFP_NOITE", "OUTROS", "SS", "EXP_SS", "FO", "PF", "CAO", "EAP", "CSP", "PPJM", "DS", "CFT", "TJM", "LUTO", "LICENCA PATERNIDADE", "NUPCIAS", "LICENCA ADOCAO"];
@@ -177,12 +177,40 @@ function safeJsonParse(s) {
 
 
 function fixText(s) {
-  const str = String(s ?? "");
+  let str = String(s ?? "");
   if (!str) return "";
-  // Corrige "mojibake" comum (UTF-8 interpretado como Latin-1 e regravado).
-  if (/[ÃÂ ]/.test(str)) {
-    try { return Buffer.from(str, "latin1").toString("utf8"); } catch (_e) {}
+
+  // Corrige somente quando há sinais reais de mojibake.
+  // IMPORTANTE: não usar espaço como gatilho, pois isso corrompe texto UTF-8 válido
+  // (ex.: "às", "Permanência", "referência", "reunião").
+  const suspicious = /(?:\u00C3.|\u00C2.|\u00E2..|\u00F0\u0178|\uFFFD)/;
+  if (suspicious.test(str)) {
+    for (let i = 0; i < 3; i++) {
+      try {
+        const fixed = Buffer.from(str, "latin1").toString("utf8");
+        if (!fixed || fixed === str) break;
+        str = fixed;
+        if (!suspicious.test(str)) break;
+      } catch (_e) {
+        break;
+      }
+    }
   }
+
+  // Compatibilidade com alguns registros antigos que já foram persistidos corrompidos.
+  const legacyMap = {
+    "ÿys": "às",
+    "Permanÿncia": "Permanência",
+    "permanÿncia": "permanência",
+    "Referÿncia": "Referência",
+    "referÿncia": "referência",
+    "Reuniÿo": "Reunião",
+    "reuniÿo": "reunião",
+  };
+  for (const [wrong, right] of Object.entries(legacyMap)) {
+    if (str.includes(wrong)) str = str.split(wrong).join(right);
+  }
+
   return str;
 }
 
@@ -212,13 +240,13 @@ function fmtDDMMYYYY(iso) {
   return `${d}/${m}/${y}`;
 }
 
-// Formata data/hora em pt-BR (SÃ£o Paulo) no padrÃ£o: dd/mm/aaaa às HHhMM
+// Formata data/hora em pt-BR (São Paulo) no padrão: dd/mm/aaaa às HHhMM
 function fmtDDMMYYYYHHmm(value) {
   if (!value) return "";
   const dt = (value instanceof Date) ? value : new Date(value);
   if (Number.isNaN(dt.getTime())) return "";
 
-  // Usa timeZone explicitamente para nÃ£o depender do TZ do processo.
+  // Usa timeZone explicitamente para não depender do TZ do processo.
   const parts = new Intl.DateTimeFormat("pt-BR", {
     timeZone: "America/Sao_Paulo",
     day: "2-digit",
@@ -337,7 +365,7 @@ function isCapOrAbove(off) {
 }
 
 // ===============================
-// FERIADOS (Brasil - nacionais + mÃ³veis)
+// FERIADOS (Brasil - nacionais + móveis)
 // ===============================
 function easterDate(year) {
   // Computus (Meeus/Jones/Butcher)
@@ -353,7 +381,7 @@ function easterDate(year) {
   const k = c % 4;
   const l = (32 + 2 * e + 2 * i - h - k) % 7;
   const m = Math.floor((a + 11 * h + 22 * l) / 451);
-  const month = Math.floor((h + l - 7 * m + 114) / 31); // 3=marÃ§o,4=abril
+  const month = Math.floor((h + l - 7 * m + 114) / 31); // 3=março,4=abril
   const day = ((h + l - 7 * m + 114) % 31) + 1;
   return new Date(year, month - 1, day);
 }
@@ -491,7 +519,7 @@ async function ensureSchema() {
       INDEX idx_scale_date (scale_date)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;`);
 
-    // lanÃ§amentos por dia (persistÃªncia da semana)
+    // lançamentos por dia (persistência da semana)
     await conn.query(`CREATE TABLE IF NOT EXISTS escala_lancamentos (
       id BIGINT AUTO_INCREMENT PRIMARY KEY,
       data DATE NOT NULL,
@@ -507,7 +535,7 @@ async function ensureSchema() {
       INDEX idx_oficial (oficial)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;`);
 
-    // migraÃ§Ã£o defensiva: colunas faltantes em 'escala_lancamentos' (ambientes antigos)
+    // migração defensiva: colunas faltantes em 'escala_lancamentos' (ambientes antigos)
     // (usa information_schema para evitar erro de coluna duplicada)
     try {
       const [cols] = await conn.query(
@@ -518,12 +546,12 @@ async function ensureSchema() {
       if (!names.has("created_by")) await conn.query("ALTER TABLE escala_lancamentos ADD COLUMN created_by VARCHAR(255) NULL");
       if (!names.has("updated_by")) await conn.query("ALTER TABLE escala_lancamentos ADD COLUMN updated_by VARCHAR(255) NULL");
     } catch (e) {
-      // tolera corrida/duplicidade em inicializaÃ§Ã£o concorrente
+      // tolera corrida/duplicidade em inicialização concorrente
       const code = String((e && e.code) || "");
       const msg = String((e && e.message) || "");
       if (!code.includes("ER_DUP_FIELDNAME") && !msg.toLowerCase().includes("duplicate column")) throw e;
     }
-// logs detalhados de alteraÃ§Ãµes (histÃ³rico)
+// logs detalhados de alterações (histórico)
 await conn.query(`CREATE TABLE IF NOT EXISTS escala_change_log (
   id BIGINT AUTO_INCREMENT PRIMARY KEY,
   at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -663,7 +691,7 @@ function isoFromDbDate(v) {
   let s = String(v).trim();
   if (!s) return "";
 
-  // pega sÃ³ a parte de data se vier com hora
+  // pega só a parte de data se vier com hora
   if (s.length >= 10) s = s.slice(0, 10);
 
   // normaliza separador
@@ -692,8 +720,8 @@ function resolveCanonicalFromDbOfficer(oficialStr) {
 }
 
 async function fetchLancamentosForPeriod(periodStartISO, periodEndISO) {
-  // periodStartISO / periodEndISO sÃ£o YYYY-MM-DD
-  // CompatÃ­vel com coluna 'data' como DATE ou como string (ex.: 'YYYY/MM/DD')
+  // periodStartISO / periodEndISO são YYYY-MM-DD
+  // Compatível com coluna 'data' como DATE ou como string (ex.: 'YYYY/MM/DD')
   const sql = `
     SELECT data, oficial, codigo, observacao, created_at, updated_at, created_by, updated_by
       FROM escala_lancamentos
@@ -720,7 +748,7 @@ function fetchChangeLogsForPeriod(periodStartISO, periodEndISO, limit = 500) {
 }
 
 async function fetchLastActionForPeriod(periodStartISO, periodEndISO) {
-  // action_logs.at Ã© TIMESTAMP; filtra pela janela da semana (SÃ£o Paulo)
+  // action_logs.at é TIMESTAMP; filtra pela janela da semana (São Paulo)
   const start = `${periodStartISO} 00:00:00`;
   const end = `${periodEndISO} 23:59:59`;
   const sql = `
@@ -755,7 +783,7 @@ function buildAssignmentsAndNotesFromLancamentos(rows, validDates) {
     let code = normalizeCodeValue(r.codigo);
 
     if (!validCodes.has(code)) {
-      // ignora cÃ³digos desconhecidos/antigos
+      // ignora códigos desconhecidos/antigos
       continue;
     }
 
@@ -763,7 +791,7 @@ function buildAssignmentsAndNotesFromLancamentos(rows, validDates) {
     assignments[key] = code;
 
     // observação só faz sentido em OUTROS e códigos terminados em *
-    const obs = (r.observacao == null) ? "" : String(r.observacao).trim();
+    const obs = (r.observacao == null) ? "" : fixText(r.observacao).trim();
     if (obs && (code === "OUTROS" || /\*$/.test(code))) {
       notes[key] = obs;
 
@@ -922,7 +950,7 @@ function signToken(me) {
   );
 }
 
-// token curto e especÃ­fico para abrir PDF via URL (window.open nÃ£o envia headers)
+// token curto e específico para abrir PDF via URL (window.open não envia headers)
 function signPdfToken(me) {
   return jwt.sign(
     { canonical_name: me.canonical_name, is_admin: !!me.is_admin, is_readonly: !!me.is_readonly, scope: "pdf" },
@@ -951,13 +979,13 @@ function pdfAuth(req, res, next) {
     }
   }
 
-  // 2) token via query (curto, sÃ³ para PDF)
+  // 2) token via query (curto, só para PDF)
   const q = (req.query && req.query.token ? String(req.query.token) : "").trim();
-  if (!q) return res.status(401).json({ error: "nÃ£o autenticado" });
+  if (!q) return res.status(401).json({ error: "não autenticado" });
 
   try {
     const payload = jwt.verify(q, JWT_SECRET);
-    if (payload.scope !== "pdf") return res.status(401).json({ error: "token invÃ¡lido" });
+    if (payload.scope !== "pdf") return res.status(401).json({ error: "token inválido" });
     req.user = {
       canonical_name: String(payload.canonical_name || "").trim(),
       is_admin: !!payload.is_admin,
@@ -966,7 +994,7 @@ function pdfAuth(req, res, next) {
     };
     return next();
   } catch (e) {
-    return res.status(401).json({ error: "token invÃ¡lido" });
+    return res.status(401).json({ error: "token inválido" });
   }
 }
 
@@ -974,7 +1002,7 @@ function authRequired(allowMustChange = false) {
   return (req, res, next) => {
     const auth = (req.headers["authorization"] || "").toString();
     const m = auth.match(/^Bearer\s+(.+)$/i);
-    if (!m) return res.status(401).json({ error: "nÃ£o autenticado" });
+    if (!m) return res.status(401).json({ error: "não autenticado" });
 
     try {
       const payload = jwt.verify(m[1], JWT_SECRET);
@@ -986,11 +1014,11 @@ function authRequired(allowMustChange = false) {
         can_view_audit: !!payload.can_view_audit || canViewAuditName(payload.canonical_name),
       };
       if (!allowMustChange && req.user.must_change) {
-        return res.status(403).json({ error: "troca de senha obrigatÃ³ria" });
+        return res.status(403).json({ error: "troca de senha obrigatória" });
       }
       return next();
     } catch (e) {
-      return res.status(401).json({ error: "token invÃ¡lido" });
+      return res.status(401).json({ error: "token inválido" });
     }
   };
 }
@@ -999,7 +1027,7 @@ async function findOrCreateUser(canonical_name) {
   const rows = await safeQuery("SELECT id, canonical_name, password_hash, must_change FROM users WHERE canonical_name=? LIMIT 1", [canonical_name]);
   if (rows.length) return rows[0];
 
-  // cria com senha padrÃ£o e must_change=1
+  // cria com senha padrão e must_change=1
   const hash = await bcrypt.hash(DEFAULT_PASSWORD, 10);
   await safeQuery("INSERT INTO users (canonical_name, password_hash, must_change) VALUES (?, ?, 1)", [canonical_name, hash]);
   const created = await safeQuery("SELECT id, canonical_name, password_hash, must_change FROM users WHERE canonical_name=? LIMIT 1", [canonical_name]);
@@ -1013,7 +1041,7 @@ function stripRankFromLogin(input) {
     .replace(/^ten cel pm\s+/, "")
     .replace(/^major pm\s+/, "")
     .replace(/^maj pm\s+/, "")
-    .replace(/^capit(ao|Ã£o) pm\s+/, "")
+    .replace(/^capit(ao|ão) pm\s+/, "")
     .replace(/^cap pm\s+/, "")
     .replace(/^1º tenente dent pm\s+/, "")
     .replace(/^1º ten dent pm\s+/, "")
@@ -1096,7 +1124,7 @@ function requirePdfKitOr501(res) {
   try {
     return require("pdfkit");
   } catch {
-    res.status(501).json({ error: "geraÃ§Ã£o de PDF indisponÃ­vel" });
+    res.status(501).json({ error: "geração de PDF indisponível" });
     return null;
   }
 }
@@ -1225,7 +1253,7 @@ function renderFrozenScalePdf(res, st, filename = "escala_anterior_original.pdf"
     doc.fontSize(10);
     for (const it of noteEntries) {
       doc.font("Helvetica-Bold").text(`${fmtDDMMYYYY(it.iso)} - ${fixText(it.off.rank)} ${officerNameNoAccents(it.off.name)} (${it.code})`);
-      doc.font("Helvetica").text(String(it.text || ""));
+      doc.font("Helvetica").text(fixText(it.text || ""));
       if (it.meta && (it.meta.updated_at || it.meta.updated_by || it.meta.created_by)) {
         const dt = it.meta.updated_at ? fmtDDMMYYYYHHmm(it.meta.updated_at) : "";
         const by = it.meta.updated_by || it.meta.created_by || "";
@@ -1272,10 +1300,10 @@ app.get("/api/health", async (_req, res) => {
   }
 });
 
-// STATUS PÃšBLICO (sem token) â€“ para teste externo e monitoramento no Railway
+// STATUS PÚBLICO (sem token) – para teste externo e monitoramento no Railway
 app.get("/api/status", async (_req, res) => {
   try {
-    // nÃ£o falha se o DB estiver indisponÃ­vel: retorna o bÃ¡sico
+    // não falha se o DB estiver indisponível: retorna o básico
     try {
       const conn = await pool.getConnection();
       await conn.ping();
@@ -1298,7 +1326,7 @@ app.get("/api/status", async (_req, res) => {
   }
 });
 
-// WEEK PÃšBLICO (sem token) â€“ ajuda o frontend e facilita debug
+// WEEK PÚBLICO (sem token) – ajuda o frontend e facilita debug
 app.get("/api/week", (_req, res) => {
   const week = getWeekRangeISO();
   return res.json({ ok: true, week, dates: buildDatesForWeek(week.start) });
@@ -1321,7 +1349,7 @@ app.post("/api/login", async (req, res) => {
         http_status: 403,
         details: "nome nao reconhecido",
       });
-      return res.status(403).json({ error: "nome nÃ£o reconhecido. use nome completo ou nome de guerra." });
+      return res.status(403).json({ error: "nome não reconhecido. use nome completo ou nome de guerra." });
     }
 
     const loginCanonical = isP1 ? SPECIAL_READONLY_USER : off.canonical_name;
@@ -1338,7 +1366,7 @@ app.post("/api/login", async (req, res) => {
         http_status: 403,
         details: "senha invalida",
       });
-      return res.status(403).json({ error: "senha invÃ¡lida" });
+      return res.status(403).json({ error: "senha inválida" });
     }
 
     const me = {
@@ -1374,12 +1402,12 @@ app.post("/api/login", async (req, res) => {
   }
 });
 
-// troca obrigatÃ³ria de senha
+// troca obrigatória de senha
 app.post("/api/change_password", authRequired(true), async (req, res) => {
   try {
     if (req.user.is_readonly) return res.status(403).json({ error: "senha deste usuário é administrada pelo sistema" });
     const newPass = (req.body && req.body.new_password ? req.body.new_password : "").toString();
-    if (!newPass || newPass.length < 6) return res.status(400).json({ error: "senha muito curta (mÃ­nimo 6)" });
+    if (!newPass || newPass.length < 6) return res.status(400).json({ error: "senha muito curta (mínimo 6)" });
 
     const hash = await bcrypt.hash(newPass, 10);
     await safeQuery("UPDATE users SET password_hash=?, must_change=0 WHERE canonical_name=?", [hash, req.user.canonical_name]);
@@ -1404,7 +1432,7 @@ app.get("/api/state", authRequired(true), async (req, res) => {
     }
     const holidays = getHolidaysForWeek(st.dates);
 
-    // se houver lanÃ§amentos no MySQL (escala_lancamentos), eles prevalecem
+    // se houver lançamentos no MySQL (escala_lancamentos), eles prevalecem
     let assignments = st.assignments || {};
     const baseNotes = (st.notes && typeof st.notes === "object") ? st.notes : {};
     const baseMeta = (st.notes_meta && typeof st.notes_meta === "object") ? st.notes_meta : {};
@@ -1419,14 +1447,14 @@ app.get("/api/state", authRequired(true), async (req, res) => {
         notes_meta = built.notes_meta || {};
       }
     } catch (_e) {
-      // se a tabela ainda nÃ£o existir em algum ambiente, mantÃ©m state_store
+      // se a tabela ainda não existir em algum ambiente, mantém state_store
     }
 
-    // merge de descriÃ§Ãµes: mantÃ©m state_store.notes quando o MySQL vier sem observaÃ§Ã£o
+    // merge de descrições: mantém state_store.notes quando o MySQL vier sem observação
     try {
       const baseNotes = (st.notes && typeof st.notes === "object") ? st.notes : {};
       const baseMeta = (st.notes_meta && typeof st.notes_meta === "object") ? st.notes_meta : {};
-      // se nÃ£o veio nada do DB, usa o state_store
+      // se não veio nada do DB, usa o state_store
       if (!notes || Object.keys(notes).length === 0) {
         notes = { ...baseNotes };
       } else {
@@ -1504,7 +1532,7 @@ app.get("/api/state", authRequired(true), async (req, res) => {
 // assinaturas do PDF (somente admin)
 app.put("/api/signatures", authRequired(true), async (req, res) => {
   try {
-    if (!req.user.is_admin) return res.status(403).json({ error: "nÃ£o autorizado" });
+    if (!req.user.is_admin) return res.status(403).json({ error: "não autorizado" });
 
     const { st } = await getStateAutoReset();
     const cur = (st.meta && st.meta.signatures) ? st.meta.signatures : defaultSignatures();
@@ -1529,7 +1557,7 @@ app.put("/api/signatures", authRequired(true), async (req, res) => {
       right_role: right_role.toUpperCase(),
     };
 
-    // metadados do Ãºltimo registro (para PDF)
+    // metadados do último registro (para PDF)
     st.last_edit_actor = req.user.canonical_name;
     st.last_edit_at = new Date().toISOString();
 
@@ -1547,10 +1575,10 @@ app.put("/api/signatures", authRequired(true), async (req, res) => {
 });
 
 
-// histÃ³rico de alteraÃ§Ãµes (somente admin)
+// histórico de alterações (somente admin)
 app.get("/api/change_logs", authRequired(true), async (req, res) => {
   try {
-    if (!canViewAuditName(req.user.canonical_name)) return res.status(403).json({ error: "nÃ£o autorizado" });
+    if (!canViewAuditName(req.user.canonical_name)) return res.status(403).json({ error: "não autorizado" });
 
     const limit = Math.max(10, Math.min(500, Number(req.query && req.query.limit ? req.query.limit : 200)));
     const sql = `
@@ -1562,7 +1590,7 @@ app.get("/api/change_logs", authRequired(true), async (req, res) => {
     const rows = await safeQuery(sql, [limit]);
     return res.json({ ok: true, rows: rows || [] });
   } catch (err) {
-    return res.status(500).json({ error: "erro ao carregar histÃ³rico", details: err.message });
+    return res.status(500).json({ error: "erro ao carregar histórico", details: err.message });
   }
 });
 
@@ -1578,7 +1606,7 @@ app.get("/api/audit_logs", authRequired(true), async (req, res) => {
         http_status: 403,
         details: "tentativa de acessar auditoria",
       });
-      return res.status(403).json({ error: "nÃ£o autorizado" });
+      return res.status(403).json({ error: "não autorizado" });
     }
 
     const limit = Math.max(10, Math.min(1000, Number(req.query && req.query.limit ? req.query.limit : 300)));
@@ -1631,7 +1659,7 @@ app.get("/api/audit_logs", authRequired(true), async (req, res) => {
 });
 
 
-// salvar alteraÃ§Ãµes (somente apÃ³s troca de senha)
+// salvar alterações (somente após troca de senha)
 app.put("/api/assignments", authRequired(false), async (req, res) => {
   try {
     const { st } = await getStateAutoReset();
@@ -1666,7 +1694,7 @@ app.put("/api/assignments", authRequired(false), async (req, res) => {
         success: false,
         http_status: 400,
       });
-      return res.status(400).json({ error: "nenhuma alteraÃ§Ã£o enviada" });
+      return res.status(400).json({ error: "nenhuma alteração enviada" });
     }
 
     const validDates = new Set(st.dates || []);
@@ -1704,10 +1732,10 @@ app.put("/api/assignments", authRequired(false), async (req, res) => {
       const key = `${target}|${date}`;
 
       const beforeCode = (st.assignments && st.assignments[key]) ? String(st.assignments[key]) : "";
-      const beforeObs = (st.notes && st.notes[key]) ? String(st.notes[key]) : "";
+      const beforeObs = (st.notes && st.notes[key]) ? fixText(st.notes[key]) : "";
 
       const needObs = (code === "OUTROS" || /\*$/.test(code));
-      const newObs = needObs ? String(u.observacao == null ? "" : u.observacao).trim() : "";
+      const newObs = needObs ? fixText(u.observacao == null ? "" : u.observacao).trim() : "";
       if (needObs && !newObs) {
         await auditEvent(req, {
           event_type: "erro_ao_salvar",
@@ -1734,14 +1762,14 @@ app.put("/api/assignments", authRequired(false), async (req, res) => {
       } else {
         st.assignments[key] = code;
         if (needObs) {
-          // grava/atualiza observaÃ§Ã£o mesmo se o cÃ³digo nÃ£o mudar
+          // grava/atualiza observação mesmo se o código não mudar
           st.notes[key] = newObs;
         } else {
           delete st.notes[key];
         }
       }
 
-      // persistÃªncia no MySQL
+      // persistência no MySQL
       try {
         if (!code) {
           await safeQuery("DELETE FROM escala_lancamentos WHERE data=? AND oficial=?", [date, target]);
@@ -1754,7 +1782,7 @@ app.put("/api/assignments", authRequired(false), async (req, res) => {
           );
         }
       } catch (_e) {
-        // ignora se a tabela nÃ£o existir em algum ambiente
+        // ignora se a tabela não existir em algum ambiente
       }
 
       // log
@@ -1794,7 +1822,7 @@ app.put("/api/assignments", authRequired(false), async (req, res) => {
           });
         }
       
-// histÃ³rico detalhado
+// histórico detalhado
 try {
   if (changedCode) {
     await safeQuery(
@@ -1816,7 +1844,7 @@ try {
       applied++;
     }
 
-    // metadados do Ãºltimo registro (para PDF)
+    // metadados do último registro (para PDF)
     st.last_edit_actor = actor;
     st.last_edit_at = new Date().toISOString();
     st.updated_at = st.last_edit_at;
@@ -1924,7 +1952,7 @@ function renderDailySituationPdf(res, st, iso) {
     const displayCode = dailySituationDisplayCode(code);
     doc.font("Helvetica").fontSize(11).text(`${dailySituationOfficerLabel(off)} – `, { continued: true });
     doc.font("Helvetica-Bold").text(displayCode);
-    const note = String(notes[key] || "").trim();
+    const note = fixText(notes[key] || "").trim();
     if (note && (code === "OUTROS" || /\*$/.test(code))) {
       doc.font("Helvetica-Oblique").fontSize(9).text(`Descrição: ${fixText(note)}`, { indent: 18 });
     }
@@ -2024,7 +2052,7 @@ app.get("/api/pdf", pdfAuth, async (req, res) => {
     const doc = new PDFDocument({ margin: 28, size: "A4", layout: "landscape" });
     doc.pipe(res);
 
-    // cabeÃ§alho
+    // cabeçalho
     doc.fontSize(16).text(fixText(SYSTEM_NAME), { align: "center" });
     doc.moveDown(0.2);
     doc.fontSize(10).text(`Periodo: ${fmtDDMMYYYY(st.period.start)} a ${fmtDDMMYYYY(st.period.end)}`, { align: "center" });
@@ -2047,11 +2075,11 @@ app.get("/api/pdf", pdfAuth, async (req, res) => {
       const built = buildAssignmentsAndNotesFromLancamentos(rows, dates);
       if (Object.keys(built.assignments).length) {
         assignments = { ...(st.assignments || {}), ...built.assignments };
-        // DB passa a ser a fonte primÃ¡ria, mas fazemos merge defensivo com o state_store
+        // DB passa a ser a fonte primária, mas fazemos merge defensivo com o state_store
         notes = (built.notes && typeof built.notes === "object") ? built.notes : {};
         notes_meta = (built.notes_meta && typeof built.notes_meta === "object") ? built.notes_meta : {};
         usedDb = true;
-        // merge defensivo: se o DB nÃ£o tiver observaÃ§Ã£o (ou vier NULL/vazio), mantÃ©m o state_store
+        // merge defensivo: se o DB não tiver observação (ou vier NULL/vazio), mantém o state_store
         for (const k of Object.keys(baseNotes)) {
           const codeNow = assignments && assignments[k] ? String(assignments[k]) : "";
           if (codeNow !== "OUTROS" && !/\*$/.test(codeNow)) continue;
@@ -2061,17 +2089,17 @@ app.get("/api/pdf", pdfAuth, async (req, res) => {
             if (v) notes[k] = v;
           }
         }
-        // mantÃ©m metadados do state_store quando o DB nÃ£o tiver
+        // mantém metadados do state_store quando o DB não tiver
         for (const k of Object.keys(baseMeta)) {
           if (!notes_meta[k]) notes_meta[k] = baseMeta[k];
         }
       }
     } catch (_e) {
-      // mantÃ©m fallback
+      // mantém fallback
     }
 
 
-// histÃ³rico para PDF (quando houver DB)
+// histórico para PDF (quando houver DB)
 let changeLogs = [];
 if (usedDb) {
   try {
@@ -2213,7 +2241,7 @@ const lastStamp = fmtDDMMYYYYHHmm(lastAt);
       for (const it of noteEntries) {
         const title = `${fmtDDMMYYYY(it.iso)} - ${fixText(it.off.rank)} ${officerNameNoAccents(it.off.name)} (${it.code})`;
         doc.font("Helvetica-Bold").text(title);
-        doc.font("Helvetica").text(it.text, { width: doc.page.width - doc.page.margins.left - doc.page.margins.right });
+        doc.font("Helvetica").text(fixText(it.text || ""), { width: doc.page.width - doc.page.margins.left - doc.page.margins.right });
         
 if (it.meta && (it.meta.updated_at || it.meta.updated_by || it.meta.created_by)) {
   const dt = it.meta.updated_at ? fmtDDMMYYYYHHmm(it.meta.updated_at) : "";

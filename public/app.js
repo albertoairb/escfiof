@@ -82,6 +82,20 @@
       if (str.includes(wrong)) str = str.split(wrong).join(right);
     }
 
+    // Compatibilidade com descrições antigas já persistidas com caracteres corrompidos.
+    const legacyMap = {
+      "ÿys": "às",
+      "Permanÿncia": "Permanência",
+      "permanÿncia": "permanência",
+      "Referÿncia": "Referência",
+      "referÿncia": "referência",
+      "Reuniÿo": "Reunião",
+      "reuniÿo": "reunião",
+    };
+    for (const [wrong, right] of Object.entries(legacyMap)) {
+      if (str.includes(wrong)) str = str.split(wrong).join(right);
+    }
+
     return str;
   }
 
