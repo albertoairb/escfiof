@@ -1950,11 +1950,18 @@ function renderDailySituationPdf(res, st, iso) {
     const key = `${off.canonical_name}|${iso}`;
     const code = String(assignments[key] || "").trim();
     const displayCode = dailySituationDisplayCode(code);
-    doc.font("Helvetica").fontSize(11).text(`${dailySituationOfficerLabel(off)} – `, { continued: true });
-    doc.font("Helvetica-Bold").text(displayCode);
+
+    // Uma chamada de text() por linha preserva a quebra ao copiar do PDF.
+    // Os asteriscos ficam no conteúdo textual para que, ao colar no WhatsApp,
+    // a situação seja interpretada como negrito.
+    const whatsappLine = `${dailySituationOfficerLabel(off)} – *${displayCode}*`;
+    doc.font("Helvetica").fontSize(11).text(whatsappLine);
+
     const note = fixText(notes[key] || "").trim();
     if (note && (code === "OUTROS" || /\*$/.test(code))) {
-      doc.font("Helvetica-Oblique").fontSize(9).text(`Descrição: ${fixText(note)}`, { indent: 18 });
+      // A descrição também é emitida como uma linha independente para manter
+      // a mesma organização quando o texto for copiado e colado.
+      doc.font("Helvetica-Oblique").fontSize(9).text(`Descrição: ${note}`, { indent: 18 });
     }
     doc.moveDown(0.25);
   }
