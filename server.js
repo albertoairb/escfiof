@@ -1943,7 +1943,10 @@ function buildDailySituationWhatsAppText(st, iso) {
     lines.push(`${dailySituationOfficerLabel(off)} – *${displayCode}*`);
 
     const note = fixText(notes[key] || "").trim();
-    if (note && (code === "OUTROS" || /\*$/.test(code))) {
+    // No texto para WhatsApp, qualquer descrição efetivamente cadastrada deve
+    // acompanhar o Oficial. Isso evita perder observações legadas de FO*/SV*
+    // mesmo quando o código tenha sido normalizado em outra etapa do sistema.
+    if (note) {
       lines.push(`Descrição: ${note}`);
     }
   }
