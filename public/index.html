@@ -16,7 +16,8 @@
     </div>
     <div class="top__right">
       <button id="btnDailySituation" class="btn">SITUAÇÃO DO DIA VIGENTE</button>
-      <button id="btnPreviousPdf" class="btn">ESCALA ANTERIOR ORIGINAL</button>
+      <button id="btnPreviousScales" class="btn">ESCALAS ANTERIORES</button>
+      <button id="btnConsult" class="btn">CONSULTAS</button>
       <button id="btnPdf" class="btn">PDF ATUAL</button>
       <button id="btnLogout" class="btn btn--ghost">sair</button>
     </div>
@@ -36,7 +37,7 @@
       </label>
       <label>
         SENHA
-        <input id="loginPass" type="password" autocomplete="current-password" placeholder="sr123" />
+        <input id="loginPass" type="password" autocomplete="current-password" placeholder="senha" />
       </label>
       <button id="btnLogin" class="btn btn--primary loginButton">ENTRAR</button>
       <div class="muted loginMessage" id="loginMsg"></div>
@@ -162,6 +163,39 @@
       <div class="modal__actions">
         <button id="outrosCancel" class="btn btn--ghost">cancelar</button>
         <button id="outrosSave" class="btn btn--primary">salvar</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- modal: escalas anteriores -->
+  <div id="previousScalesModal" class="modal" style="display:none;">
+    <div class="modal__card modal__card--compact">
+      <h3>ESCALAS ANTERIORES</h3>
+      <div class="muted">Consulte as duas últimas escalas fechadas.</div>
+      <div id="previousScalesList" class="historyButtons"></div>
+      <div class="modal__actions">
+        <button id="previousScalesClose" class="btn btn--ghost-dark" type="button">fechar</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- modal: consulta individual por data -->
+  <div id="consultModal" class="modal" style="display:none;">
+    <div class="modal__card modal__card--compact">
+      <h3>CONSULTAR SITUAÇÃO POR DATA</h3>
+      <label id="consultNameLabel">
+        NOME DE GUERRA
+        <input id="consultName" placeholder="Ex.: Franzini" autocomplete="off" />
+      </label>
+      <label>
+        DATA
+        <input id="consultDate" type="date" />
+      </label>
+      <button id="consultSubmit" class="btn btn--primary" type="button">CONSULTAR</button>
+      <div id="consultMsg" class="muted consultMsg"></div>
+      <div id="consultResult" class="consultResult" style="display:none;"></div>
+      <div class="modal__actions">
+        <button id="consultClose" class="btn btn--ghost-dark" type="button">fechar</button>
       </div>
     </div>
   </div>

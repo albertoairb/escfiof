@@ -1,4 +1,4 @@
--- Escala Semanal de Praças do EM – 4º BPM/M
+-- Escala de Oficiais – 4º BPM/M
 -- MySQL 8 / utf8mb4
 
 CREATE TABLE IF NOT EXISTS state_store (

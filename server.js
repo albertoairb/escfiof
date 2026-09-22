@@ -26,8 +26,9 @@ const DEFAULT_PASSWORD = (process.env.DEFAULT_PASSWORD || "sr123").trim();
 const ONE_TIME_PASSWORD_RESET_MARKER = "reset_senhas_20260826_franzini_voltarelli";
 
 const AUTOFILL_FRIDAY_HOUR = Number(process.env.AUTOFILL_FRIDAY_HOUR || 17);
-const SPECIAL_READONLY_USER = "p1";
-const SPECIAL_READONLY_PASSWORD = "aux123";
+const P1_INITIAL_PASSWORD = "aux123";
+const P1_USERS = ["Cotrim", "Cleice", "Freitas", "Brunelly"];
+const P1_USER_KEYS = new Map(P1_USERS.map(name => [normKey(name), name]));
 const INITIAL_PREVIOUS_PDF = path.join(__dirname, "history", "escala_anterior_original_2026-09-14_a_2026-09-20.pdf");
 
 const SYSTEM_NAME = (process.env.SYSTEM_NAME || "ESCALA DE OFICIAIS DO 4º BPM/M").trim();
@@ -350,6 +351,15 @@ function canViewAuditName(canonicalName) {
   return key === normKey("Alberto Franzini Neto") || key === normKey("Franzini") || key.includes("franzini");
 }
 
+function resolveP1UserFromInput(input) {
+  const key = normKey(input);
+  return key ? (P1_USER_KEYS.get(key) || null) : null;
+}
+
+function isP1EditorName(canonicalName) {
+  return !!resolveP1UserFromInput(canonicalName);
+}
+
 function officerRankValue(off) {
   const r = stripAccents(String((off && off.rank) || "")).toLowerCase();
   if (r.includes("ten cel")) return 1;
@@ -402,16 +412,17 @@ function getHolidaysForWeek(weekDates) {
   const set = new Map();
 
   // Feriados nacionais.
+  // Datas fixas em formato técnico MM-DD; a interface exibe DD/MM/AAAA.
   const fixedNational = [
     ["01-01", "Confraternização Universal", "NACIONAL"],
-    ["21-04", "Tiradentes", "NACIONAL"],
-    ["01-05", "Dia Mundial do Trabalho", "NACIONAL"],
-    ["07-09", "Independência do Brasil", "NACIONAL"],
-    ["12-10", "Nossa Senhora Aparecida", "NACIONAL"],
-    ["02-11", "Finados", "NACIONAL"],
-    ["15-11", "Proclamação da República", "NACIONAL"],
-    ["20-11", "Dia Nacional de Zumbi e da Consciência Negra", "NACIONAL"],
-    ["25-12", "Natal", "NACIONAL"],
+    ["04-21", "Tiradentes", "NACIONAL"],
+    ["05-01", "Dia Mundial do Trabalho", "NACIONAL"],
+    ["09-07", "Independência do Brasil", "NACIONAL"],
+    ["10-12", "Nossa Senhora Aparecida", "NACIONAL"],
+    ["11-02", "Finados", "NACIONAL"],
+    ["11-15", "Proclamação da República", "NACIONAL"],
+    ["11-20", "Dia Nacional de Zumbi e da Consciência Negra", "NACIONAL"],
+    ["12-25", "Natal", "NACIONAL"],
   ];
   for (const [md, name, scope] of fixedNational) {
     set.set(`${year}-${md}`, { name, type: "FERIADO", scope });
@@ -573,11 +584,20 @@ await conn.query(`CREATE TABLE IF NOT EXISTS escala_change_log (
       await conn.query("INSERT INTO state_store (id, payload) VALUES (1, ?)", [JSON.stringify(initial)]);
     }
 
-    // Usuário técnico P1: somente leitura, senha fixa inicial e sem troca obrigatória.
-    const [p1Rows] = await conn.query("SELECT id FROM users WHERE LOWER(canonical_name)=LOWER(?) LIMIT 1", [SPECIAL_READONLY_USER]);
-    if (!p1Rows.length) {
-      const p1Hash = await bcrypt.hash(SPECIAL_READONLY_PASSWORD, 10);
-      await conn.query("INSERT INTO users (canonical_name, password_hash, must_change) VALUES (?, ?, 0)", [SPECIAL_READONLY_USER, p1Hash]);
+    // P/1: contas individuais e auditáveis. Remove o usuário genérico antigo "p1".
+    await conn.query("DELETE FROM users WHERE LOWER(canonical_name)=LOWER('p1')");
+    for (const p1Name of P1_USERS) {
+      const [p1Rows] = await conn.query("SELECT id FROM users WHERE LOWER(canonical_name)=LOWER(?) LIMIT 1", [p1Name]);
+      if (!p1Rows.length) {
+        const p1Hash = await bcrypt.hash(P1_INITIAL_PASSWORD, 10);
+        await conn.query("INSERT INTO users (canonical_name, password_hash, must_change) VALUES (?, ?, 1)", [p1Name, p1Hash]);
+      }
+    }
+
+    // Garante o histórico estruturado inicial de 14 a 20/09/2026 como a segunda escala anterior.
+    const [olderHistoryRows] = await conn.query("SELECT id FROM state_store WHERE id=3 LIMIT 1");
+    if (!olderHistoryRows.length) {
+      await conn.query("INSERT INTO state_store (id, payload) VALUES (3, ?)", [JSON.stringify(buildInitialHistoricalSnapshot())]);
     }
   } finally {
     conn.release();
@@ -768,6 +788,7 @@ function buildAssignmentsAndNotesFromLancamentos(rows, validDates) {
   const assignments = {};
   const notes = {};
   const notes_meta = {};
+  const assignment_meta = {};
 
   const valid = new Set(validDates || []);
   const validCodes = new Set(CODES);
@@ -789,6 +810,12 @@ function buildAssignmentsAndNotesFromLancamentos(rows, validDates) {
 
     const key = `${canonical}|${iso}`;
     assignments[key] = code;
+    assignment_meta[key] = {
+      created_by: r.created_by ? String(r.created_by) : null,
+      updated_by: r.updated_by ? String(r.updated_by) : null,
+      created_at: r.created_at ? new Date(r.created_at).toISOString() : null,
+      updated_at: r.updated_at ? new Date(r.updated_at).toISOString() : null,
+    };
 
     // observação só faz sentido em OUTROS e códigos terminados em *
     const obs = (r.observacao == null) ? "" : fixText(r.observacao).trim();
@@ -805,7 +832,7 @@ function buildAssignmentsAndNotesFromLancamentos(rows, validDates) {
     }
   }
 
-  return { assignments, notes, notes_meta };
+  return { assignments, notes, notes_meta, assignment_meta };
 }
 
 async function hydrateStateFromCurrentLaunches(st) {
@@ -816,6 +843,7 @@ async function hydrateStateFromCurrentLaunches(st) {
     st.assignments = { ...(st.assignments || {}), ...(built.assignments || {}) };
     st.notes = { ...(st.notes || {}), ...(built.notes || {}) };
     st.notes_meta = { ...(st.notes_meta || {}), ...(built.notes_meta || {}) };
+    st.assignment_meta = { ...(st.assignment_meta || {}), ...(built.assignment_meta || {}) };
     // Tudo que veio da tabela de lançamentos foi gravado/alterado por usuário e
     // deixa de ser marcado como autopreenchimento.
     st.auto_assignments = st.auto_assignments && typeof st.auto_assignments === "object" ? st.auto_assignments : {};
@@ -826,8 +854,78 @@ async function hydrateStateFromCurrentLaunches(st) {
   return st;
 }
 
+function buildInitialHistoricalSnapshot() {
+  const dates = buildDatesForWeek("2026-09-14");
+  const rows = [
+    ["Helder Antonio de Paula", ["EXP","EXP","EXP_SS","EXP","FOJ","FO","FO"]],
+    ["Ricardo Santos Medeiros", ["EXP","EXP","VE","EXP","VE","FO","FO"]],
+    ["Carlos Bordim Neto", ["VE","EXP","VE","EXP","EXP","SS","FO"]],
+    ["Marcio Saito Essaki", ["MA","EXP","EXP","MA","FO*","FO","FO"]],
+    ["Jose Antonio Marciano Neto", ["EXP","SV*","SV*","MA","MA","FO","FO"]],
+    ["Alberto Franzini Neto", ["OUTROS","MA","EXP","EXP","MA","FO","FO"]],
+    ["Vinicio Augusto Voltarelli Tavares", ["FERIAS","FERIAS","FERIAS","FERIAS","FERIAS","FERIAS","FERIAS"]],
+    ["Andre Santarelli de Paula", ["CAO","CAO","CAO","CAO","CAO","CAO","CAO"]],
+    ["Iuri Filipe dos Santos", ["EXP","EXP","EXP","SR","FO*","FO","FO"]],
+    ["Mateus Pedro Teodoro", ["LP","LP","LP","LP","LP","LP","LP"]],
+    ["Daniel Alves de Siqueira", ["EXP","MA","FO*","MA","EXP","FO","FO"]],
+    ["Fernanda Bruno Pomponio Martignago", ["EXP","EXP","EXP","OUTROS","EXP","FO","FO"]],
+    ["Dayana de Oliveira Silva Almeida", ["FERIAS","FERIAS","FERIAS","FERIAS","FERIAS","FERIAS","FERIAS"]],
+    ["Antonio Ovidio Ferruccio Cardoso", ["CFP_DIA","FO","CFP_DIA","FO","CFP_DIA","FO","CFP_DIA"]],
+    ["Bruno Antao de Oliveira", ["FO","CFP_DIA","FO","CFP_DIA","FO","CFP_DIA","FO"]],
+    ["Larissa Amadeu Leite", ["FERIAS","FERIAS","FERIAS","DS","DS","FO","FO"]],
+    ["Renato Fernandes Freire", ["FO","CFT","FO","FO*","FO","FERIAS","FERIAS"]],
+    ["Raphael Mecca Sampaio", ["CFT","FO","CFT","FO","CFT","FO","CFP_NOITE"]],
+    ["Jose Sebastiao dos Santos Neto", ["CFP_NOITE","FO","CFP_NOITE","FO","CFP_NOITE","FO","FO*"]],
+    ["Lenise Helena Tragante de Souza Cristo", ["FO","CFP_NOITE","FO","CFP_NOITE","FO","CFP_NOITE","OUTROS"]],
+  ];
+  const assignments = {};
+  for (const [canonical, codes] of rows) {
+    for (let i = 0; i < dates.length; i++) assignments[`${canonical}|${dates[i]}`] = codes[i];
+  }
+  const notes = {
+    "Alberto Franzini Neto|2026-09-14": "EXP, posterior - fórum barra funda , audiência às 15h30",
+    "Jose Antonio Marciano Neto|2026-09-15": "13 as 23\nConseg",
+    "Daniel Alves de Siqueira|2026-09-16": "Folga CFP 05SET26",
+    "Jose Antonio Marciano Neto|2026-09-16": "13 as 23\nReunião de PVS",
+    "Fernanda Bruno Pomponio Martignago|2026-09-17": "Plantão 12 horas CODONT",
+    "Renato Fernandes Freire|2026-09-17": "Ref mensal AGO",
+    "Iuri Filipe dos Santos|2026-09-18": "SR 17/9",
+    "Marcio Saito Essaki|2026-09-18": "Folga Supervisor Regional 13AGO26",
+    "Lenise Helena Tragante de Souza Cristo|2026-09-20": "Estágio Permanência Corregedoria",
+    "Jose Sebastiao dos Santos Neto|2026-09-20": "Folga mensal",
+  };
+  return {
+    meta: { system_name: SYSTEM_NAME, signatures: defaultSignatures() },
+    period: { start: "2026-09-14", end: "2026-09-20" },
+    dates,
+    assignments,
+    notes,
+    notes_meta: {},
+    assignment_meta: {},
+    read_only: true,
+    original: true,
+    frozen_at: "2026-09-20T23:59:59.000Z",
+  };
+}
+
+async function getSnapshotByStoreId(id) {
+  const rows = await safeQuery("SELECT payload FROM state_store WHERE id=? LIMIT 1", [id]);
+  if (!rows.length) return null;
+  return safeJsonParse(rows[0].payload);
+}
+
 async function savePreviousSnapshot(st) {
   if (!st || !st.period || !st.period.start || !st.period.end) return false;
+
+  // Rotação: a escala anterior mais recente (id=2) passa a ser a segunda anterior (id=3).
+  const newestPrevious = await getSnapshotByStoreId(2);
+  if (newestPrevious && newestPrevious.period) {
+    await safeQuery(
+      "INSERT INTO state_store (id, payload) VALUES (3, ?) ON DUPLICATE KEY UPDATE payload=VALUES(payload), updated_at=CURRENT_TIMESTAMP",
+      [JSON.stringify(newestPrevious)]
+    );
+  }
+
   const frozen = JSON.parse(JSON.stringify(await hydrateStateFromCurrentLaunches(st)));
   frozen.read_only = true;
   frozen.original = true;
@@ -840,55 +938,30 @@ async function savePreviousSnapshot(st) {
 }
 
 async function getPreviousSnapshot() {
-  const rows = await safeQuery("SELECT payload FROM state_store WHERE id=2 LIMIT 1");
-  if (!rows.length) return null;
-  return safeJsonParse(rows[0].payload);
+  return getSnapshotByStoreId(2);
 }
 
-// Ponte estruturada da primeira ESCALA ANTERIOR ORIGINAL (14 a 20/09/2026).
-// O arquivo histórico inicial existe apenas em PDF; estes dados permitem gerar
-// a SITUAÇÃO DO DIA VIGENTE em 20/09/2026 sem ler a escala futura em edição.
-function getInitialDailySituationSnapshot(iso) {
-  if (iso !== "2026-09-20") return null;
-  const values = {
-    "Marcio Saito Essaki": "FO",
-    "Jose Antonio Marciano Neto": "FO",
-    "Alberto Franzini Neto": "FO",
-    "Vinicio Augusto Voltarelli Tavares": "FERIAS",
-    "Andre Santarelli de Paula": "CAO",
-    "Iuri Filipe dos Santos": "FO",
-    "Mateus Pedro Teodoro": "LP",
-    "Daniel Alves de Siqueira": "FO",
-    "Fernanda Bruno Pomponio Martignago": "FO",
-    "Dayana de Oliveira Silva Almeida": "FERIAS",
-    "Antonio Ovidio Ferruccio Cardoso": "CFP_DIA",
-    "Bruno Antao de Oliveira": "FO",
-    "Larissa Amadeu Leite": "FO",
-    "Renato Fernandes Freire": "FERIAS",
-    "Raphael Mecca Sampaio": "CFP_NOITE",
-    "Jose Sebastiao dos Santos Neto": "FO*",
-    "Lenise Helena Tragante de Souza Cristo": "OUTROS",
-  };
-  const assignments = {};
-  for (const [name, code] of Object.entries(values)) assignments[`${name}|${iso}`] = code;
-  const notes = {
-    [`Jose Sebastiao dos Santos Neto|${iso}`]: "Folga mensal",
-    [`Lenise Helena Tragante de Souza Cristo|${iso}`]: "Estágio Permanência Corregedoria",
-  };
-  return {
-    period: { start: "2026-09-14", end: "2026-09-20" },
-    dates: [iso],
-    assignments,
-    notes,
-    read_only: true,
-    original: true,
-  };
+async function getSecondPreviousSnapshot() {
+  const stored = await getSnapshotByStoreId(3);
+  return stored || buildInitialHistoricalSnapshot();
+}
+
+async function getHistoricalSnapshotForDate(iso) {
+  const newest = await getPreviousSnapshot();
+  if (newest && Array.isArray(newest.dates) && newest.dates.includes(iso)) return newest;
+  const older = await getSecondPreviousSnapshot();
+  if (older && Array.isArray(older.dates) && older.dates.includes(iso)) return older;
+  return null;
 }
 
 async function getDailySituationSnapshot(iso) {
-  const previous = await getPreviousSnapshot();
-  if (previous && previous.period && Array.isArray(previous.dates) && previous.dates.includes(iso)) return previous;
-  return getInitialDailySituationSnapshot(iso);
+  return getHistoricalSnapshotForDate(iso);
+}
+
+async function getSituationSnapshotForDate(iso) {
+  const { st } = await getStateAutoReset();
+  if (st && Array.isArray(st.dates) && st.dates.includes(iso)) return hydrateStateFromCurrentLaunches(st);
+  return getHistoricalSnapshotForDate(iso);
 }
 
 async function getStateAutoReset() {
@@ -926,6 +999,8 @@ async function getStateAutoReset() {
   st.dates = buildDatesForWeek(currentWeek.start);
   st.assignments = st.assignments && typeof st.assignments === "object" ? st.assignments : {};
   st.notes = st.notes && typeof st.notes === "object" ? st.notes : {};
+  st.notes_meta = st.notes_meta && typeof st.notes_meta === "object" ? st.notes_meta : {};
+  st.assignment_meta = st.assignment_meta && typeof st.assignment_meta === "object" ? st.assignment_meta : {};
   st.auto_assignments = st.auto_assignments && typeof st.auto_assignments === "object" ? st.auto_assignments : {};
 
   if (applyAutoFill(st)) {
@@ -944,7 +1019,7 @@ async function getStateAutoReset() {
 // ===============================
 function signToken(me) {
   return jwt.sign(
-    { canonical_name: me.canonical_name, is_admin: !!me.is_admin, is_readonly: !!me.is_readonly, must_change: !!me.must_change, can_view_audit: !!me.can_view_audit },
+    { canonical_name: me.canonical_name, is_admin: !!me.is_admin, is_readonly: !!me.is_readonly, is_p1_editor: !!me.is_p1_editor, must_change: !!me.must_change, can_view_audit: !!me.can_view_audit },
     JWT_SECRET,
     { expiresIn: "14d" }
   );
@@ -953,7 +1028,7 @@ function signToken(me) {
 // token curto e específico para abrir PDF via URL (window.open não envia headers)
 function signPdfToken(me) {
   return jwt.sign(
-    { canonical_name: me.canonical_name, is_admin: !!me.is_admin, is_readonly: !!me.is_readonly, scope: "pdf" },
+    { canonical_name: me.canonical_name, is_admin: !!me.is_admin, is_readonly: !!me.is_readonly, is_p1_editor: !!me.is_p1_editor, scope: "pdf" },
     JWT_SECRET,
     { expiresIn: "2m" }
   );
@@ -970,6 +1045,7 @@ function pdfAuth(req, res, next) {
         canonical_name: String(payload.canonical_name || "").trim(),
         is_admin: !!payload.is_admin,
         is_readonly: !!payload.is_readonly,
+        is_p1_editor: !!payload.is_p1_editor || isP1EditorName(payload.canonical_name),
         must_change: !!payload.must_change,
         can_view_audit: !!payload.can_view_audit || canViewAuditName(payload.canonical_name),
       };
@@ -990,6 +1066,7 @@ function pdfAuth(req, res, next) {
       canonical_name: String(payload.canonical_name || "").trim(),
       is_admin: !!payload.is_admin,
       is_readonly: !!payload.is_readonly,
+      is_p1_editor: !!payload.is_p1_editor || isP1EditorName(payload.canonical_name),
       must_change: false,
     };
     return next();
@@ -1010,6 +1087,7 @@ function authRequired(allowMustChange = false) {
         canonical_name: String(payload.canonical_name || "").trim(),
         is_admin: !!payload.is_admin,
         is_readonly: !!payload.is_readonly,
+        is_p1_editor: !!payload.is_p1_editor || isP1EditorName(payload.canonical_name),
         must_change: !!payload.must_change,
         can_view_audit: !!payload.can_view_audit || canViewAuditName(payload.canonical_name),
       };
@@ -1338,7 +1416,8 @@ app.post("/api/login", async (req, res) => {
     const name = (req.body && req.body.name ? req.body.name : "").toString().trim();
     const password = (req.body && req.body.password ? req.body.password : "").toString();
 
-    const isP1 = normKey(name) === normKey(SPECIAL_READONLY_USER);
+    const p1Canonical = resolveP1UserFromInput(name);
+    const isP1 = !!p1Canonical;
     const off = isP1 ? null : resolveOfficerFromInput(name);
     if (!off && !isP1) {
       await auditEvent(req, {
@@ -1352,7 +1431,7 @@ app.post("/api/login", async (req, res) => {
       return res.status(403).json({ error: "nome não reconhecido. use nome completo ou nome de guerra." });
     }
 
-    const loginCanonical = isP1 ? SPECIAL_READONLY_USER : off.canonical_name;
+    const loginCanonical = isP1 ? p1Canonical : off.canonical_name;
     const userRow = await findOrCreateUser(loginCanonical);
 
     const ok = await bcrypt.compare(password, userRow.password_hash);
@@ -1372,9 +1451,10 @@ app.post("/api/login", async (req, res) => {
     const me = {
       canonical_name: loginCanonical,
       is_admin: isP1 ? false : isAdminName(loginCanonical),
-      is_readonly: isP1,
+      is_readonly: false,
+      is_p1_editor: isP1,
       can_view_audit: isP1 ? false : canViewAuditName(loginCanonical),
-      must_change: isP1 ? false : !!userRow.must_change,
+      must_change: !!userRow.must_change,
     };
 
     const token = signToken(me);
@@ -1414,7 +1494,18 @@ app.post("/api/change_password", authRequired(true), async (req, res) => {
 
     await logAction(req.user.canonical_name, req.user.canonical_name, "change_password", "");
 
-    return res.json({ ok: true });
+    // Emite novo token já sem a marca de troca obrigatória, evitando exigir novo login
+    // para salvar a escala logo após o primeiro acesso.
+    const refreshedMe = {
+      canonical_name: req.user.canonical_name,
+      is_admin: !!req.user.is_admin,
+      is_readonly: !!req.user.is_readonly,
+      is_p1_editor: !!req.user.is_p1_editor,
+      can_view_audit: !!req.user.can_view_audit || canViewAuditName(req.user.canonical_name),
+      must_change: false,
+    };
+    const token = signToken(refreshedMe);
+    return res.json({ ok: true, token, me: refreshedMe });
   } catch (err) {
     return res.status(500).json({ error: "erro ao trocar senha", details: err.message });
   }
@@ -1438,6 +1529,7 @@ app.get("/api/state", authRequired(true), async (req, res) => {
     const baseMeta = (st.notes_meta && typeof st.notes_meta === "object") ? st.notes_meta : {};
     let notes = baseNotes;
     let notes_meta = baseMeta;
+    let assignment_meta = (st.assignment_meta && typeof st.assignment_meta === "object") ? st.assignment_meta : {};
     try {
       const rows = await fetchLancamentosForPeriod(st.period.start, st.period.end);
       const built = buildAssignmentsAndNotesFromLancamentos(rows, st.dates);
@@ -1445,6 +1537,7 @@ app.get("/api/state", authRequired(true), async (req, res) => {
         assignments = { ...(st.assignments || {}), ...built.assignments };
         notes = built.notes;
         notes_meta = built.notes_meta || {};
+        assignment_meta = built.assignment_meta || {};
       }
     } catch (_e) {
       // se a tabela ainda não existir em algum ambiente, mantém state_store
@@ -1476,12 +1569,26 @@ app.get("/api/state", authRequired(true), async (req, res) => {
 
     const periodLabel = `periodo: ${fmtDDMMYYYY(st.period.start)} a ${fmtDDMMYYYY(st.period.end)}`;
 
+    const p1_cell_editable = {};
+    if (req.user.is_p1_editor) {
+      for (const off of OFFICERS) {
+        for (const iso of st.dates || []) {
+          const key = `${off.canonical_name}|${iso}`;
+          const code = String(assignments[key] || "").trim();
+          const meta = assignment_meta[key] || {};
+          const lastEditor = String(meta.updated_by || meta.created_by || "").trim();
+          p1_cell_editable[key] = !code || !!(st.auto_assignments && st.auto_assignments[key]) || isP1EditorName(lastEditor);
+        }
+      }
+    }
+
     return res.json({
       ok: true,
       me: {
         canonical_name: req.user.canonical_name,
         is_admin: req.user.is_admin,
         is_readonly: !!req.user.is_readonly,
+        is_p1_editor: !!req.user.is_p1_editor,
         can_view_audit: canViewAuditName(req.user.canonical_name),
       },
       meta: {
@@ -1498,6 +1605,8 @@ app.get("/api/state", authRequired(true), async (req, res) => {
       assignments,
       notes,
       notes_meta,
+      assignment_meta,
+      p1_cell_editable,
       auto_assignments: st.auto_assignments || {},
     });
   } catch (err) {
@@ -1507,7 +1616,7 @@ app.get("/api/state", authRequired(true), async (req, res) => {
       const holidays = getHolidaysForWeek(st.dates);
       return res.json({
         ok: true,
-        me: { canonical_name: req.user.canonical_name, is_admin: req.user.is_admin, is_readonly: !!req.user.is_readonly, can_view_audit: canViewAuditName(req.user.canonical_name) },
+        me: { canonical_name: req.user.canonical_name, is_admin: req.user.is_admin, is_readonly: !!req.user.is_readonly, is_p1_editor: !!req.user.is_p1_editor, can_view_audit: canViewAuditName(req.user.canonical_name) },
         meta: {
           system_name: fixText(SYSTEM_NAME),
           footer_mark: `© ${COPYRIGHT_YEAR} - ${fixText(AUTHOR)}`,
@@ -1522,6 +1631,8 @@ app.get("/api/state", authRequired(true), async (req, res) => {
         assignments: st.assignments || {},
         notes: st.notes || {},
         notes_meta: {},
+        assignment_meta: {},
+        p1_cell_editable: {},
       });
     } catch (_fallbackErr) {
       return res.status(500).json({ error: "erro ao carregar", details: err && err.message ? err.message : String(err) });
@@ -1710,9 +1821,9 @@ app.put("/api/assignments", authRequired(false), async (req, res) => {
       let target = String(u.canonical_name || "").trim();
       if (!officersByCanonical.has(target)) continue;
 
-      // Usuário comum só pode alterar a própria linha. A tentativa é recusada;
-      // nunca redirecionamos silenciosamente uma alteração para outra célula.
-      if (!req.user.is_admin && target !== actor) {
+      // Oficial comum altera somente a própria linha. P/1 possui regra restrita por célula:
+      // pode preencher vazio/autopreenchido ou corrigir lançamento cujo último editor seja do P/1.
+      if (!req.user.is_admin && !req.user.is_p1_editor && target !== actor) {
         await auditEvent(req, {
           event_type: "tentativa_sem_permissao",
           actor_name: actor,
@@ -1725,11 +1836,42 @@ app.put("/api/assignments", authRequired(false), async (req, res) => {
         continue;
       }
 
+      const key = `${target}|${date}`;
+      if (req.user.is_p1_editor) {
+        let allowedForP1 = false;
+        const currentCode = String((st.assignments && st.assignments[key]) || "").trim();
+        if (!currentCode || (st.auto_assignments && st.auto_assignments[key])) {
+          allowedForP1 = true;
+        } else {
+          try {
+            const ownerRows = await safeQuery(
+              "SELECT created_by, updated_by FROM escala_lancamentos WHERE data=? AND oficial=? LIMIT 1",
+              [date, target]
+            );
+            const owner = ownerRows.length ? String(ownerRows[0].updated_by || ownerRows[0].created_by || "").trim() : "";
+            allowedForP1 = isP1EditorName(owner);
+          } catch (_e) {
+            allowedForP1 = false;
+          }
+        }
+
+        if (!allowedForP1) {
+          await auditEvent(req, {
+            event_type: "tentativa_p1_campo_protegido",
+            actor_name: actor,
+            target_name: target,
+            scale_date: date,
+            details: "P1 tentou alterar lançamento já preenchido pelo Oficial",
+            success: false,
+            http_status: 403,
+          });
+          continue;
+        }
+      }
+
       let code = normalizeCodeValue(u.code);
       if (!code) code = ""; // limpar
       if (code && !validCodes.has(code)) continue;
-
-      const key = `${target}|${date}`;
 
       const beforeCode = (st.assignments && st.assignments[key]) ? String(st.assignments[key]) : "";
       const beforeObs = (st.notes && st.notes[key]) ? fixText(st.notes[key]) : "";
@@ -2015,9 +2157,6 @@ function renderDailySituationPdf(res, st, iso) {
 
 app.post("/api/daily_situation_pdf_link", authRequired(true), async (req, res) => {
   try {
-    if (req.user.is_readonly || normKey(req.user.canonical_name) === normKey(SPECIAL_READONLY_USER)) {
-      return res.status(403).json({ error: "não autorizado" });
-    }
     const today = fmtYYYYMMDD(new Date());
     const previous = await getDailySituationSnapshot(today);
     if (!previous || !previous.period || !Array.isArray(previous.dates) || !previous.dates.includes(today)) {
@@ -2032,9 +2171,6 @@ app.post("/api/daily_situation_pdf_link", authRequired(true), async (req, res) =
 
 app.get("/api/daily_situation_view", pdfAuth, async (req, res) => {
   try {
-    if (req.user.is_readonly || normKey(req.user.canonical_name) === normKey(SPECIAL_READONLY_USER)) {
-      return res.status(403).send("Não autorizado");
-    }
 
     const today = fmtYYYYMMDD(new Date());
     const previous = await getDailySituationSnapshot(today);
@@ -2110,9 +2246,6 @@ app.get("/api/daily_situation_view", pdfAuth, async (req, res) => {
 
 app.get("/api/daily_situation_pdf", pdfAuth, async (req, res) => {
   try {
-    if (req.user.is_readonly || normKey(req.user.canonical_name) === normKey(SPECIAL_READONLY_USER)) {
-      return res.status(403).json({ error: "não autorizado" });
-    }
     const today = fmtYYYYMMDD(new Date());
     const previous = await getDailySituationSnapshot(today);
     if (!previous || !previous.period || !Array.isArray(previous.dates) || !previous.dates.includes(today)) {
@@ -2124,42 +2257,119 @@ app.get("/api/daily_situation_pdf", pdfAuth, async (req, res) => {
   }
 });
 
-app.post("/api/previous_pdf_link", authRequired(true), async (req, res) => {
+app.get("/api/previous_scales", authRequired(true), async (req, res) => {
   try {
-    const me = {
-      canonical_name: req.user.canonical_name,
-      is_admin: !!req.user.is_admin,
-      is_readonly: !!req.user.is_readonly,
-    };
-    const t = signPdfToken(me);
+    const snapshots = [await getPreviousSnapshot(), await getSecondPreviousSnapshot()];
+    const items = snapshots
+      .map((st, index) => st && st.period ? ({ slot: index + 1, start: st.period.start, end: st.period.end }) : null)
+      .filter(Boolean);
+    return res.json({ ok: true, items });
+  } catch (err) {
+    return res.status(500).json({ error: "erro ao listar escalas anteriores", details: err.message });
+  }
+});
+
+app.post("/api/previous_scale_link", authRequired(true), async (req, res) => {
+  try {
+    const slot = Number(req.body && req.body.slot);
+    if (![1, 2].includes(slot)) return res.status(400).json({ error: "escala anterior inválida" });
+    const snapshot = slot === 1 ? await getPreviousSnapshot() : await getSecondPreviousSnapshot();
+    if (!snapshot || !snapshot.period) return res.status(404).json({ error: "escala anterior indisponível" });
+    const t = signPdfToken(req.user);
     await auditEvent(req, {
-      event_type: "visualizacao_pdf_anterior",
+      event_type: "visualizacao_escala_anterior",
       actor_name: req.user.canonical_name,
-      details: "link da ESCALA ANTERIOR ORIGINAL gerado",
+      details: `consulta da escala ${snapshot.period.start} a ${snapshot.period.end}`,
       success: true,
       http_status: 200,
     });
-    return res.json({ ok: true, url: `/api/previous_pdf?token=${encodeURIComponent(t)}` });
+    return res.json({ ok: true, url: `/api/previous_scale_pdf?slot=${slot}&token=${encodeURIComponent(t)}` });
   } catch (err) {
     return res.status(500).json({ error: "erro ao gerar link da escala anterior", details: err.message });
   }
 });
 
-app.get("/api/previous_pdf", pdfAuth, async (req, res) => {
+app.get("/api/previous_scale_pdf", pdfAuth, async (req, res) => {
   try {
-    const previous = await getPreviousSnapshot();
-    if (previous && previous.period && previous.period.start && previous.period.end) {
-      return renderFrozenScalePdf(res, previous, "escala_anterior_original.pdf");
-    }
-    // Ponte inicial: 14/09 a 20/09/2026, fornecida pelo usuário como PDF final.
-    if (fs.existsSync(INITIAL_PREVIOUS_PDF)) {
+    const slot = Number(req.query && req.query.slot);
+    if (![1, 2].includes(slot)) return res.status(400).json({ error: "escala anterior inválida" });
+    const snapshot = slot === 1 ? await getPreviousSnapshot() : await getSecondPreviousSnapshot();
+    if (!snapshot || !snapshot.period) return res.status(404).json({ error: "escala anterior indisponível" });
+
+    // Para a escala histórica inicial, preserva exatamente o PDF final fornecido pelo usuário.
+    if (snapshot.period.start === "2026-09-14" && snapshot.period.end === "2026-09-20" && fs.existsSync(INITIAL_PREVIOUS_PDF)) {
       res.setHeader("Content-Type", "application/pdf");
-      res.setHeader("Content-Disposition", 'inline; filename="escala_anterior_original_14a20set2026.pdf"');
+      res.setHeader("Content-Disposition", 'inline; filename="escala_anterior_14a20set2026.pdf"');
       return res.sendFile(INITIAL_PREVIOUS_PDF);
     }
-    return res.status(404).json({ error: "escala anterior ainda indisponível" });
+    return renderFrozenScalePdf(res, snapshot, `escala_anterior_${snapshot.period.start}_a_${snapshot.period.end}.pdf`);
   } catch (err) {
     return res.status(500).json({ error: "erro ao abrir escala anterior", details: err.message });
+  }
+});
+
+app.post("/api/consult_situation", authRequired(false), async (req, res) => {
+  try {
+    const date = String(req.body && req.body.date ? req.body.date : "").trim();
+    const name = String(req.body && req.body.name ? req.body.name : "").trim();
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return res.status(400).json({ error: "data inválida" });
+
+    let targetOfficer = null;
+    if (req.user.is_p1_editor) {
+      targetOfficer = resolveOfficerFromInput(name);
+      if (!targetOfficer) return res.status(404).json({ error: "Oficial não localizado. Informe o nome de guerra." });
+    } else {
+      targetOfficer = OFFICERS.find(o => o.canonical_name === req.user.canonical_name) || null;
+      if (!targetOfficer) return res.status(403).json({ error: "consulta disponível somente ao próprio Oficial e ao P/1" });
+      if (name) {
+        const requested = resolveOfficerFromInput(name);
+        if (requested && requested.canonical_name !== targetOfficer.canonical_name) {
+          await auditEvent(req, {
+            event_type: "tentativa_consulta_sem_permissao",
+            actor_name: req.user.canonical_name,
+            target_name: requested.canonical_name,
+            scale_date: date,
+            success: false,
+            http_status: 403,
+            details: "Oficial tentou consultar situação de outro Oficial",
+          });
+          return res.status(403).json({ error: "o Oficial pode consultar somente a própria situação" });
+        }
+      }
+    }
+
+    const snapshot = await getSituationSnapshotForDate(date);
+    if (!snapshot || !Array.isArray(snapshot.dates) || !snapshot.dates.includes(date)) {
+      return res.status(404).json({ error: "data fora das escalas disponíveis para consulta" });
+    }
+
+    const key = `${targetOfficer.canonical_name}|${date}`;
+    const code = String((snapshot.assignments && snapshot.assignments[key]) || "").trim();
+    const description = fixText((snapshot.notes && snapshot.notes[key]) || "").trim();
+
+    await auditEvent(req, {
+      event_type: "consulta_situacao_por_data",
+      actor_name: req.user.canonical_name,
+      target_name: targetOfficer.canonical_name,
+      scale_date: date,
+      success: true,
+      http_status: 200,
+      details: code ? `situação consultada: ${code}` : "sem situação registrada",
+    });
+
+    return res.json({
+      ok: true,
+      officer: {
+        canonical_name: targetOfficer.canonical_name,
+        rank: fixText(targetOfficer.rank),
+        name: officerNameNoAccents(targetOfficer.name),
+      },
+      date,
+      situation: code ? dailySituationDisplayCode(code) : "SEM REGISTRO",
+      description: description || "",
+    });
+  } catch (err) {
+    return res.status(500).json({ error: "erro ao consultar situação", details: err.message });
   }
 });
 

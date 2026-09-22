@@ -14,6 +14,8 @@
     assignments: {},
     notes: {},
     notes_meta: {},
+    assignment_meta: {},
+    p1_cell_editable: {},
     auto_assignments: {},
     pending: new Map() // key -> { code, observacao }
   };
@@ -235,6 +237,10 @@ function fmtDateCompact(iso){ const [y,m,d]=iso.split("-"); const mons=["JAN","F
       $("lockMsg").textContent = "SOMENTE CONSULTA - ESTE USUÁRIO NÃO ALTERA A ESCALA.";
       return;
     }
+    if (state.me && state.me.is_p1_editor) {
+      $("lockMsg").textContent = "P/1 - PODE PREENCHER CAMPOS VAZIOS/AUTOPREENCHIDOS E ALTERAR LANÇAMENTOS FEITOS PELO P/1. LANÇAMENTOS DOS OFICIAIS FICAM PROTEGIDOS.";
+      return;
+    }
     $("lockMsg").textContent = "EDIÇÃO LIBERADA - A ESCALA ATUAL PERMANECE EDITÁVEL.";
   }
 
@@ -396,7 +402,14 @@ async function loadAuditLogs() {
 
   function canEditOfficer(officerCanonical) {
     if (!state.me || state.me.is_readonly) return false;
+    if (state.me.is_admin || state.me.is_p1_editor) return true;
+    return officerCanonical === state.me.canonical_name;
+  }
+
+  function canEditCell(officerCanonical, iso) {
+    if (!state.me || state.me.is_readonly) return false;
     if (state.me.is_admin) return true;
+    if (state.me.is_p1_editor) return !!state.p1_cell_editable[`${officerCanonical}|${iso}`];
     return officerCanonical === state.me.canonical_name;
   }
 
@@ -441,13 +454,14 @@ async function loadAuditLogs() {
       tr.appendChild(tdName);
 
       const editable = canEditOfficer(off.canonical_name);
+      const rowHasEditableCell = state.dates.some(iso => canEditCell(off.canonical_name, iso));
 
       const tdSave = document.createElement("td");
       const rowSave = document.createElement("button");
       rowSave.type = "button";
       rowSave.className = "btn btn--row-save";
       rowSave.textContent = "SALVAR";
-      rowSave.disabled = !editable;
+      rowSave.disabled = !editable || !rowHasEditableCell;
       rowSave.addEventListener("click", (e) => {
         e.preventDefault();
         requestAnimationFrame(() => save(off.canonical_name));
@@ -457,8 +471,9 @@ async function loadAuditLogs() {
 
       for (const iso of state.dates) {
         const td = document.createElement("td");
+        const cellEditable = canEditCell(off.canonical_name, iso);
         const sel = document.createElement("select");
-        sel.disabled = !editable;
+        sel.disabled = !cellEditable;
 
         const optEmpty = document.createElement("option");
         optEmpty.value = "";
@@ -488,11 +503,17 @@ async function loadAuditLogs() {
         ta.className = "noteInput";
         ta.rows = 3;
         ta.placeholder = "descricao...";
-        ta.disabled = !editable;
+        ta.disabled = !cellEditable;
 
         const pendingObs = (pending && typeof pending === "object" && pending.observacao != null) ? String(pending.observacao) : "";
         const savedObs = (state.notes && state.notes[key]) ? String(state.notes[key]) : "";
         ta.value = pendingObs || savedObs || "";
+        if (state.me && state.me.is_p1_editor && !cellEditable) {
+          td.classList.add("protectedCell");
+          const meta = state.assignment_meta && state.assignment_meta[key] ? state.assignment_meta[key] : null;
+          const by = meta ? (meta.updated_by || meta.created_by || "Oficial") : "Oficial";
+          sel.title = savedObs ? `${savedObs} | Protegido: último lançamento por ${by}` : `Protegido: último lançamento por ${by}`;
+        }
         ta.style.display = "";
         ta.style.visibility = (sel.value === "OUTROS" || /\*$/.test(sel.value)) ? "visible" : "hidden";
 
@@ -601,6 +622,9 @@ async function loadAuditLogs() {
     state.codes = r.data.codes || [];
     state.assignments = r.data.assignments || {};
     state.notes = r.data.notes || {};
+    state.notes_meta = r.data.notes_meta || {};
+    state.assignment_meta = r.data.assignment_meta || {};
+    state.p1_cell_editable = r.data.p1_cell_editable || {};
     state.auto_assignments = r.data.auto_assignments || {};
     state.pending.clear();
 
@@ -616,7 +640,7 @@ async function loadAuditLogs() {
     const saveRow = $("saveRow");
     if (saveRow) saveRow.style.display = (state.me && state.me.is_readonly) ? "none" : "";
     const dailyBtn = $("btnDailySituation");
-    if (dailyBtn) dailyBtn.style.display = (state.me && state.me.is_readonly) ? "none" : "";
+    if (dailyBtn) dailyBtn.style.display = "";
 
     // auditoria (somente Franzini)
     if (canViewAudit()) {
@@ -734,6 +758,12 @@ async function loadAuditLogs() {
       return;
     }
 
+    if (r.data && r.data.token) {
+      state.token = r.data.token;
+      setStoredToken(state.token);
+    }
+    if (r.data && r.data.me) state.me = r.data.me;
+
     show("loginBox", false);
     show("changeBox", false);
     show("appBox", true);
@@ -794,8 +824,8 @@ async function loadAuditLogs() {
       $("btnSave").disabled = false;
       document.querySelectorAll(".btn--row-save").forEach(btn => {
         const row = btn.closest("tr");
-        const sel = row ? row.querySelector("select") : null;
-        btn.disabled = !sel || sel.disabled;
+        const selects = row ? Array.from(row.querySelectorAll("select")) : [];
+        btn.disabled = !selects.some(sel => !sel.disabled);
       });
     }
   }
@@ -824,8 +854,8 @@ function logout() {
   }
 
   async function openDailySituation() {
-    if (!state.token || !state.me || state.me.is_readonly) {
-      alert("A Situação do Dia Vigente é destinada aos Oficiais.");
+    if (!state.token || !state.me) {
+      alert("Você precisa estar logado para consultar a Situação do Dia Vigente.");
       return;
     }
     const r = await api("/api/daily_situation_pdf_link", { method: "POST" });
@@ -837,18 +867,109 @@ function logout() {
     window.open(r.data.url, "_blank", "noopener,noreferrer");
   }
 
-  async function openPreviousPdf() {
+  async function openPreviousScales() {
     if (!state.token) {
-      alert("Você precisa estar logado para abrir a escala anterior.");
+      alert("Você precisa estar logado para consultar as escalas anteriores.");
       return;
     }
-    const r = await api("/api/previous_pdf_link", { method: "POST" });
+    const r = await api("/api/previous_scales", { method: "GET" });
     if (!r.ok) {
-      const msg = (r.data && (r.data.error || r.data.details)) ? (r.data.error || r.data.details) : "Escala anterior indisponível";
-      alert(msg);
+      alert((r.data && (r.data.error || r.data.details)) ? (r.data.error || r.data.details) : "Escalas anteriores indisponíveis");
       return;
     }
-    window.open(r.data.url, "_blank", "noopener,noreferrer");
+    const list = $("previousScalesList");
+    list.innerHTML = "";
+    const items = Array.isArray(r.data.items) ? r.data.items : [];
+    if (!items.length) {
+      list.innerHTML = "<div class='muted'>Nenhuma escala anterior disponível.</div>";
+    } else {
+      for (const item of items) {
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "btn historyPeriodBtn";
+        btn.textContent = `${ddmmyyyy(item.start)} a ${ddmmyyyy(item.end)}`;
+        btn.addEventListener("click", async () => {
+          btn.disabled = true;
+          try {
+            const link = await api("/api/previous_scale_link", { method: "POST", body: JSON.stringify({ slot: item.slot }) });
+            if (!link.ok) {
+              alert((link.data && (link.data.error || link.data.details)) ? (link.data.error || link.data.details) : "Escala anterior indisponível");
+              return;
+            }
+            window.open(link.data.url, "_blank", "noopener,noreferrer");
+          } finally {
+            btn.disabled = false;
+          }
+        });
+        list.appendChild(btn);
+      }
+    }
+    $("previousScalesModal").style.display = "flex";
+  }
+
+  function closePreviousScales() {
+    $("previousScalesModal").style.display = "none";
+  }
+
+  function openConsultModal() {
+    if (!state.token || !state.me) {
+      alert("Você precisa estar logado para consultar.");
+      return;
+    }
+    $("consultMsg").textContent = "";
+    $("consultResult").style.display = "none";
+    $("consultResult").innerHTML = "";
+    const input = $("consultName");
+    if (state.me.is_p1_editor) {
+      input.disabled = false;
+      input.value = "";
+      input.placeholder = "Ex.: Franzini";
+      $("consultNameLabel").style.display = "";
+    } else {
+      input.disabled = true;
+      input.value = state.me.canonical_name || "";
+      $("consultNameLabel").style.display = "";
+    }
+    $("consultDate").value = "";
+    $("consultModal").style.display = "flex";
+  }
+
+  function closeConsultModal() {
+    $("consultModal").style.display = "none";
+  }
+
+  async function consultSituation() {
+    $("consultMsg").textContent = "";
+    $("consultResult").style.display = "none";
+    const date = String($("consultDate").value || "").trim();
+    const name = String($("consultName").value || "").trim();
+    if (!date) { $("consultMsg").textContent = "Informe a data."; return; }
+    if (state.me && state.me.is_p1_editor && !name) { $("consultMsg").textContent = "Informe o nome de guerra do Oficial."; return; }
+
+    const r = await api("/api/consult_situation", { method: "POST", body: JSON.stringify({ name, date }) });
+    if (!r.ok) {
+      $("consultMsg").textContent = (r.data && (r.data.error || r.data.details)) ? (r.data.error || r.data.details) : "Consulta indisponível.";
+      return;
+    }
+    const officer = r.data.officer || {};
+    const result = $("consultResult");
+    result.innerHTML = "";
+    const title = document.createElement("div");
+    title.className = "consultResult__title";
+    title.textContent = `${officer.rank || ""} ${officer.name || ""}`.trim();
+    const dateLine = document.createElement("div");
+    dateLine.textContent = `Data: ${ddmmyyyy(r.data.date)}`;
+    const situation = document.createElement("div");
+    situation.innerHTML = `<strong>Situação:</strong> ${String(r.data.situation || "SEM REGISTRO")}`;
+    result.appendChild(title);
+    result.appendChild(dateLine);
+    result.appendChild(situation);
+    if (r.data.description) {
+      const desc = document.createElement("div");
+      desc.innerHTML = `<strong>Descrição:</strong> ${String(r.data.description).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;")}`;
+      result.appendChild(desc);
+    }
+    result.style.display = "grid";
   }
 
   async function saveSignatures() {
@@ -884,8 +1005,17 @@ function logout() {
   $("btnPdf").addEventListener("click", openPdf);
   const btnDailySituation = $("btnDailySituation");
   if (btnDailySituation) btnDailySituation.addEventListener("click", openDailySituation);
-  const btnPreviousPdf = $("btnPreviousPdf");
-  if (btnPreviousPdf) btnPreviousPdf.addEventListener("click", openPreviousPdf);
+  const btnPreviousScales = $("btnPreviousScales");
+  if (btnPreviousScales) btnPreviousScales.addEventListener("click", openPreviousScales);
+  const btnConsult = $("btnConsult");
+  if (btnConsult) btnConsult.addEventListener("click", openConsultModal);
+  $("previousScalesClose").addEventListener("click", closePreviousScales);
+  $("previousScalesModal").addEventListener("click", (e) => { if (e.target && e.target.id === "previousScalesModal") closePreviousScales(); });
+  $("consultClose").addEventListener("click", closeConsultModal);
+  $("consultSubmit").addEventListener("click", consultSituation);
+  $("consultModal").addEventListener("click", (e) => { if (e.target && e.target.id === "consultModal") closeConsultModal(); });
+  $("consultName").addEventListener("keydown", (e) => { if (e.key === "Enter") consultSituation(); });
+  $("consultDate").addEventListener("keydown", (e) => { if (e.key === "Enter") consultSituation(); });
 
   // modal descrição
   $("outrosCancel").addEventListener("click", () => closeDescModal(true));
