@@ -27,7 +27,7 @@ const ONE_TIME_PASSWORD_RESET_MARKER = "reset_senhas_20260826_franzini_voltarell
 
 const AUTOFILL_FRIDAY_HOUR = Number(process.env.AUTOFILL_FRIDAY_HOUR || 17);
 const P1_INITIAL_PASSWORD = "aux123";
-const P1_USERS = ["Cotrim", "Cleice", "Freitas", "Brunelly"];
+const P1_USERS = ["Cotrim", "Freitas", "Brunelly"];
 const P1_USER_KEYS = new Map(P1_USERS.map(name => [normKey(name), name]));
 const INITIAL_PREVIOUS_PDF = path.join(__dirname, "history", "escala_anterior_original_2026-09-14_a_2026-09-20.pdf");
 
@@ -584,8 +584,8 @@ await conn.query(`CREATE TABLE IF NOT EXISTS escala_change_log (
       await conn.query("INSERT INTO state_store (id, payload) VALUES (1, ?)", [JSON.stringify(initial)]);
     }
 
-    // P/1: contas individuais e auditáveis. Remove o usuário genérico antigo "p1".
-    await conn.query("DELETE FROM users WHERE LOWER(canonical_name)=LOWER('p1')");
+    // P/1: contas individuais e auditáveis. Remove usuários que não devem mais ter acesso P/1.
+    await conn.query("DELETE FROM users WHERE LOWER(canonical_name) IN (LOWER('p1'), LOWER('Cleice'))");
     for (const p1Name of P1_USERS) {
       const [p1Rows] = await conn.query("SELECT id FROM users WHERE LOWER(canonical_name)=LOWER(?) LIMIT 1", [p1Name]);
       if (!p1Rows.length) {
