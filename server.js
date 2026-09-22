@@ -2315,7 +2315,7 @@ app.post("/api/consult_situation", authRequired(false), async (req, res) => {
     if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return res.status(400).json({ error: "data inválida" });
 
     let targetOfficer = null;
-    if (req.user.is_p1_editor) {
+    if (req.user.is_p1_editor || req.user.is_admin) {
       targetOfficer = resolveOfficerFromInput(name);
       if (!targetOfficer) return res.status(404).json({ error: "Oficial não localizado. Informe o nome de guerra." });
     } else {

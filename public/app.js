@@ -920,10 +920,10 @@ function logout() {
     $("consultResult").style.display = "none";
     $("consultResult").innerHTML = "";
     const input = $("consultName");
-    if (state.me.is_p1_editor) {
+    if (state.me.is_p1_editor || state.me.is_admin) {
       input.disabled = false;
       input.value = "";
-      input.placeholder = "Ex.: Franzini";
+      input.placeholder = "Ex.: Franzini (maiúsculo ou minúsculo)";
       $("consultNameLabel").style.display = "";
     } else {
       input.disabled = true;
@@ -944,7 +944,7 @@ function logout() {
     const date = String($("consultDate").value || "").trim();
     const name = String($("consultName").value || "").trim();
     if (!date) { $("consultMsg").textContent = "Informe a data."; return; }
-    if (state.me && state.me.is_p1_editor && !name) { $("consultMsg").textContent = "Informe o nome de guerra do Oficial."; return; }
+    if (state.me && (state.me.is_p1_editor || state.me.is_admin) && !name) { $("consultMsg").textContent = "Informe o nome de guerra do Oficial."; return; }
 
     const r = await api("/api/consult_situation", { method: "POST", body: JSON.stringify({ name, date }) });
     if (!r.ok) {
