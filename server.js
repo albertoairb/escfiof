@@ -1217,6 +1217,7 @@ function drawReferenceHours(doc, startY) {
   doc.font("Helvetica").fontSize(6.7);
   const lines = [
     "EXP - DAS 08H00 ÀS 18H00 / DAS 09H00 ÀS 18H00, NO MESMO DIA.",
+    "EXP QOS - das 07h00 às 13h00 e das 12h00 às 18h00",
     "CFP_DIA - DAS 05H00 ÀS 17H15, NO MESMO DIA - REGIME 12X36.",
     "CFP_NOITE - DAS 17H00 DO DIA DE INÍCIO ÀS 05H15 DO DIA SEGUINTE.",
     "SR - DIAS ÚTEIS: DAS 17H30 DO DIA DE INÍCIO ÀS 08H00 DO DIA SEGUINTE.",
