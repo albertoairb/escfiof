@@ -17,6 +17,9 @@
     assignment_meta: {},
     p1_cell_editable: {},
     auto_assignments: {},
+    managedOfficers: [],
+    officerFormMode: null,
+    officerFormId: null,
     pending: new Map() // key -> { code, observacao }
   };
 
@@ -338,6 +341,10 @@ function canViewAudit() {
   return name.includes("franzini");
 }
 
+function canManageOfficers() {
+  return !!(state.me && state.me.can_manage_officers);
+}
+
 function hideAuditLogs() {
   const box = $("auditBox");
   if (box) box.style.display = "none";
@@ -641,6 +648,8 @@ async function loadAuditLogs() {
     if (saveRow) saveRow.style.display = (state.me && state.me.is_readonly) ? "none" : "";
     const dailyBtn = $("btnDailySituation");
     if (dailyBtn) dailyBtn.style.display = "";
+    const manageBtn = $("btnManageOfficers");
+    if (manageBtn) manageBtn.style.display = canManageOfficers() ? "" : "none";
 
     // auditoria (somente Franzini)
     if (canViewAudit()) {
@@ -972,6 +981,165 @@ function logout() {
     result.style.display = "grid";
   }
 
+  function resetOfficerForm() {
+    state.officerFormMode = null;
+    state.officerFormId = null;
+    $("officerFormBox").style.display = "none";
+    $("officerFormMsg").textContent = "";
+    $("officerName").value = "";
+  }
+
+  function fillOfficerPositions() {
+    const sel = $("officerPosition");
+    sel.innerHTML = "";
+    const max = state.managedOfficers.length + 1;
+    for (let i = 1; i <= max; i++) {
+      const opt = document.createElement("option");
+      opt.value = String(i);
+      opt.textContent = String(i);
+      sel.appendChild(opt);
+    }
+  }
+
+  function renderManagedOfficers() {
+    const tbody = $("manageOfficersList");
+    tbody.innerHTML = "";
+    for (const off of state.managedOfficers) {
+      const tr = document.createElement("tr");
+      const tdPos = document.createElement("td");
+      tdPos.textContent = String(off.position || "");
+      const tdRank = document.createElement("td");
+      tdRank.textContent = off.rank || "";
+      const tdName = document.createElement("td");
+      tdName.textContent = off.name || "";
+      const tdActions = document.createElement("td");
+
+      const edit = document.createElement("button");
+      edit.type = "button";
+      edit.className = "btn";
+      edit.textContent = "EDITAR";
+      edit.addEventListener("click", () => openOfficerEdit(off));
+
+      const del = document.createElement("button");
+      del.type = "button";
+      del.className = "btn btn--danger";
+      del.textContent = "EXCLUIR";
+      del.addEventListener("click", () => deleteOfficer(off));
+
+      tdActions.appendChild(edit);
+      tdActions.appendChild(del);
+      tr.appendChild(tdPos);
+      tr.appendChild(tdRank);
+      tr.appendChild(tdName);
+      tr.appendChild(tdActions);
+      tbody.appendChild(tr);
+    }
+    fillOfficerPositions();
+  }
+
+  async function loadManagedOfficers() {
+    $("manageOfficersMsg").textContent = "carregando...";
+    const r = await api("/api/officers_manage", { method: "GET" });
+    if (!r.ok) {
+      $("manageOfficersMsg").textContent = (r.data && (r.data.error || r.data.details)) ? (r.data.error || r.data.details) : "erro ao carregar oficiais";
+      return false;
+    }
+    state.managedOfficers = Array.isArray(r.data.officers) ? r.data.officers : [];
+    renderManagedOfficers();
+    $("manageOfficersMsg").textContent = "";
+    return true;
+  }
+
+  async function openManageOfficers() {
+    if (!canManageOfficers()) {
+      alert("Sem permissão para gerenciar oficiais.");
+      return;
+    }
+    resetOfficerForm();
+    $("manageOfficersModal").style.display = "flex";
+    await loadManagedOfficers();
+  }
+
+  function closeManageOfficers() {
+    resetOfficerForm();
+    $("manageOfficersModal").style.display = "none";
+  }
+
+  function openOfficerAdd() {
+    state.officerFormMode = "add";
+    state.officerFormId = null;
+    $("officerFormTitle").textContent = "INCLUIR OFICIAL";
+    $("officerPositionLabel").style.display = "";
+    $("officerRank").value = "Cap PM";
+    $("officerName").value = "";
+    fillOfficerPositions();
+    $("officerPosition").value = String(state.managedOfficers.length + 1);
+    $("officerFormMsg").textContent = "";
+    $("officerFormBox").style.display = "block";
+    $("officerName").focus();
+  }
+
+  function openOfficerEdit(off) {
+    state.officerFormMode = "edit";
+    state.officerFormId = Number(off.id);
+    $("officerFormTitle").textContent = `EDITAR OFICIAL Nº ${off.position}`;
+    $("officerPositionLabel").style.display = "none";
+    $("officerRank").value = off.rank || "Cap PM";
+    $("officerName").value = off.name || "";
+    $("officerFormMsg").textContent = "";
+    $("officerFormBox").style.display = "block";
+    $("officerName").focus();
+  }
+
+  async function saveOfficerForm() {
+    const mode = state.officerFormMode;
+    if (mode !== "add" && mode !== "edit") return;
+    const rank = String($("officerRank").value || "").trim();
+    const name = String($("officerName").value || "").trim();
+    if (!name) { $("officerFormMsg").textContent = "Informe o nome do Oficial."; return; }
+
+    const body = { rank, name };
+    let url = "/api/officers_manage";
+    let method = "POST";
+    if (mode === "add") {
+      body.position = Number($("officerPosition").value);
+    } else {
+      url += `/${state.officerFormId}`;
+      method = "PUT";
+    }
+
+    $("officerFormSave").disabled = true;
+    $("officerFormMsg").textContent = "salvando...";
+    try {
+      const r = await api(url, { method, body: JSON.stringify(body), timeoutMs: 20000 });
+      if (!r.ok) {
+        $("officerFormMsg").textContent = (r.data && (r.data.error || r.data.details)) ? (r.data.error || r.data.details) : "erro ao salvar Oficial";
+        return;
+      }
+      resetOfficerForm();
+      await loadManagedOfficers();
+      await loadState();
+      $("manageOfficersMsg").textContent = mode === "add" ? "Oficial incluído e escala renumerada." : "Oficial editado.";
+    } finally {
+      $("officerFormSave").disabled = false;
+    }
+  }
+
+  async function deleteOfficer(off) {
+    const ok = window.confirm(`Excluir ${off.position}. ${off.rank} ${off.name}?\n\nOs Oficiais seguintes serão renumerados automaticamente.`);
+    if (!ok) return;
+    $("manageOfficersMsg").textContent = "excluindo...";
+    const r = await api(`/api/officers_manage/${off.id}`, { method: "DELETE", timeoutMs: 20000 });
+    if (!r.ok) {
+      $("manageOfficersMsg").textContent = (r.data && (r.data.error || r.data.details)) ? (r.data.error || r.data.details) : "erro ao excluir Oficial";
+      return;
+    }
+    resetOfficerForm();
+    await loadManagedOfficers();
+    await loadState();
+    $("manageOfficersMsg").textContent = "Oficial excluído e escala renumerada.";
+  }
+
   async function saveSignatures() {
     $("sigMsg").textContent = "";
     if (!state.me || !state.me.is_admin) {
@@ -1009,6 +1177,14 @@ function logout() {
   if (btnPreviousScales) btnPreviousScales.addEventListener("click", openPreviousScales);
   const btnConsult = $("btnConsult");
   if (btnConsult) btnConsult.addEventListener("click", openConsultModal);
+  const btnManageOfficers = $("btnManageOfficers");
+  if (btnManageOfficers) btnManageOfficers.addEventListener("click", openManageOfficers);
+  $("manageOfficersClose").addEventListener("click", closeManageOfficers);
+  $("manageOfficersAdd").addEventListener("click", openOfficerAdd);
+  $("officerFormCancel").addEventListener("click", resetOfficerForm);
+  $("officerFormSave").addEventListener("click", saveOfficerForm);
+  $("manageOfficersModal").addEventListener("click", (e) => { if (e.target && e.target.id === "manageOfficersModal") closeManageOfficers(); });
+  $("officerName").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); saveOfficerForm(); } });
   $("previousScalesClose").addEventListener("click", closePreviousScales);
   $("previousScalesModal").addEventListener("click", (e) => { if (e.target && e.target.id === "previousScalesModal") closePreviousScales(); });
   $("consultClose").addEventListener("click", closeConsultModal);

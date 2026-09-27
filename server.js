@@ -58,12 +58,12 @@ const DB_PASSWORD = (process.env.DB_PASSWORD || "app").trim();
 const DB_NAME = (process.env.DB_NAME || process.env.DB_DATABASE || "escala").trim();
 
 // ===============================
-// OFICIAIS (lista fixa)
+// OFICIAIS (cadastro inicial; após a primeira execução, a lista ativa vem do MySQL)
 // - canonical_name: chave única do oficial (sem posto)
 // - rank: posto/graduação a exibir
 // - name: nome completo a exibir
 // ===============================
-const OFFICERS = [
+const DEFAULT_OFFICERS = [
   { canonical_name: "Helder Antonio de Paula", rank: "Ten Cel PM", name: "Helder Antonio de Paula", aliases: ["Helder"] },
   { canonical_name: "Ricardo Santos Medeiros", rank: "Maj PM", name: "Ricardo Santos Medeiros", aliases: ["Medeiros"] },
   { canonical_name: "Carlos Bordim Neto", rank: "Maj PM", name: "Carlos Bordim Neto", aliases: ["Bordim"] },
@@ -85,7 +85,11 @@ const OFFICERS = [
   { canonical_name: "Jose Sebastiao dos Santos Neto", rank: "Asp Of PM", name: "Jose Sebastiao dos Santos Neto", aliases: ["Neto"] },
   { canonical_name: "Lenise Helena Tragante de Souza Cristo", rank: "Asp Of PM", name: "Lenise Helena Tragante de Souza Cristo", aliases: ["Tragante"] },
 ];
-            
+
+// Lista ativa em memória. É carregada da tabela officers na inicialização e
+// recarregada após inclusão, edição ou exclusão pelo gerenciamento de oficiais.
+let OFFICERS = DEFAULT_OFFICERS.map((o, index) => ({ ...o, position: index + 1 }));
+
 // override visual para postos (Ten Dent) — garante exibição correta no state e no PDF
 function fixDentRanks(list) {
   return (Array.isArray(list) ? list : []).map(o => {
@@ -104,6 +108,13 @@ const ADMIN_NAMES = new Set([
   "Ricardo Santos Medeiros",
   "Marcio Saito Essaki",
   "Iuri Filipe dos Santos",
+  "Daniel Alves de Siqueira",
+]);
+
+// Gerenciamento do cadastro de Oficiais: acesso restrito aos três responsáveis.
+const OFFICER_MANAGER_NAMES = new Set([
+  "Alberto Franzini Neto",
+  "Marcio Saito Essaki",
   "Daniel Alves de Siqueira",
 ]);
 
@@ -351,6 +362,15 @@ function canViewAuditName(canonicalName) {
   return key === normKey("Alberto Franzini Neto") || key === normKey("Franzini") || key.includes("franzini");
 }
 
+function canManageOfficersName(canonicalName) {
+  const key = normKey(canonicalName);
+  if (!key) return false;
+  for (const name of OFFICER_MANAGER_NAMES) {
+    if (key === normKey(name)) return true;
+  }
+  return false;
+}
+
 function resolveP1UserFromInput(input) {
   const key = normKey(input);
   return key ? (P1_USER_KEYS.get(key) || null) : null;
@@ -476,6 +496,36 @@ function applyAutoFill(st) {
 // ===============================
 // SCHEMA / STATE
 // ===============================
+async function reloadOfficers(conn = null) {
+  let rows;
+  if (conn) {
+    [rows] = await conn.query(
+      "SELECT id, position, canonical_name, rank, name, aliases_json FROM officers ORDER BY position ASC, id ASC"
+    );
+  } else {
+    rows = await safeQuery(
+      "SELECT id, position, canonical_name, rank, name, aliases_json FROM officers ORDER BY position ASC, id ASC"
+    );
+  }
+
+  OFFICERS = (rows || []).map((row, index) => {
+    let aliases = [];
+    try {
+      const parsed = safeJsonParse(row.aliases_json || "[]");
+      aliases = Array.isArray(parsed) ? parsed.filter(Boolean) : [];
+    } catch (_e) {}
+    return {
+      id: Number(row.id),
+      position: Number(row.position || (index + 1)),
+      canonical_name: fixText(row.canonical_name),
+      rank: fixText(row.rank),
+      name: fixText(row.name),
+      aliases,
+    };
+  });
+  return OFFICERS;
+}
+
 async function ensureSchema() {
   const conn = await pool.getConnection();
   try {
@@ -492,6 +542,18 @@ async function ensureSchema() {
       must_change TINYINT(1) NOT NULL DEFAULT 1,
       created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
       updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;`);
+
+    await conn.query(`CREATE TABLE IF NOT EXISTS officers (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      position INT NOT NULL,
+      canonical_name VARCHAR(255) NOT NULL UNIQUE,
+      rank VARCHAR(80) NOT NULL,
+      name VARCHAR(255) NOT NULL,
+      aliases_json TEXT NULL,
+      created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      UNIQUE KEY uniq_officer_position (position)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;`);
 
     await conn.query(`CREATE TABLE IF NOT EXISTS action_logs (
@@ -577,6 +639,20 @@ await conn.query(`CREATE TABLE IF NOT EXISTS escala_change_log (
   INDEX idx_data (data)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;`);
 
+
+    // Na primeira implantação, migra a lista fixa atual para o cadastro persistente.
+    const [officerCountRows] = await conn.query("SELECT COUNT(*) AS total FROM officers");
+    const officerTotal = Number((officerCountRows[0] && officerCountRows[0].total) || 0);
+    if (!officerTotal) {
+      for (let i = 0; i < DEFAULT_OFFICERS.length; i++) {
+        const off = DEFAULT_OFFICERS[i];
+        await conn.query(
+          "INSERT INTO officers (position, canonical_name, rank, name, aliases_json) VALUES (?, ?, ?, ?, ?)",
+          [i + 1, off.canonical_name, off.rank, off.name, JSON.stringify(Array.isArray(off.aliases) ? off.aliases : [])]
+        );
+      }
+    }
+    await reloadOfficers(conn);
 
     const [rows] = await conn.query("SELECT id FROM state_store WHERE id=1 LIMIT 1");
     if (!rows.length) {
@@ -902,6 +978,11 @@ function buildInitialHistoricalSnapshot() {
     notes,
     notes_meta: {},
     assignment_meta: {},
+    officers: DEFAULT_OFFICERS.map((o, index) => ({
+      ...o,
+      position: index + 1,
+      aliases: Array.isArray(o.aliases) ? o.aliases.slice() : [],
+    })),
     read_only: true,
     original: true,
     frozen_at: "2026-09-20T23:59:59.000Z",
@@ -1275,10 +1356,11 @@ function renderFrozenScalePdf(res, st, filename = "escala_anterior_original.pdf"
   }
   doc.moveTo(left, top + 14).lineTo(left + colWName + colWDay * dates.length, top + 14).stroke();
 
+  const frozenOfficers = Array.isArray(st.officers) && st.officers.length ? st.officers : OFFICERS;
   let y = top + 18;
   doc.fontSize(8);
-  for (let offIndex = 0; offIndex < OFFICERS.length; offIndex++) {
-    const off = OFFICERS[offIndex];
+  for (let offIndex = 0; offIndex < frozenOfficers.length; offIndex++) {
+    const off = frozenOfficers[offIndex];
     const label = `${offIndex + 1}. ${fixText(off.rank)} ${officerNameNoAccents(off.name)}`;
     doc.text(label, left, y, { width: colWName, align: "left" });
     for (let i = 0; i < dates.length; i++) {
@@ -1309,7 +1391,7 @@ function renderFrozenScalePdf(res, st, filename = "escala_anterior_original.pdf"
   const noteEntries = [];
   for (const key of Object.keys(notes)) {
     const [canonical, iso] = key.split("|");
-    const off = OFFICERS.find(o => o.canonical_name === canonical);
+    const off = frozenOfficers.find(o => o.canonical_name === canonical);
     if (!off) continue;
     const code = assignments[key] ? String(assignments[key]) : "";
     if (code !== "OUTROS" && !/\*$/.test(code)) continue;
@@ -1455,6 +1537,7 @@ app.post("/api/login", async (req, res) => {
       is_readonly: false,
       is_p1_editor: isP1,
       can_view_audit: isP1 ? false : canViewAuditName(loginCanonical),
+      can_manage_officers: isP1 ? false : canManageOfficersName(loginCanonical),
       must_change: !!userRow.must_change,
     };
 
@@ -1503,6 +1586,7 @@ app.post("/api/change_password", authRequired(true), async (req, res) => {
       is_readonly: !!req.user.is_readonly,
       is_p1_editor: !!req.user.is_p1_editor,
       can_view_audit: !!req.user.can_view_audit || canViewAuditName(req.user.canonical_name),
+      can_manage_officers: canManageOfficersName(req.user.canonical_name),
       must_change: false,
     };
     const token = signToken(refreshedMe);
@@ -1591,6 +1675,7 @@ app.get("/api/state", authRequired(true), async (req, res) => {
         is_readonly: !!req.user.is_readonly,
         is_p1_editor: !!req.user.is_p1_editor,
         can_view_audit: canViewAuditName(req.user.canonical_name),
+        can_manage_officers: canManageOfficersName(req.user.canonical_name),
       },
       meta: {
         system_name: fixText(SYSTEM_NAME),
@@ -1617,7 +1702,7 @@ app.get("/api/state", authRequired(true), async (req, res) => {
       const holidays = getHolidaysForWeek(st.dates);
       return res.json({
         ok: true,
-        me: { canonical_name: req.user.canonical_name, is_admin: req.user.is_admin, is_readonly: !!req.user.is_readonly, is_p1_editor: !!req.user.is_p1_editor, can_view_audit: canViewAuditName(req.user.canonical_name) },
+        me: { canonical_name: req.user.canonical_name, is_admin: req.user.is_admin, is_readonly: !!req.user.is_readonly, is_p1_editor: !!req.user.is_p1_editor, can_view_audit: canViewAuditName(req.user.canonical_name), can_manage_officers: canManageOfficersName(req.user.canonical_name) },
         meta: {
           system_name: fixText(SYSTEM_NAME),
           footer_mark: `© ${COPYRIGHT_YEAR} - ${fixText(AUTHOR)}`,
@@ -1706,6 +1791,224 @@ app.get("/api/change_logs", authRequired(true), async (req, res) => {
   }
 });
 
+
+function sanitizeOfficerName(value) {
+  return officerNameNoAccents(String(value || "")).trim().replace(/\s+/g, " ");
+}
+
+function sanitizeOfficerRank(value) {
+  return fixText(String(value || "")).trim().replace(/\s+/g, " ");
+}
+
+function renameStateOfficerKeys(st, oldCanonical, newCanonical) {
+  if (!st || !oldCanonical || !newCanonical || oldCanonical === newCanonical) return;
+  for (const field of ["assignments", "notes", "notes_meta", "assignment_meta", "auto_assignments"]) {
+    const obj = st[field];
+    if (!obj || typeof obj !== "object") continue;
+    for (const key of Object.keys(obj)) {
+      if (!key.startsWith(`${oldCanonical}|`)) continue;
+      const suffix = key.slice(oldCanonical.length);
+      obj[`${newCanonical}${suffix}`] = obj[key];
+      delete obj[key];
+    }
+  }
+}
+
+function removeStateOfficerKeys(st, canonical) {
+  if (!st || !canonical) return;
+  for (const field of ["assignments", "notes", "notes_meta", "assignment_meta", "auto_assignments"]) {
+    const obj = st[field];
+    if (!obj || typeof obj !== "object") continue;
+    for (const key of Object.keys(obj)) {
+      if (key.startsWith(`${canonical}|`)) delete obj[key];
+    }
+  }
+}
+
+async function persistCurrentOfficerList(mutator = null) {
+  const rows = await safeQuery("SELECT payload FROM state_store WHERE id=1 LIMIT 1");
+  let st = rows.length ? safeJsonParse(rows[0].payload) : null;
+  if (!st) st = buildFreshState();
+  if (typeof mutator === "function") mutator(st);
+  st.officers = OFFICERS.map(o => ({ ...o, aliases: Array.isArray(o.aliases) ? o.aliases.slice() : [] }));
+  applyAutoFill(st);
+  st.updated_at = new Date().toISOString();
+  await safeQuery(
+    "INSERT INTO state_store (id, payload) VALUES (1, ?) ON DUPLICATE KEY UPDATE payload=VALUES(payload), updated_at=CURRENT_TIMESTAMP",
+    [JSON.stringify(st)]
+  );
+  return st;
+}
+
+function requireOfficerManager(req, res) {
+  if (!canManageOfficersName(req.user && req.user.canonical_name)) {
+    auditEvent(req, {
+      event_type: "tentativa_gerenciar_oficiais_sem_permissao",
+      actor_name: req.user && req.user.canonical_name ? req.user.canonical_name : null,
+      success: false,
+      http_status: 403,
+      details: "acesso negado ao gerenciamento de oficiais",
+    }).catch(() => {});
+    res.status(403).json({ error: "sem permissão para gerenciar oficiais" });
+    return false;
+  }
+  return true;
+}
+
+app.get("/api/officers_manage", authRequired(false), async (req, res) => {
+  try {
+    if (!requireOfficerManager(req, res)) return;
+    await reloadOfficers();
+    return res.json({
+      ok: true,
+      officers: OFFICERS.map(o => ({ id: o.id, position: o.position, canonical_name: o.canonical_name, rank: o.rank, name: officerNameNoAccents(o.name) })),
+    });
+  } catch (err) {
+    return res.status(500).json({ error: "erro ao carregar oficiais", details: err.message });
+  }
+});
+
+app.post("/api/officers_manage", authRequired(false), async (req, res) => {
+  const actor = req.user && req.user.canonical_name ? req.user.canonical_name : "";
+  if (!requireOfficerManager(req, res)) return;
+
+  const rank = sanitizeOfficerRank(req.body && req.body.rank);
+  const name = sanitizeOfficerName(req.body && req.body.name);
+  const position = Number(req.body && req.body.position);
+  if (!rank || rank.length > 80) return res.status(400).json({ error: "informe um posto válido" });
+  if (!name || name.length > 255) return res.status(400).json({ error: "informe o nome do Oficial" });
+  if (!Number.isInteger(position) || position < 1 || position > OFFICERS.length + 1) return res.status(400).json({ error: "posição inválida" });
+  if (OFFICERS.some(o => normKey(o.canonical_name) === normKey(name))) return res.status(409).json({ error: "Oficial já cadastrado" });
+
+  const conn = await pool.getConnection();
+  try {
+    await conn.beginTransaction();
+    await conn.query("UPDATE officers SET position=position+1 WHERE position>=? ORDER BY position DESC", [position]);
+    await conn.query(
+      "INSERT INTO officers (position, canonical_name, rank, name, aliases_json) VALUES (?, ?, ?, ?, ?)",
+      [position, name, rank, name, "[]"]
+    );
+    const hash = await bcrypt.hash(DEFAULT_PASSWORD, 10);
+    await conn.query(
+      "INSERT INTO users (canonical_name, password_hash, must_change) VALUES (?, ?, 1) ON DUPLICATE KEY UPDATE password_hash=VALUES(password_hash), must_change=1",
+      [name, hash]
+    );
+    await conn.commit();
+  } catch (err) {
+    try { await conn.rollback(); } catch (_e) {}
+    return res.status(500).json({ error: "erro ao incluir Oficial", details: err.message });
+  } finally {
+    conn.release();
+  }
+
+  try {
+    await reloadOfficers();
+    await persistCurrentOfficerList();
+    await logAction(actor, name, "officer_add", `posição ${position} | ${rank} ${name}`);
+    await auditEvent(req, { event_type: "oficial_incluido", actor_name: actor, target_name: name, field_name: "cadastro_oficial", after_value: `${position}. ${rank} ${name}`, success: true, http_status: 200 });
+    return res.json({ ok: true });
+  } catch (err) {
+    return res.status(500).json({ error: "Oficial incluído, mas houve erro ao atualizar a escala", details: err.message });
+  }
+});
+
+app.put("/api/officers_manage/:id", authRequired(false), async (req, res) => {
+  const actor = req.user && req.user.canonical_name ? req.user.canonical_name : "";
+  if (!requireOfficerManager(req, res)) return;
+  const id = Number(req.params.id);
+  const current = OFFICERS.find(o => Number(o.id) === id);
+  if (!current) return res.status(404).json({ error: "Oficial não localizado" });
+
+  const rank = sanitizeOfficerRank(req.body && req.body.rank);
+  const name = sanitizeOfficerName(req.body && req.body.name);
+  if (!rank || rank.length > 80) return res.status(400).json({ error: "informe um posto válido" });
+  if (!name || name.length > 255) return res.status(400).json({ error: "informe o nome do Oficial" });
+  if (OFFICERS.some(o => Number(o.id) !== id && normKey(o.canonical_name) === normKey(name))) return res.status(409).json({ error: "já existe outro Oficial com esse nome" });
+
+  const oldCanonical = current.canonical_name;
+  const nameChanged = normKey(oldCanonical) !== normKey(name);
+  const conn = await pool.getConnection();
+  try {
+    await conn.beginTransaction();
+    await conn.query(
+      "UPDATE officers SET canonical_name=?, rank=?, name=?, aliases_json=? WHERE id=?",
+      [name, rank, name, nameChanged ? "[]" : JSON.stringify(Array.isArray(current.aliases) ? current.aliases : []), id]
+    );
+
+    if (nameChanged) {
+      const stateRows = await conn.query("SELECT payload FROM state_store WHERE id=1 LIMIT 1");
+      const currentState = stateRows[0] && stateRows[0].length ? safeJsonParse(stateRows[0][0].payload) : null;
+      if (currentState && currentState.period) {
+        await conn.query(
+          "UPDATE escala_lancamentos SET oficial=? WHERE oficial=? AND data BETWEEN ? AND ?",
+          [name, oldCanonical, currentState.period.start, currentState.period.end]
+        );
+      }
+      await conn.query("DELETE FROM users WHERE canonical_name=?", [oldCanonical]);
+      const hash = await bcrypt.hash(DEFAULT_PASSWORD, 10);
+      await conn.query(
+        "INSERT INTO users (canonical_name, password_hash, must_change) VALUES (?, ?, 1) ON DUPLICATE KEY UPDATE password_hash=VALUES(password_hash), must_change=1",
+        [name, hash]
+      );
+    }
+    await conn.commit();
+  } catch (err) {
+    try { await conn.rollback(); } catch (_e) {}
+    return res.status(500).json({ error: "erro ao editar Oficial", details: err.message });
+  } finally {
+    conn.release();
+  }
+
+  try {
+    await reloadOfficers();
+    await persistCurrentOfficerList(st => { if (nameChanged) renameStateOfficerKeys(st, oldCanonical, name); });
+    await logAction(actor, name, "officer_edit", `${current.position}. ${current.rank} ${oldCanonical} -> ${rank} ${name}`);
+    await auditEvent(req, { event_type: "oficial_editado", actor_name: actor, target_name: name, field_name: "cadastro_oficial", before_value: `${current.position}. ${current.rank} ${oldCanonical}`, after_value: `${current.position}. ${rank} ${name}`, success: true, http_status: 200 });
+    return res.json({ ok: true, password_reset: nameChanged });
+  } catch (err) {
+    return res.status(500).json({ error: "Oficial editado, mas houve erro ao atualizar a escala", details: err.message });
+  }
+});
+
+app.delete("/api/officers_manage/:id", authRequired(false), async (req, res) => {
+  const actor = req.user && req.user.canonical_name ? req.user.canonical_name : "";
+  if (!requireOfficerManager(req, res)) return;
+  const id = Number(req.params.id);
+  const current = OFFICERS.find(o => Number(o.id) === id);
+  if (!current) return res.status(404).json({ error: "Oficial não localizado" });
+
+  const conn = await pool.getConnection();
+  try {
+    await conn.beginTransaction();
+    const [stateRows] = await conn.query("SELECT payload FROM state_store WHERE id=1 LIMIT 1");
+    const currentState = stateRows.length ? safeJsonParse(stateRows[0].payload) : null;
+    if (currentState && currentState.period) {
+      await conn.query(
+        "DELETE FROM escala_lancamentos WHERE oficial=? AND data BETWEEN ? AND ?",
+        [current.canonical_name, currentState.period.start, currentState.period.end]
+      );
+    }
+    await conn.query("DELETE FROM users WHERE canonical_name=?", [current.canonical_name]);
+    await conn.query("DELETE FROM officers WHERE id=?", [id]);
+    await conn.query("UPDATE officers SET position=position-1 WHERE position>? ORDER BY position ASC", [current.position]);
+    await conn.commit();
+  } catch (err) {
+    try { await conn.rollback(); } catch (_e) {}
+    return res.status(500).json({ error: "erro ao excluir Oficial", details: err.message });
+  } finally {
+    conn.release();
+  }
+
+  try {
+    await reloadOfficers();
+    await persistCurrentOfficerList(st => removeStateOfficerKeys(st, current.canonical_name));
+    await logAction(actor, current.canonical_name, "officer_delete", `${current.position}. ${current.rank} ${current.name}`);
+    await auditEvent(req, { event_type: "oficial_excluido", actor_name: actor, target_name: current.canonical_name, field_name: "cadastro_oficial", before_value: `${current.position}. ${current.rank} ${current.name}`, after_value: "EXCLUÍDO", success: true, http_status: 200 });
+    return res.json({ ok: true });
+  } catch (err) {
+    return res.status(500).json({ error: "Oficial excluído, mas houve erro ao atualizar a escala", details: err.message });
+  }
+});
 
 // auditoria operacional e de segurança (somente Franzini)
 app.get("/api/audit_logs", authRequired(true), async (req, res) => {
@@ -2071,8 +2374,9 @@ function weekdayPtUpper(iso) {
 function buildDailySituationWhatsAppText(st, iso) {
   const assignments = st && st.assignments && typeof st.assignments === "object" ? st.assignments : {};
   const notes = st && st.notes && typeof st.notes === "object" ? st.notes : {};
-  const startIndex = OFFICERS.findIndex(o => o.canonical_name === "Marcio Saito Essaki");
-  const officers = OFFICERS.slice(startIndex >= 0 ? startIndex : 0);
+  const sourceOfficers = Array.isArray(st && st.officers) && st.officers.length ? st.officers : OFFICERS;
+  const startIndex = sourceOfficers.findIndex(o => o.canonical_name === "Marcio Saito Essaki");
+  const officers = sourceOfficers.slice(startIndex >= 0 ? startIndex : 0);
 
   const [yyyy, mm, dd] = String(iso || "").split("-");
   const months = ["JAN","FEV","MAR","ABR","MAI","JUN","JUL","AGO","SET","OUT","NOV","DEZ"];
@@ -2115,8 +2419,9 @@ function renderDailySituationPdf(res, st, iso) {
 
   const assignments = st.assignments && typeof st.assignments === "object" ? st.assignments : {};
   const notes = st.notes && typeof st.notes === "object" ? st.notes : {};
-  const startIndex = OFFICERS.findIndex(o => o.canonical_name === "Marcio Saito Essaki");
-  const officers = OFFICERS.slice(startIndex >= 0 ? startIndex : 0);
+  const sourceOfficers = Array.isArray(st && st.officers) && st.officers.length ? st.officers : OFFICERS;
+  const startIndex = sourceOfficers.findIndex(o => o.canonical_name === "Marcio Saito Essaki");
+  const officers = sourceOfficers.slice(startIndex >= 0 ? startIndex : 0);
 
   res.setHeader("Content-Type", "application/pdf");
   res.setHeader("Content-Disposition", `inline; filename="situacao_do_dia_${iso}.pdf"`);
@@ -2498,9 +2803,10 @@ const lastStamp = fmtDDMMYYYYHHmm(lastAt);
 
     let y = top + 18;
 
+    const currentOfficers = Array.isArray(st.officers) && st.officers.length ? st.officers : OFFICERS;
     doc.fontSize(8);
-    for (let offIndex = 0; offIndex < OFFICERS.length; offIndex++) {
-      const off = OFFICERS[offIndex];
+    for (let offIndex = 0; offIndex < currentOfficers.length; offIndex++) {
+      const off = currentOfficers[offIndex];
       const label = `${offIndex + 1}. ${fixText(off.rank)} ${officerNameNoAccents(off.name)}`;
       doc.text(label, left, y, { width: colWName, align: "left" });
       doc.moveTo(left, y+12).lineTo(left+colWName, y+12).stroke();
@@ -2550,7 +2856,7 @@ const lastStamp = fmtDDMMYYYYHHmm(lastAt);
     const noteEntries = [];
     for (const k of Object.keys(notes || {})) {
       const [canonical, iso] = k.split("|");
-      const off = OFFICERS.find(o => o.canonical_name === canonical);
+      const off = currentOfficers.find(o => o.canonical_name === canonical);
       if (!off) continue;
       const code = assignments[k] ? String(assignments[k]) : "";
       // só imprime descrições para OUTROS e códigos com asterisco

@@ -18,6 +18,7 @@
       <button id="btnDailySituation" class="btn">SITUAÇÃO DO DIA VIGENTE</button>
       <button id="btnPreviousScales" class="btn">ESCALAS ANTERIORES</button>
       <button id="btnConsult" class="btn">CONSULTAS</button>
+      <button id="btnManageOfficers" class="btn" style="display:none;">GERENCIAR OFICIAIS</button>
       <button id="btnPdf" class="btn">PDF ATUAL</button>
       <button id="btnLogout" class="btn btn--ghost">sair</button>
     </div>
@@ -176,6 +177,63 @@
       <div id="previousScalesList" class="historyButtons"></div>
       <div class="modal__actions">
         <button id="previousScalesClose" class="btn btn--ghost-dark" type="button">fechar</button>
+      </div>
+    </div>
+  </div>
+
+
+  <!-- modal: gerenciamento de oficiais -->
+  <div id="manageOfficersModal" class="modal" style="display:none;">
+    <div class="modal__card modal__card--officers">
+      <div class="officerManageHeader">
+        <div>
+          <h3>GERENCIAR OFICIAIS</h3>
+          <div class="muted">Inclusão e exclusão renumeram automaticamente a escala. A edição altera somente posto e nome.</div>
+        </div>
+        <button id="manageOfficersAdd" class="btn btn--primary" type="button">INCLUIR OFICIAL</button>
+      </div>
+
+      <div id="manageOfficersMsg" class="muted officerManageMsg"></div>
+      <div class="officerManageTableWrap">
+        <table class="hist officerManageTable">
+          <thead><tr><th>Nº</th><th>POSTO</th><th>NOME</th><th>AÇÕES</th></tr></thead>
+          <tbody id="manageOfficersList"></tbody>
+        </table>
+      </div>
+
+      <div id="officerFormBox" class="officerFormBox" style="display:none;">
+        <h4 id="officerFormTitle">INCLUIR OFICIAL</h4>
+        <div class="officerFormGrid">
+          <label>
+            POSTO
+            <select id="officerRank">
+              <option value="Ten Cel PM">Ten Cel PM</option>
+              <option value="Maj PM">Maj PM</option>
+              <option value="Cap PM">Cap PM</option>
+              <option value="1º Ten Dent PM">1º Ten Dent PM</option>
+              <option value="1º Ten PM">1º Ten PM</option>
+              <option value="2º Ten PM">2º Ten PM</option>
+              <option value="Asp Of PM">Asp Of PM</option>
+            </select>
+          </label>
+          <label>
+            NOME
+            <input id="officerName" maxlength="255" autocomplete="off" />
+          </label>
+          <label id="officerPositionLabel">
+            POSIÇÃO NA ESCALA
+            <select id="officerPosition"></select>
+          </label>
+        </div>
+        <div id="officerFormMsg" class="muted officerManageMsg"></div>
+        <div class="modal__actions">
+          <button id="officerFormCancel" class="btn btn--ghost-dark" type="button">cancelar</button>
+          <button id="officerFormSave" class="btn btn--primary" type="button">salvar</button>
+        </div>
+      </div>
+
+      <div class="modal__actions">
+        <button id="manageOfficersClose" class="btn btn--ghost-dark" type="button">fechar</button>
       </div>
     </div>
   </div>
