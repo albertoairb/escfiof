@@ -500,11 +500,11 @@ async function reloadOfficers(conn = null) {
   let rows;
   if (conn) {
     [rows] = await conn.query(
-      "SELECT id, position, canonical_name, rank, name, aliases_json FROM officers ORDER BY position ASC, id ASC"
+      "SELECT id, position, canonical_name, officer_rank, name, aliases_json FROM officers ORDER BY position ASC, id ASC"
     );
   } else {
     rows = await safeQuery(
-      "SELECT id, position, canonical_name, rank, name, aliases_json FROM officers ORDER BY position ASC, id ASC"
+      "SELECT id, position, canonical_name, officer_rank, name, aliases_json FROM officers ORDER BY position ASC, id ASC"
     );
   }
 
@@ -518,7 +518,7 @@ async function reloadOfficers(conn = null) {
       id: Number(row.id),
       position: Number(row.position || (index + 1)),
       canonical_name: fixText(row.canonical_name),
-      rank: fixText(row.rank),
+      rank: fixText(row.officer_rank),
       name: fixText(row.name),
       aliases,
     };
@@ -548,7 +548,7 @@ async function ensureSchema() {
       id INT AUTO_INCREMENT PRIMARY KEY,
       position INT NOT NULL,
       canonical_name VARCHAR(255) NOT NULL UNIQUE,
-      rank VARCHAR(80) NOT NULL,
+      officer_rank VARCHAR(80) NOT NULL,
       name VARCHAR(255) NOT NULL,
       aliases_json TEXT NULL,
       created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -647,7 +647,7 @@ await conn.query(`CREATE TABLE IF NOT EXISTS escala_change_log (
       for (let i = 0; i < DEFAULT_OFFICERS.length; i++) {
         const off = DEFAULT_OFFICERS[i];
         await conn.query(
-          "INSERT INTO officers (position, canonical_name, rank, name, aliases_json) VALUES (?, ?, ?, ?, ?)",
+          "INSERT INTO officers (position, canonical_name, officer_rank, name, aliases_json) VALUES (?, ?, ?, ?, ?)",
           [i + 1, off.canonical_name, off.rank, off.name, JSON.stringify(Array.isArray(off.aliases) ? off.aliases : [])]
         );
       }
@@ -1885,7 +1885,7 @@ app.post("/api/officers_manage", authRequired(false), async (req, res) => {
     await conn.beginTransaction();
     await conn.query("UPDATE officers SET position=position+1 WHERE position>=? ORDER BY position DESC", [position]);
     await conn.query(
-      "INSERT INTO officers (position, canonical_name, rank, name, aliases_json) VALUES (?, ?, ?, ?, ?)",
+      "INSERT INTO officers (position, canonical_name, officer_rank, name, aliases_json) VALUES (?, ?, ?, ?, ?)",
       [position, name, rank, name, "[]"]
     );
     const hash = await bcrypt.hash(DEFAULT_PASSWORD, 10);
@@ -1931,7 +1931,7 @@ app.put("/api/officers_manage/:id", authRequired(false), async (req, res) => {
   try {
     await conn.beginTransaction();
     await conn.query(
-      "UPDATE officers SET canonical_name=?, rank=?, name=?, aliases_json=? WHERE id=?",
+      "UPDATE officers SET canonical_name=?, officer_rank=?, name=?, aliases_json=? WHERE id=?",
       [name, rank, name, nameChanged ? "[]" : JSON.stringify(Array.isArray(current.aliases) ? current.aliases : []), id]
     );
 
