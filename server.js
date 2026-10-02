@@ -380,6 +380,13 @@ function isP1EditorName(canonicalName) {
   return !!resolveP1UserFromInput(canonicalName);
 }
 
+// Às sextas-feiras, os usuários do P/1 podem corrigir qualquer lançamento
+// da escala vigente, inclusive os realizados pelo próprio Oficial.
+// process.env.TZ é definido como America/Sao_Paulo no início do servidor.
+function isP1FullEditFriday() {
+  return new Date().getDay() === 5;
+}
+
 function officerRankValue(off) {
   const r = stripAccents(String((off && off.rank) || "")).toLowerCase();
   if (r.includes("ten cel")) return 1;
@@ -1656,13 +1663,14 @@ app.get("/api/state", authRequired(true), async (req, res) => {
 
     const p1_cell_editable = {};
     if (req.user.is_p1_editor) {
+      const p1FridayFullEdit = isP1FullEditFriday();
       for (const off of OFFICERS) {
         for (const iso of st.dates || []) {
           const key = `${off.canonical_name}|${iso}`;
           const code = String(assignments[key] || "").trim();
           const meta = assignment_meta[key] || {};
           const lastEditor = String(meta.updated_by || meta.created_by || "").trim();
-          p1_cell_editable[key] = !code || !!(st.auto_assignments && st.auto_assignments[key]) || isP1EditorName(lastEditor);
+          p1_cell_editable[key] = p1FridayFullEdit || !code || !!(st.auto_assignments && st.auto_assignments[key]) || isP1EditorName(lastEditor);
         }
       }
     }
@@ -2142,11 +2150,11 @@ app.put("/api/assignments", authRequired(false), async (req, res) => {
 
       const key = `${target}|${date}`;
       if (req.user.is_p1_editor) {
-        let allowedForP1 = false;
+        let allowedForP1 = isP1FullEditFriday();
         const currentCode = String((st.assignments && st.assignments[key]) || "").trim();
-        if (!currentCode || (st.auto_assignments && st.auto_assignments[key])) {
+        if (!allowedForP1 && (!currentCode || (st.auto_assignments && st.auto_assignments[key]))) {
           allowedForP1 = true;
-        } else {
+        } else if (!allowedForP1) {
           try {
             const ownerRows = await safeQuery(
               "SELECT created_by, updated_by FROM escala_lancamentos WHERE data=? AND oficial=? LIMIT 1",

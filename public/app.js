@@ -435,10 +435,6 @@ async function loadAuditLogs() {
     thN.textContent = "nome";
     trh.appendChild(thN);
 
-    const thSave = document.createElement("th");
-    thSave.textContent = "salvar";
-    trh.appendChild(thSave);
-
     for (const iso of state.dates) {
       const th = document.createElement("th");
       th.textContent = ddmmyyyy(iso);
@@ -459,22 +455,6 @@ async function loadAuditLogs() {
       const tdName = document.createElement("td");
       tdName.innerHTML = `<b>${offIndex + 1}. ${off.name}</b>`;
       tr.appendChild(tdName);
-
-      const editable = canEditOfficer(off.canonical_name);
-      const rowHasEditableCell = state.dates.some(iso => canEditCell(off.canonical_name, iso));
-
-      const tdSave = document.createElement("td");
-      const rowSave = document.createElement("button");
-      rowSave.type = "button";
-      rowSave.className = "btn btn--row-save";
-      rowSave.textContent = "SALVAR";
-      rowSave.disabled = !editable || !rowHasEditableCell;
-      rowSave.addEventListener("click", (e) => {
-        e.preventDefault();
-        requestAnimationFrame(() => save(off.canonical_name));
-      });
-      tdSave.appendChild(rowSave);
-      tr.appendChild(tdSave);
 
       for (const iso of state.dates) {
         const td = document.createElement("td");
