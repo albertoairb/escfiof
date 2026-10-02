@@ -235,6 +235,23 @@ function fmtDateCompact(iso){ const [y,m,d]=iso.split("-"); const mons=["JAN","F
     }
   }
 
+  function weekRangeLabel() {
+    if (!state.dates || !state.dates.length) return "";
+    const first = new Date(`${state.dates[0]}T00:00:00`);
+    const last = new Date(`${state.dates[state.dates.length - 1]}T00:00:00`);
+    const months = [
+      "JANEIRO", "FEVEREIRO", "MARÇO", "ABRIL", "MAIO", "JUNHO",
+      "JULHO", "AGOSTO", "SETEMBRO", "OUTUBRO", "NOVEMBRO", "DEZEMBRO"
+    ];
+    const firstDay = String(first.getDate()).padStart(2, "0");
+    const lastDay = String(last.getDate()).padStart(2, "0");
+    const sameMonth = first.getMonth() === last.getMonth() && first.getFullYear() === last.getFullYear();
+    if (sameMonth) {
+      return `${firstDay} A ${lastDay} DE ${months[last.getMonth()]} DE ${last.getFullYear()}`;
+    }
+    return `${firstDay} DE ${months[first.getMonth()]} A ${lastDay} DE ${months[last.getMonth()]} DE ${last.getFullYear()}`;
+  }
+
   function setLockMsg() {
     if (state.me && state.me.is_readonly) {
       $("lockMsg").textContent = "SOMENTE CONSULTA - ESTE USUÁRIO NÃO ALTERA A ESCALA.";
@@ -244,7 +261,10 @@ function fmtDateCompact(iso){ const [y,m,d]=iso.split("-"); const mons=["JAN","F
       $("lockMsg").textContent = "P/1 - PODE PREENCHER CAMPOS VAZIOS/AUTOPREENCHIDOS E ALTERAR LANÇAMENTOS FEITOS PELO P/1. LANÇAMENTOS DOS OFICIAIS FICAM PROTEGIDOS.";
       return;
     }
-    $("lockMsg").textContent = "EDIÇÃO LIBERADA - A ESCALA ATUAL PERMANECE EDITÁVEL.";
+    const week = weekRangeLabel();
+    $("lockMsg").textContent = week
+      ? `EDIÇÃO LIBERADA – SEMANA DE ${week}`
+      : "EDIÇÃO LIBERADA";
   }
 
   function setUserMsg() {
@@ -437,7 +457,8 @@ async function loadAuditLogs() {
 
     for (const iso of state.dates) {
       const th = document.createElement("th");
-      th.textContent = ddmmyyyy(iso);
+      th.textContent = String(iso).slice(8, 10);
+      th.title = ddmmyyyy(iso);
       trh.appendChild(th);
     }
     thead.appendChild(trh);
