@@ -387,7 +387,7 @@ async function loadAuditLogs() {
   const qName = $("auditName") ? String($("auditName").value || "").trim() : "";
   const dateFrom = $("auditDateFrom") ? String($("auditDateFrom").value || "").trim() : "";
   const dateTo = $("auditDateTo") ? String($("auditDateTo").value || "").trim() : "";
-  const params = new URLSearchParams({ limit: "300" });
+  const params = new URLSearchParams({ limit: "1000" });
   if (qName) params.set("name", qName);
   if (dateFrom) params.set("date_from", dateFrom);
   if (dateTo) params.set("date_to", dateTo);
@@ -400,27 +400,61 @@ async function loadAuditLogs() {
 
   const rows = Array.isArray(r.data && r.data.rows) ? r.data.rows : [];
   if (!rows.length) {
-    table.innerHTML = "<div class='muted'>sem registros.</div>";
+    table.innerHTML = "<div class='muted'>sem alterações registradas para o Oficial e período informados.</div>";
     return;
   }
 
   const esc = (v) => String(v == null ? "" : v).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
-  let html = "<table class='hist'><thead><tr><th>data/hora</th><th>evento</th><th>nome digitado</th><th>usuário</th><th>alvo</th><th>dia</th><th>campo</th><th>antes</th><th>depois</th><th>IP</th><th>dispositivo</th></tr></thead><tbody>";
+  const auditAction = (row) => {
+    const before = String(row.before_value || "").trim();
+    const after = String(row.after_value || "").trim();
+    if (String(row.field_name || "") === "observacao") {
+      if (!before && after) return "incluiu observação";
+      if (before && !after) return "removeu observação";
+      return "alterou observação";
+    }
+    if (!before && after) return "incluiu";
+    if (before && !after) return "removeu";
+    return "alterou";
+  };
+  const auditOrigin = (row) => {
+    const ua = String(row.user_agent || "");
+    let device = "dispositivo não identificado";
+    let browser = "";
+    if (/iphone/i.test(ua)) device = "iPhone";
+    else if (/ipad/i.test(ua)) device = "iPad";
+    else if (/android/i.test(ua)) device = "Android";
+    else if (/windows/i.test(ua)) device = "Windows";
+    else if (/macintosh|mac os x/i.test(ua)) device = "Mac";
+    else if (/linux/i.test(ua)) device = "Linux";
+
+    if (/edg\//i.test(ua)) browser = "Edge";
+    else if (/firefox\//i.test(ua)) browser = "Firefox";
+    else if (/crios\//i.test(ua)) browser = "Chrome";
+    else if (/chrome\//i.test(ua)) browser = "Chrome";
+    else if (/safari\//i.test(ua)) browser = "Safari";
+
+    const parts = [device];
+    if (browser) parts.push(browser);
+    if (row.ip) parts.push(`IP ${row.ip}`);
+    return parts.join(" • ");
+  };
+
+  let html = "<table class='hist'><thead><tr><th>quem fez</th><th>quando</th><th>Oficial</th><th>dia da escala</th><th>ação</th><th>opção anterior</th><th>opção nova</th><th>origem do acesso</th></tr></thead><tbody>";
   for (const row of rows) {
     const at = row.at ? ddmmyyyy_hhmm(row.at) : "";
     const day = row.scale_date ? ddmmyyyy(String(row.scale_date).slice(0,10).replaceAll('/','-')) : "";
+    const previous = String(row.before_value || "").trim() || "-";
+    const current = String(row.after_value || "").trim() || "-";
     html += "<tr>";
-    html += `<td>${esc(at)}</td>`;
-    html += `<td>${esc(row.event_type || "")}</td>`;
-    html += `<td>${esc(row.input_name || "")}</td>`;
     html += `<td>${esc(row.actor_name || "")}</td>`;
+    html += `<td>${esc(at)}</td>`;
     html += `<td>${esc(row.target_name || "")}</td>`;
     html += `<td>${esc(day)}</td>`;
-    html += `<td>${esc(row.field_name || "")}</td>`;
-    html += `<td>${esc(row.before_value || "")}</td>`;
-    html += `<td>${esc(row.after_value || "")}</td>`;
-    html += `<td>${esc(row.ip || "")}</td>`;
-    html += `<td>${esc(row.user_agent || "")}</td>`;
+    html += `<td>${esc(auditAction(row))}</td>`;
+    html += `<td>${esc(previous)}</td>`;
+    html += `<td>${esc(current)}</td>`;
+    html += `<td>${esc(auditOrigin(row))}</td>`;
     html += "</tr>";
   }
   html += "</tbody></table>";

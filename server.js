@@ -2043,23 +2043,29 @@ app.get("/api/audit_logs", authRequired(true), async (req, res) => {
     const params = [];
     let where = "1=1";
 
+    // Auditoria da escala: a busca por período considera o DIA DA ESCALA
+    // (scale_date), e não a data em que o log foi gravado. Assim, ao
+    // pesquisar um Oficial em uma semana, aparecem todas as alterações
+    // referentes àquela semana, mesmo que tenham sido lançadas antes.
+    where += " AND event_type = 'alteracao_feita' AND success = 1 AND scale_date IS NOT NULL";
+
     if (name) {
       const off = resolveOfficerFromInput(name);
       if (off) {
-        where += " AND (actor_name = ? OR target_name = ? OR input_name LIKE ?)";
-        params.push(off.canonical_name, off.canonical_name, `%${name}%`);
+        where += " AND target_name = ?";
+        params.push(off.canonical_name);
       } else {
-        where += " AND (actor_name LIKE ? OR target_name LIKE ? OR input_name LIKE ? OR details LIKE ?)";
-        params.push(`%${name}%`, `%${name}%`, `%${name}%`, `%${name}%`);
+        where += " AND target_name LIKE ?";
+        params.push(`%${name}%`);
       }
     }
 
     if (dateFrom) {
-      where += " AND DATE(CONVERT_TZ(at, '+00:00', '-03:00')) >= ?";
+      where += " AND scale_date >= ?";
       params.push(dateFrom);
     }
     if (dateTo) {
-      where += " AND DATE(CONVERT_TZ(at, '+00:00', '-03:00')) <= ?";
+      where += " AND scale_date <= ?";
       params.push(dateTo);
     }
 
