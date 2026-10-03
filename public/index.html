@@ -18,6 +18,7 @@
       <button id="btnDailySituation" class="btn">SITUAÇÃO DO DIA VIGENTE</button>
       <button id="btnPreviousScales" class="btn">ESCALAS ANTERIORES</button>
       <button id="btnConsult" class="btn">CONSULTAS</button>
+      <button id="btnExtraScales" class="btn" style="display:none;">ESCALAS EXTRAS</button>
       <button id="btnManageOfficers" class="btn" style="display:none;">GERENCIAR OFICIAIS</button>
       <button id="btnPdf" class="btn">PDF ATUAL</button>
       <button id="btnLogout" class="btn btn--ghost">sair</button>
@@ -73,6 +74,8 @@
         <button id="btnSave" class="btn btn--primary saveAllButton">SALVAR TODOS</button>
         <div class="muted" id="saveMsg"></div>
       </div>
+
+      <div id="coverageAlert" class="coverageAlert" style="display:none;"></div>
 
       <section class="referenceSection" aria-labelledby="legendTitle">
         <h2 id="legendTitle">LEGENDA DAS SITUAÇÕES</h2>
@@ -180,6 +183,46 @@
     </div>
   </div>
 
+
+  <!-- modal: escalas extras -->
+  <div id="extraScalesModal" class="modal" style="display:none;">
+    <div class="modal__card modal__card--extras">
+      <h3>ESCALAS EXTRAS</h3>
+      <div class="muted">Cole o texto mensal. O título do bloco define o tipo da escala; o posto do Oficial não limita a regra.</div>
+
+      <label>
+        MÊS/ANO DA ESCALA
+        <input id="extraReferenceMonth" type="month" />
+      </label>
+      <label>
+        TEXTO DA ESCALA
+        <textarea id="extraScalesText" rows="12" placeholder="Cole aqui os blocos de Oficial Superior de Sobreaviso e Oficial Supervisor Regional..."></textarea>
+      </label>
+
+      <div class="row row--actions extraScalesActions">
+        <button id="extraScalesPreview" class="btn btn--primary" type="button">GERAR PRÉVIA</button>
+        <div id="extraScalesMsg" class="muted"></div>
+      </div>
+
+      <div id="extraScalesPreviewBox" style="display:none;">
+        <div class="extraPreviewWrap">
+          <table class="hist extraPreviewTable">
+            <thead><tr><th>TIPO</th><th>DATA</th><th>OFICIAL</th><th>SITUAÇÃO</th><th>STATUS</th></tr></thead>
+            <tbody id="extraScalesPreviewRows"></tbody>
+          </table>
+        </div>
+        <label class="extraOverwriteLabel">
+          <input id="extraOverwriteConflicts" type="checkbox" />
+          AUTORIZAR SUBSTITUIÇÃO DOS CONFLITOS MOSTRADOS NA PRÉVIA
+        </label>
+        <button id="extraScalesApply" class="btn btn--primary" type="button">CONFIRMAR PREENCHIMENTO</button>
+      </div>
+
+      <div class="modal__actions">
+        <button id="extraScalesClose" class="btn btn--ghost-dark" type="button">fechar</button>
+      </div>
+    </div>
+  </div>
 
   <!-- modal: gerenciamento de oficiais -->
   <div id="manageOfficersModal" class="modal" style="display:none;">

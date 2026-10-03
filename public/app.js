@@ -17,6 +17,7 @@
     assignment_meta: {},
     p1_cell_editable: {},
     auto_assignments: {},
+    coverage_alerts: [],
     managedOfficers: [],
     officerFormMode: null,
     officerFormId: null,
@@ -626,10 +627,133 @@ async function loadAuditLogs() {
     table.appendChild(tbody);
   }
 
+
+  function renderCoverageAlerts() {
+    const box = $("coverageAlert");
+    if (!box) return;
+    const alerts = Array.isArray(state.coverage_alerts) ? state.coverage_alerts : [];
+    if (!alerts.length) {
+      box.style.display = "none";
+      box.innerHTML = "";
+      return;
+    }
+    box.style.display = "block";
+    box.innerHTML = `<strong>ALERTA DE CONFLITO DE CAPITÃES</strong>${alerts.map(a => `<div>${String(a.message || "")}</div>`).join("")}`;
+  }
+
+  function extraMonthDefault() {
+    const now = new Date();
+    return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+  }
+
+  function closeExtraScales() {
+    const modal = $("extraScalesModal");
+    if (modal) modal.style.display = "none";
+  }
+
+  function resetExtraPreview() {
+    const box = $("extraScalesPreviewBox");
+    const rows = $("extraScalesPreviewRows");
+    const apply = $("extraScalesApply");
+    if (box) box.style.display = "none";
+    if (rows) rows.innerHTML = "";
+    if (apply) apply.disabled = true;
+  }
+
+  function openExtraScales() {
+    if (!state.me || !(state.me.can_view_audit || state.me.is_p1_editor)) {
+      alert("Sem permissão para escalas extras.");
+      return;
+    }
+    if (!$("extraReferenceMonth").value) $("extraReferenceMonth").value = extraMonthDefault();
+    $("extraScalesMsg").textContent = "";
+    resetExtraPreview();
+    $("extraScalesModal").style.display = "flex";
+  }
+
+  function renderExtraPreview(data) {
+    const tbody = $("extraScalesPreviewRows");
+    const box = $("extraScalesPreviewBox");
+    const msg = $("extraScalesMsg");
+    const apply = $("extraScalesApply");
+    const rows = Array.isArray(data && data.rows) ? data.rows : [];
+    const warnings = Array.isArray(data && data.warnings) ? data.warnings : [];
+    tbody.innerHTML = "";
+    for (const row of rows) {
+      const tr = document.createElement("tr");
+      const status = row.status === "ready" ? "PRONTO"
+        : row.status === "same" ? "JÁ ESTÁ CORRETO"
+        : row.status === "conflict" ? `CONFLITO: ${row.existing_code || ""}`
+        : row.status === "protected" ? "ESCALA ANTERIOR PROTEGIDA"
+        : (row.message || "NÃO APLICÁVEL");
+      const values = [row.type_label || row.type || "", row.date ? ddmmyyyy(row.date) : "", row.officer || "", row.code || "", status];
+      for (const value of values) {
+        const td = document.createElement("td");
+        td.textContent = String(value || "");
+        tr.appendChild(td);
+      }
+      if (row.status === "conflict" || row.status === "invalid" || row.status === "protected") tr.classList.add("extraPreviewWarn");
+      tbody.appendChild(tr);
+    }
+    box.style.display = "block";
+    apply.disabled = !rows.some(r => r.status === "ready" || r.status === "conflict");
+    const ready = rows.filter(r => r.status === "ready").length;
+    const conflicts = rows.filter(r => r.status === "conflict").length;
+    const same = rows.filter(r => r.status === "same").length;
+    const protectedCount = rows.filter(r => r.status === "protected").length;
+    const parts = [`${ready} pronto(s)`];
+    if (conflicts) parts.push(`${conflicts} conflito(s)`);
+    if (same) parts.push(`${same} já correto(s)`);
+    if (protectedCount) parts.push(`${protectedCount} anterior(es) protegido(s)`);
+    if (warnings.length) parts.push(`${warnings.length} aviso(s)`);
+    msg.textContent = parts.join(" • ") + (warnings.length ? ` — ${warnings.join(" | ")}` : "");
+  }
+
+  async function previewExtraScales() {
+    const textValue = String($("extraScalesText").value || "").trim();
+    const referenceMonth = String($("extraReferenceMonth").value || "").trim();
+    if (!referenceMonth) { $("extraScalesMsg").textContent = "informe o mês/ano da escala."; return; }
+    if (!textValue) { $("extraScalesMsg").textContent = "cole o texto da escala extra."; return; }
+    $("extraScalesMsg").textContent = "interpretando...";
+    resetExtraPreview();
+    const r = await api("/api/extra_scales/preview", {
+      method: "POST",
+      body: JSON.stringify({ text: textValue, reference_month: referenceMonth }),
+      timeoutMs: 20000,
+    });
+    if (!r.ok) {
+      $("extraScalesMsg").textContent = (r.data && (r.data.error || r.data.details)) ? (r.data.error || r.data.details) : "erro ao gerar prévia";
+      return;
+    }
+    renderExtraPreview(r.data || {});
+  }
+
+  async function applyExtraScales() {
+    const textValue = String($("extraScalesText").value || "").trim();
+    const referenceMonth = String($("extraReferenceMonth").value || "").trim();
+    const overwrite = !!$("extraOverwriteConflicts").checked;
+    $("extraScalesApply").disabled = true;
+    $("extraScalesMsg").textContent = "aplicando...";
+    const r = await api("/api/extra_scales/apply", {
+      method: "POST",
+      body: JSON.stringify({ text: textValue, reference_month: referenceMonth, overwrite_conflicts: overwrite }),
+      timeoutMs: 30000,
+    });
+    if (!r.ok) {
+      $("extraScalesMsg").textContent = (r.data && (r.data.error || r.data.details)) ? (r.data.error || r.data.details) : "erro ao aplicar escalas extras";
+      $("extraScalesApply").disabled = false;
+      return;
+    }
+    $("extraScalesMsg").textContent = `${Number(r.data.applied || 0)} lançamento(s) aplicado(s); ${Number(r.data.skipped || 0)} não alterado(s).`;
+    await loadState();
+    await previewExtraScales();
+  }
+
   function resetToLogin(message = "") {
     state.token = null;
     state.me = null;
     state.meta = null;
+    state.coverage_alerts = [];
     state.pending.clear();
     setStoredToken("");
     show("loginBox", true);
@@ -668,6 +792,7 @@ async function loadAuditLogs() {
     state.assignment_meta = r.data.assignment_meta || {};
     state.p1_cell_editable = r.data.p1_cell_editable || {};
     state.auto_assignments = r.data.auto_assignments || {};
+    state.coverage_alerts = r.data.coverage_alerts || [];
     state.pending.clear();
 
     setHeader();
@@ -678,6 +803,7 @@ async function loadAuditLogs() {
     buildTable();
     buildOpsNotes();
     buildDescNotes();
+    renderCoverageAlerts();
 
     const saveRow = $("saveRow");
     if (saveRow) saveRow.style.display = (state.me && state.me.is_readonly) ? "none" : "";
@@ -685,6 +811,9 @@ async function loadAuditLogs() {
     if (dailyBtn) dailyBtn.style.display = "";
     const manageBtn = $("btnManageOfficers");
     if (manageBtn) manageBtn.style.display = canManageOfficers() ? "" : "none";
+    const extraBtn = $("btnExtraScales");
+    if (extraBtn) extraBtn.style.display =
+      (state.me && (state.me.can_view_audit || state.me.is_p1_editor)) ? "" : "none";
 
     // auditoria (somente Franzini)
     if (canViewAudit()) {
@@ -1212,6 +1341,14 @@ function logout() {
   if (btnPreviousScales) btnPreviousScales.addEventListener("click", openPreviousScales);
   const btnConsult = $("btnConsult");
   if (btnConsult) btnConsult.addEventListener("click", openConsultModal);
+  const btnExtraScales = $("btnExtraScales");
+  if (btnExtraScales) btnExtraScales.addEventListener("click", openExtraScales);
+  $("extraScalesClose").addEventListener("click", closeExtraScales);
+  $("extraScalesPreview").addEventListener("click", previewExtraScales);
+  $("extraScalesApply").addEventListener("click", applyExtraScales);
+  $("extraScalesText").addEventListener("input", resetExtraPreview);
+  $("extraReferenceMonth").addEventListener("change", resetExtraPreview);
+  $("extraScalesModal").addEventListener("click", (e) => { if (e.target && e.target.id === "extraScalesModal") closeExtraScales(); });
   const btnManageOfficers = $("btnManageOfficers");
   if (btnManageOfficers) btnManageOfficers.addEventListener("click", openManageOfficers);
   $("manageOfficersClose").addEventListener("click", closeManageOfficers);

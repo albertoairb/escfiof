@@ -471,6 +471,179 @@ function getHolidaysForWeek(weekDates) {
   return out;
 }
 
+
+function isHolidayISO(iso) {
+  return getHolidaysForWeek([iso]).some(h => h && h.date === iso);
+}
+
+function isCaptainCoverageMember(off) {
+  if (!off) return false;
+  const rank = stripAccents(String(off.rank || "")).toLowerCase();
+  if (rank.includes("cap")) return true;
+  return normKey(off.canonical_name) === normKey("Larissa Amadeu Leite") || normKey(off.name) === normKey("Larissa Amadeu Leite");
+}
+
+function calculateCaptainCoverageAlerts(officers, dates, assignments) {
+  const group = (Array.isArray(officers) ? officers : []).filter(isCaptainCoverageMember);
+  const out = [];
+  for (const iso of (Array.isArray(dates) ? dates : [])) {
+    const [y, m, d] = String(iso).split("-").map(Number);
+    if (!y || !m || !d) continue;
+    const dow = new Date(y, m - 1, d).getDay();
+    if (dow === 0 || dow === 6) continue;
+
+    const codes = group.map(off => String((assignments || {})[`${off.canonical_name}|${iso}`] || "").trim());
+    const hasExp = codes.includes("EXP");
+    if (hasExp) continue;
+    const hasMorning = codes.includes("MA");
+    const hasAfternoon = codes.includes("VE");
+    if (hasMorning && hasAfternoon) continue;
+
+    let missing = "manhã e tarde";
+    if (hasMorning && !hasAfternoon) missing = "tarde";
+    if (!hasMorning && hasAfternoon) missing = "manhã";
+    out.push({ date: iso, missing, message: `CONFLITO DE CAPITÃES: ${fmtDDMMYYYY(iso)} sem cobertura no período da ${missing}.` });
+  }
+  return out;
+}
+
+function normalizeExtraScaleHeading(line) {
+  const k = normKey(line);
+  if (k.includes("superior de sobreaviso")) return "SS";
+  if (k.includes("supervisor regional")) return "SR";
+  return null;
+}
+
+
+function resolveOfficerForExtraInput(input) {
+  const direct = resolveOfficerFromInput(input);
+  if (direct) return direct;
+  const target = stripRankFromLogin(input);
+  if (!target) return null;
+  const matches = OFFICERS.filter(off => {
+    const names = [off.canonical_name, off.name, ...(Array.isArray(off.aliases) ? off.aliases : [])]
+      .map(normKey)
+      .filter(Boolean);
+    return names.some(n => n === target || n.endsWith(` ${target}`) || n.split(" ").includes(target));
+  });
+  return matches.length === 1 ? matches[0] : null;
+}
+
+function parseExtraScalesText(text, referenceMonth) {
+  const ref = String(referenceMonth || "").trim();
+  const refMatch = /^(\d{4})-(\d{2})$/.exec(ref);
+  if (!refMatch) throw new Error("mês/ano de referência inválido");
+  const refYear = Number(refMatch[1]);
+  const refMonth = Number(refMatch[2]);
+  const lines = String(text || "").replace(/\r/g, "").split("\n");
+  const rows = [];
+  const warnings = [];
+  let currentType = null;
+
+  for (let i = 0; i < lines.length; i++) {
+    const raw = fixText(lines[i]).trim();
+    if (!raw) continue;
+    const heading = normalizeExtraScaleHeading(raw);
+    if (heading) {
+      currentType = heading;
+      continue;
+    }
+
+    const dm = /\b(\d{1,2})\/(\d{1,2})(?:\/(\d{2,4}))?\b/.exec(raw);
+    if (!dm) continue;
+    if (!currentType) {
+      warnings.push(`Linha ${i + 1}: data encontrada antes de um título reconhecido.`);
+      continue;
+    }
+
+    const day = Number(dm[1]);
+    const month = Number(dm[2]);
+    let year = dm[3] ? Number(dm[3]) : refYear;
+    if (year < 100) year += 2000;
+    if (month !== refMonth || year !== refYear) {
+      warnings.push(`Linha ${i + 1}: ${dm[0]} não pertence à competência ${String(refMonth).padStart(2,"0")}/${refYear}.`);
+      continue;
+    }
+    const dt = new Date(year, month - 1, day);
+    if (dt.getFullYear() !== year || dt.getMonth() !== month - 1 || dt.getDate() !== day) {
+      warnings.push(`Linha ${i + 1}: data inválida (${dm[0]}).`);
+      continue;
+    }
+    const iso = fmtYYYYMMDD(dt);
+
+    const parts = raw.split(/\s+(?:—|–|-)\s+/).map(x => x.trim()).filter(Boolean);
+    let candidate = parts.length >= 2 ? parts[parts.length - 1] : raw.slice((dm.index || 0) + dm[0].length).trim();
+    candidate = candidate.replace(/^[\s:;,.()-]+/, "").trim();
+    const off = resolveOfficerForExtraInput(candidate);
+    if (!off) {
+      warnings.push(`Linha ${i + 1}: Oficial não localizado (${candidate || raw}).`);
+      rows.push({ line: i + 1, raw, type: currentType, date: iso, officer: candidate || "", canonical_name: "", code: "", status: "invalid", message: "Oficial não localizado" });
+      continue;
+    }
+
+    let code = "SR";
+    if (currentType === "SS") {
+      const dow = dt.getDay();
+      code = (dow === 0 || dow === 6 || isHolidayISO(iso)) ? "SS" : "EXP_SS";
+    }
+    rows.push({
+      line: i + 1,
+      raw,
+      type: currentType,
+      type_label: currentType === "SS" ? "Oficial Superior de Sobreaviso" : "Oficial Supervisor Regional",
+      date: iso,
+      officer: officerNameNoAccents(off.name),
+      canonical_name: off.canonical_name,
+      code,
+      status: "ready",
+      message: "",
+    });
+  }
+
+  if (!rows.length && !warnings.length) warnings.push("Nenhuma linha de escala extra foi reconhecida.");
+  return { rows, warnings };
+}
+
+async function enrichExtraScalePreview(parsed) {
+  const currentWeek = getWeekRangeISO();
+  let currentState = null;
+  try { ({ st: currentState } = await getStateAutoReset()); } catch (_e) {}
+  const out = [];
+  for (const row of parsed.rows || []) {
+    const item = { ...row, existing_code: "", conflict: false };
+    if (!item.canonical_name || item.status === "invalid") {
+      out.push(item);
+      continue;
+    }
+    if (item.date < currentWeek.start) {
+      item.status = "protected";
+      item.message = "Data já pertence a escala anterior protegida";
+      out.push(item);
+      continue;
+    }
+
+    let existing = "";
+    if (currentState && Array.isArray(currentState.dates) && currentState.dates.includes(item.date)) {
+      existing = String((currentState.assignments || {})[`${item.canonical_name}|${item.date}`] || "").trim();
+    }
+    try {
+      const dbRows = await safeQuery("SELECT codigo FROM escala_lancamentos WHERE data=? AND oficial=? LIMIT 1", [item.date, item.canonical_name]);
+      if (dbRows.length) existing = normalizeCodeValue(dbRows[0].codigo) || existing;
+    } catch (_e) {}
+    item.existing_code = existing;
+    if (existing && existing !== item.code) {
+      item.status = "conflict";
+      item.conflict = true;
+      item.message = `Já existe ${existing}`;
+    } else if (existing === item.code) {
+      item.status = "same";
+      item.message = "Já está correto";
+    }
+    out.push(item);
+  }
+  return { rows: out, warnings: parsed.warnings || [] };
+}
+
 function autoCodeForOfficerDate(off, iso) {
   if (!isCapOrAbove(off)) return "";
   const [y, m, d] = iso.split("-").map(Number);
@@ -1065,6 +1238,8 @@ async function getStateAutoReset() {
     // lançamentos da semana corrente são limpos para iniciar a nova semana.
     if (st && st.period && (st.period.start || st.period.end)) {
       await savePreviousSnapshot(st);
+      // Descarta somente os lançamentos operacionais da semana já congelada.
+      // audit_logs e escala_change_log são históricos permanentes e NUNCA entram nesta limpeza.
       await safeQuery("DELETE FROM escala_lancamentos WHERE data BETWEEN ? AND ?", [st.period.start, st.period.end]);
     }
 
@@ -1630,6 +1805,10 @@ app.get("/api/state", authRequired(true), async (req, res) => {
         notes = built.notes;
         notes_meta = built.notes_meta || {};
         assignment_meta = built.assignment_meta || {};
+        // Lançamentos persistidos (inclusive ESCALAS EXTRAS futuras) prevalecem
+        // sobre o autopreenchimento e não devem permanecer marcados como automáticos.
+        st.auto_assignments = st.auto_assignments && typeof st.auto_assignments === "object" ? st.auto_assignments : {};
+        for (const key of Object.keys(built.assignments || {})) delete st.auto_assignments[key];
       }
     } catch (_e) {
       // se a tabela ainda não existir em algum ambiente, mantém state_store
@@ -1693,6 +1872,7 @@ app.get("/api/state", authRequired(true), async (req, res) => {
       },
       locked: false,
       holidays,
+      coverage_alerts: calculateCaptainCoverageAlerts(OFFICERS, st.dates, assignments),
       officers: fixDentRanks(OFFICERS).map(o => ({ ...o, rank: fixText(o.rank), name: officerNameNoAccents(o.name) })),
       dates: st.dates,
       codes: CODES,
@@ -1719,6 +1899,7 @@ app.get("/api/state", authRequired(true), async (req, res) => {
         },
         locked: false,
         holidays,
+        coverage_alerts: calculateCaptainCoverageAlerts(OFFICERS, st.dates, st.assignments || {}),
         officers: fixDentRanks(OFFICERS).map(o => ({ ...o, rank: fixText(o.rank), name: officerNameNoAccents(o.name) })),
         dates: st.dates,
         codes: CODES,
@@ -1948,8 +2129,8 @@ app.put("/api/officers_manage/:id", authRequired(false), async (req, res) => {
       const currentState = stateRows[0] && stateRows[0].length ? safeJsonParse(stateRows[0][0].payload) : null;
       if (currentState && currentState.period) {
         await conn.query(
-          "UPDATE escala_lancamentos SET oficial=? WHERE oficial=? AND data BETWEEN ? AND ?",
-          [name, oldCanonical, currentState.period.start, currentState.period.end]
+          "UPDATE escala_lancamentos SET oficial=? WHERE oficial=? AND data>=?",
+          [name, oldCanonical, currentState.period.start]
         );
       }
       await conn.query("DELETE FROM users WHERE canonical_name=?", [oldCanonical]);
@@ -1992,8 +2173,8 @@ app.delete("/api/officers_manage/:id", authRequired(false), async (req, res) => 
     const currentState = stateRows.length ? safeJsonParse(stateRows[0].payload) : null;
     if (currentState && currentState.period) {
       await conn.query(
-        "DELETE FROM escala_lancamentos WHERE oficial=? AND data BETWEEN ? AND ?",
-        [current.canonical_name, currentState.period.start, currentState.period.end]
+        "DELETE FROM escala_lancamentos WHERE oficial=? AND data>=?",
+        [current.canonical_name, currentState.period.start]
       );
     }
     await conn.query("DELETE FROM users WHERE canonical_name=?", [current.canonical_name]);
@@ -2015,6 +2196,126 @@ app.delete("/api/officers_manage/:id", authRequired(false), async (req, res) => 
     return res.json({ ok: true });
   } catch (err) {
     return res.status(500).json({ error: "Oficial excluído, mas houve erro ao atualizar a escala", details: err.message });
+  }
+});
+
+
+// ESCALAS EXTRAS: texto mensal -> prévia -> confirmação.
+// Acesso administrativo. O título do bloco define o tipo; o posto do Oficial não limita a regra.
+app.post("/api/extra_scales/preview", authRequired(false), async (req, res) => {
+  try {
+    if (!(canViewAuditName(req.user.canonical_name) || req.user.is_p1_editor)) {
+      return res.status(403).json({ error: "não autorizado" });
+    }
+    const text = String(req.body && req.body.text ? req.body.text : "");
+    const referenceMonth = String(req.body && req.body.reference_month ? req.body.reference_month : "").trim();
+    if (!text.trim()) return res.status(400).json({ error: "cole o texto da escala extra" });
+    const parsed = parseExtraScalesText(text, referenceMonth);
+    const preview = await enrichExtraScalePreview(parsed);
+    return res.json({ ok: true, ...preview });
+  } catch (err) {
+    return res.status(400).json({ error: "erro ao interpretar escalas extras", details: err.message });
+  }
+});
+
+app.post("/api/extra_scales/apply", authRequired(false), async (req, res) => {
+  try {
+    if (!(canViewAuditName(req.user.canonical_name) || req.user.is_p1_editor)) {
+      return res.status(403).json({ error: "não autorizado" });
+    }
+    const actor = req.user.canonical_name;
+    const text = String(req.body && req.body.text ? req.body.text : "");
+    const referenceMonth = String(req.body && req.body.reference_month ? req.body.reference_month : "").trim();
+    const overwriteConflicts = !!(req.body && req.body.overwrite_conflicts);
+    if (!text.trim()) return res.status(400).json({ error: "cole o texto da escala extra" });
+
+    const parsed = parseExtraScalesText(text, referenceMonth);
+    const preview = await enrichExtraScalePreview(parsed);
+    let currentState = null;
+    try { ({ st: currentState } = await getStateAutoReset()); } catch (_e) {}
+    let stateChanged = false;
+    let applied = 0;
+    let skipped = 0;
+    const results = [];
+
+    for (const row of preview.rows || []) {
+      if (!row.canonical_name || row.status === "invalid" || row.status === "protected") {
+        skipped++;
+        results.push({ ...row, applied: false });
+        continue;
+      }
+      if (row.status === "same") {
+        skipped++;
+        results.push({ ...row, applied: false });
+        continue;
+      }
+      if (row.status === "conflict" && !overwriteConflicts) {
+        skipped++;
+        results.push({ ...row, applied: false, message: `${row.message}. Conflito não substituído.` });
+        continue;
+      }
+
+      const beforeCode = String(row.existing_code || "").trim();
+      await safeQuery(
+        "INSERT INTO escala_lancamentos (data, oficial, codigo, observacao, created_by, updated_by) VALUES (?, ?, ?, NULL, ?, ?) " +
+        "ON DUPLICATE KEY UPDATE codigo=VALUES(codigo), observacao=NULL, updated_by=VALUES(updated_by), updated_at=CURRENT_TIMESTAMP",
+        [row.date, row.canonical_name, row.code, actor, actor]
+      );
+
+      if (currentState && Array.isArray(currentState.dates) && currentState.dates.includes(row.date)) {
+        const key = `${row.canonical_name}|${row.date}`;
+        currentState.assignments = currentState.assignments || {};
+        currentState.notes = currentState.notes || {};
+        currentState.auto_assignments = currentState.auto_assignments || {};
+        currentState.assignments[key] = row.code;
+        delete currentState.notes[key];
+        delete currentState.auto_assignments[key];
+        stateChanged = true;
+      }
+
+      await logAction(actor, row.canonical_name, "extra_scale", `${row.date}: ${beforeCode || "-"} -> ${row.code} (${row.type_label})`);
+      await auditEvent(req, {
+        event_type: "alteracao_feita",
+        actor_name: actor,
+        target_name: row.canonical_name,
+        scale_date: row.date,
+        field_name: "codigo",
+        before_value: beforeCode,
+        after_value: row.code,
+        details: `escala extra: ${row.type_label}`,
+        success: true,
+        http_status: 200,
+      });
+      try {
+        await safeQuery(
+          "INSERT INTO escala_change_log (actor_name, target_name, data, field_name, before_value, after_value) VALUES (?, ?, ?, 'codigo', ?, ?)",
+          [actor, row.canonical_name, row.date, beforeCode || null, row.code]
+        );
+      } catch (_e) {}
+      applied++;
+      results.push({ ...row, applied: true, status: "applied", message: "Aplicado" });
+    }
+
+    if (stateChanged && currentState) {
+      currentState.updated_at = new Date().toISOString();
+      currentState.last_edit_actor = actor;
+      currentState.last_edit_at = currentState.updated_at;
+      await safeQuery(
+        "INSERT INTO state_store (id, payload) VALUES (1, ?) ON DUPLICATE KEY UPDATE payload=VALUES(payload), updated_at=CURRENT_TIMESTAMP",
+        [JSON.stringify(currentState)]
+      );
+    }
+
+    return res.json({ ok: true, applied, skipped, rows: results, warnings: preview.warnings || [] });
+  } catch (err) {
+    await auditEvent(req, {
+      event_type: "erro_escala_extra",
+      actor_name: req.user && req.user.canonical_name ? req.user.canonical_name : null,
+      details: err.message,
+      success: false,
+      http_status: 500,
+    });
+    return res.status(500).json({ error: "erro ao aplicar escalas extras", details: err.message });
   }
 });
 

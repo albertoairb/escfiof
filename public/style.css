@@ -313,3 +313,34 @@ table#table{width:100%;border-collapse:separate;border-spacing:0;min-width:840px
 @media (max-width:600px){
   .saveAllButton{width:100%;min-width:0}
 }
+
+/* ===== ESCFIOF: escalas extras e alerta de cobertura ===== */
+.coverageAlert{
+  margin:0 0 18px;
+  padding:12px 14px;
+  border:1px solid #d9b15f;
+  border-radius:10px;
+  background:#fff9e8;
+  color:#5f4611;
+  font-size:13px;
+  line-height:1.45;
+}
+.coverageAlert strong{display:block;margin-bottom:4px}
+.modal__card--extras{width:min(980px,100%);max-height:92vh;overflow:auto}
+.modal__card--extras textarea{width:100%;box-sizing:border-box;resize:vertical;min-height:220px}
+.modal__card--extras input[type="month"]{max-width:220px}
+.extraScalesActions{align-items:center;flex-wrap:wrap}
+.extraPreviewWrap{margin-top:12px;overflow:auto;border:1px solid #e1e5ea;border-radius:10px}
+.extraPreviewTable{margin-top:0;min-width:760px}
+.extraPreviewTable th:nth-child(1){min-width:190px}
+.extraPreviewTable th:nth-child(2){min-width:100px}
+.extraPreviewTable th:nth-child(3){min-width:210px}
+.extraPreviewTable th:nth-child(4){min-width:100px}
+.extraPreviewTable th:nth-child(5){min-width:190px}
+.extraPreviewWarn{background:#fff7e8}
+.extraOverwriteLabel{display:flex;align-items:center;gap:8px;margin:12px 0;font-size:11px;font-weight:700;color:#6a4a0c}
+.extraOverwriteLabel input{width:auto}
+@media (max-width:700px){
+  .modal__card--extras input[type="month"]{max-width:none}
+  .extraScalesActions .btn{width:100%}
+}
