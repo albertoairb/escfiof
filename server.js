@@ -101,7 +101,7 @@ function fixDentRanks(list) {
 }
 
 
-// Administradores mantêm as permissões atuais para alterar qualquer oficial
+// Perfis administrativos legados. A edição geral da escala é exclusiva do master Franzini e do P/1 no dia autorizado.
 const ADMIN_NAMES = new Set([
   "Alberto Franzini Neto",
   "Helder Antonio de Paula",
@@ -111,17 +111,30 @@ const ADMIN_NAMES = new Set([
   "Daniel Alves de Siqueira",
 ]);
 
-// Gerenciamento do cadastro de Oficiais: acesso restrito aos três responsáveis.
+// Gerenciamento do cadastro de Oficiais: responsáveis autorizados.
 const OFFICER_MANAGER_NAMES = new Set([
   "Alberto Franzini Neto",
   "Marcio Saito Essaki",
   "Daniel Alves de Siqueira",
+  "Cotrim",
 ]);
 
 // Códigos válidos (tudo em MAIÚSCULO, conforme regra)
 // - códigos terminados em * permitem descrição
 // - FOJ: sem descrição
 const CODES = ["EXP", "SR", "MA", "VE", "FOJ", "FO*", "SV*", "LP", "FERIAS", "FERIADO", "CONVALESCENCA", "CURSO", "CFP_DIA", "CFP_NOITE", "OUTROS", "SS", "EXP_SS", "FO", "PF", "CAO", "EAP", "CSP", "PPJM", "DS", "CFT", "TJM", "LUTO", "LICENCA PATERNIDADE", "NUPCIAS", "LICENCA ADOCAO"];
+
+function displayCodeValue(value) {
+  const code = normalizeCodeValue(value);
+  if (code === "MA") return "FOLGA_TARDE";
+  if (code === "VE") return "FOLGA_MANHA";
+  return code;
+}
+
+function isRedDutyCode(value) {
+  const code = normalizeCodeValue(value);
+  return code === "SR" || code === "SS" || code === "EXP_SS";
+}
 
 function normalizeCodeValue(value) {
   let code = stripAccents(String(value || "")).trim().replace(/\s+/g, " ").toUpperCase();
@@ -357,6 +370,19 @@ function isAdminName(canonicalName) {
   return ADMIN_NAMES.has(String(canonicalName || "").trim());
 }
 
+function isMasterName(canonicalName) {
+  const key = normKey(canonicalName);
+  return key === normKey("Alberto Franzini Neto") || key === normKey("Franzini");
+}
+
+function canManageExtraScalesName(canonicalName) {
+  return isMasterName(canonicalName) || isP1EditorName(canonicalName);
+}
+
+function canManagePdfSignaturesName(canonicalName) {
+  return isMasterName(canonicalName) || isP1EditorName(canonicalName);
+}
+
 function canViewAuditName(canonicalName) {
   const key = normKey(canonicalName);
   return key === normKey("Alberto Franzini Neto") || key === normKey("Franzini") || key.includes("franzini");
@@ -380,11 +406,36 @@ function isP1EditorName(canonicalName) {
   return !!resolveP1UserFromInput(canonicalName);
 }
 
-// Às sextas-feiras, os usuários do P/1 podem corrigir qualquer lançamento
-// da escala vigente, inclusive os realizados pelo próprio Oficial.
-// process.env.TZ é definido como America/Sao_Paulo no início do servidor.
-function isP1FullEditFriday() {
-  return new Date().getDay() === 5;
+// Data administrativa de fechamento da escala da semana seguinte.
+// Normalmente é sexta-feira. Se a sexta for feriado, antecipa para quinta.
+// Se a quinta for feriado (com a emenda/ponto facultativo da sexta), antecipa para quarta.
+// Feriado no meio da semana (ex.: quarta) não antecipa o fechamento para terça.
+function getAdministrativeClosingDateISO(date = new Date()) {
+  const now = new Date(date);
+  now.setHours(0, 0, 0, 0);
+  const dow = now.getDay();
+  const daysSinceMonday = dow === 0 ? 6 : dow - 1;
+  const monday = new Date(now);
+  monday.setDate(now.getDate() - daysSinceMonday);
+
+  const wednesday = new Date(monday);
+  wednesday.setDate(monday.getDate() + 2);
+  const thursday = new Date(monday);
+  thursday.setDate(monday.getDate() + 3);
+  const friday = new Date(monday);
+  friday.setDate(monday.getDate() + 4);
+
+  if (isHolidayISO(fmtYYYYMMDD(thursday))) return fmtYYYYMMDD(wednesday);
+  if (isHolidayISO(fmtYYYYMMDD(friday))) return fmtYYYYMMDD(thursday);
+  return fmtYYYYMMDD(friday);
+}
+
+function isP1GlobalEditDay(date = new Date()) {
+  return fmtYYYYMMDD(new Date(date)) === getAdministrativeClosingDateISO(date);
+}
+
+function isDisplayedWeekAdministrativelyClosed(date = new Date()) {
+  return fmtYYYYMMDD(new Date(date)) >= getAdministrativeClosingDateISO(date);
 }
 
 function officerRankValue(off) {
@@ -541,7 +592,7 @@ function parseExtraScalesText(text, referenceMonth) {
   let currentType = null;
 
   for (let i = 0; i < lines.length; i++) {
-    const raw = fixText(lines[i]).trim();
+    const raw = fixText(lines[i]).replace(/\\+$/g, "").trim();
     if (!raw) continue;
     const heading = normalizeExtraScaleHeading(raw);
     if (heading) {
@@ -573,7 +624,7 @@ function parseExtraScalesText(text, referenceMonth) {
 
     const parts = raw.split(/\s+(?:—|–|-)\s+/).map(x => x.trim()).filter(Boolean);
     let candidate = parts.length >= 2 ? parts[parts.length - 1] : raw.slice((dm.index || 0) + dm[0].length).trim();
-    candidate = candidate.replace(/^[\s:;,.()-]+/, "").trim();
+    candidate = candidate.replace(/^[\s:;,.()-]+/, "").replace(/[\\*_`]+/g, " ").trim();
     const off = resolveOfficerForExtraInput(candidate);
     if (!off) {
       warnings.push(`Linha ${i + 1}: Oficial não localizado (${candidate || raw}).`);
@@ -606,18 +657,14 @@ function parseExtraScalesText(text, referenceMonth) {
 
 async function enrichExtraScalePreview(parsed) {
   const currentWeek = getWeekRangeISO();
+  const displayedWeekClosed = isDisplayedWeekAdministrativelyClosed();
   let currentState = null;
   try { ({ st: currentState } = await getStateAutoReset()); } catch (_e) {}
+
   const out = [];
   for (const row of parsed.rows || []) {
     const item = { ...row, existing_code: "", conflict: false };
     if (!item.canonical_name || item.status === "invalid") {
-      out.push(item);
-      continue;
-    }
-    if (item.date < currentWeek.start) {
-      item.status = "protected";
-      item.message = "Data já pertence a escala anterior protegida";
       out.push(item);
       continue;
     }
@@ -627,21 +674,59 @@ async function enrichExtraScalePreview(parsed) {
       existing = String((currentState.assignments || {})[`${item.canonical_name}|${item.date}`] || "").trim();
     }
     try {
-      const dbRows = await safeQuery("SELECT codigo FROM escala_lancamentos WHERE data=? AND oficial=? LIMIT 1", [item.date, item.canonical_name]);
+      const dbRows = await safeQuery(
+        "SELECT codigo FROM escala_lancamentos WHERE data=? AND oficial=? LIMIT 1",
+        [item.date, item.canonical_name]
+      );
       if (dbRows.length) existing = normalizeCodeValue(dbRows[0].codigo) || existing;
     } catch (_e) {}
     item.existing_code = existing;
-    if (existing && existing !== item.code) {
-      item.status = "conflict";
+
+    // Datas anteriores à semana exibida nunca são alteradas.
+    if (item.date < currentWeek.start) {
+      item.status = "ignored_past";
+      item.message = existing === item.code
+        ? "Escala anterior: código confere; nenhuma alteração"
+        : `Escala anterior: não alterada${existing ? ` (existente ${displayCodeValue(existing)})` : ""}`;
+      out.push(item);
+      continue;
+    }
+
+    // Na semana exibida (a semana seguinte), ESCALAS EXTRAS pode preencher normalmente
+    // até o fechamento administrativo. A partir da sexta-feira — ou do fechamento
+    // antecipado por feriado — apenas confere e não reescreve a escala já assinada.
+    if (item.date <= currentWeek.end && displayedWeekClosed) {
+      if (existing === item.code) {
+        item.status = "checked_same";
+        item.message = "Semana já preenchida/assinada: resultado exato igual à escala extra";
+      } else {
+        item.status = "checked_only";
+        item.message = `Semana já preenchida/assinada: somente conferência; não será alterada${existing ? ` (existente ${displayCodeValue(existing)})` : " (sem lançamento)"}`;
+      }
+      out.push(item);
+      continue;
+    }
+
+    // Semana em preenchimento (antes do fechamento) e semanas posteriores ficam
+    // programadas no banco para aparecer na data correta.
+    const inDisplayedWeek = item.date <= currentWeek.end;
+    if (existing === item.code) {
+      item.status = "scheduled_same";
+      item.message = inDisplayedWeek ? "Semana em preenchimento: já está correto" : "Já programado corretamente";
+    } else if (existing) {
+      item.status = "scheduled_replace";
       item.conflict = true;
-      item.message = `Já existe ${existing}`;
-    } else if (existing === item.code) {
-      item.status = "same";
-      item.message = "Já está correto";
+      item.message = inDisplayedWeek
+        ? `Semana em preenchimento: será ajustado para ${displayCodeValue(item.code)} no lugar de ${displayCodeValue(existing)}`
+        : `Data futura: será programado ${displayCodeValue(item.code)} no lugar de ${displayCodeValue(existing)}`;
+    } else {
+      item.status = "ready";
+      item.message = inDisplayedWeek ? "Semana em preenchimento: pronta para lançamento" : "Data futura pronta para programação";
     }
     out.push(item);
   }
-  return { rows: out, warnings: parsed.warnings || [] };
+
+  return { rows: out, warnings: parsed.warnings || [], current_week: currentWeek, displayed_week_closed: displayedWeekClosed };
 }
 
 function autoCodeForOfficerDate(off, iso) {
@@ -1233,6 +1318,9 @@ async function getStateAutoReset() {
   const needReset = !st || !st.period || st.period.start !== currentWeek.start || st.period.end !== currentWeek.end;
 
   if (needReset) {
+    // Metadado de leitura dos alertas de auditoria é permanente entre semanas.
+    const auditSeenId = Number(st && st.meta && st.meta.audit_cross_user_seen_id ? st.meta.audit_cross_user_seen_id : 0) || 0;
+
     // Virada de semana: primeiro congela a fotografia integral da semana atual.
     // Só depois de confirmar a gravação da ESCALA ANTERIOR ORIGINAL é que os
     // lançamentos da semana corrente são limpos para iniciar a nova semana.
@@ -1244,6 +1332,8 @@ async function getStateAutoReset() {
     }
 
     st = buildFreshState();
+    st.meta = st.meta || {};
+    st.meta.audit_cross_user_seen_id = auditSeenId;
     await safeQuery(
       "INSERT INTO state_store (id, payload) VALUES (1, ?) ON DUPLICATE KEY UPDATE payload=VALUES(payload), updated_at=CURRENT_TIMESTAMP",
       [JSON.stringify(st)]
@@ -1471,13 +1561,33 @@ function requirePdfKitOr501(res) {
 }
 
 
+function drawPdfHolidayAlerts(doc, dates) {
+  const holidays = getHolidaysForWeek(Array.isArray(dates) ? dates : []);
+  if (!holidays.length) return;
+  const text = holidays
+    .map(h => `FERIADO - ${fmtDDMMYYYY(h.date)} - ${String(h.name || "FERIADO").toUpperCase()}`)
+    .join("   |   ");
+  doc.font("Helvetica-Bold").fontSize(7).fillColor("#b00020").text(text, { align: "center" });
+  doc.fillColor("black").font("Helvetica");
+  doc.moveDown(0.35);
+}
+
 function drawReferenceHours(doc, startY) {
   const x = doc.page.margins.left;
-  const width = doc.page.width - doc.page.margins.left - doc.page.margins.right;
+  const totalWidth = doc.page.width - doc.page.margins.left - doc.page.margins.right;
+  const gap = 18;
+  const leftWidth = Math.floor(totalWidth * 0.61);
+  const rightX = x + leftWidth + gap;
+  const rightWidth = totalWidth - leftWidth - gap;
   let y = Number(startY || doc.y);
-  doc.font("Helvetica-Bold").fontSize(7.2).text("HORÁRIOS DE REFERÊNCIA", x, y, { width, align: "left" });
-  y += 11;
-  doc.font("Helvetica").fontSize(6.7);
+
+  doc.font("Helvetica-Bold").fontSize(7.2).fillColor("black")
+    .text("HORÁRIOS DE REFERÊNCIA", x, y, { width: leftWidth, align: "left" });
+  doc.text("LEGENDAS", rightX, y, { width: rightWidth, align: "left" });
+
+  const startBodyY = y + 11;
+
+  doc.font("Helvetica").fontSize(6.7).fillColor("black");
   const lines = [
     "EXP - DAS 08H00 ÀS 18H00 / DAS 09H00 ÀS 18H00, NO MESMO DIA.",
     "EXP QOS - das 07h00 às 13h00 e das 12h00 às 18h00",
@@ -1486,13 +1596,85 @@ function drawReferenceHours(doc, startY) {
     "SR - DIAS ÚTEIS: DAS 17H30 DO DIA DE INÍCIO ÀS 08H00 DO DIA SEGUINTE.",
     "SR - FINAIS DE SEMANA E FERIADOS (24H): DAS 08H00 DO DIA DE INÍCIO ÀS 08H00 DO DIA SEGUINTE.",
   ];
+
+  let leftY = startBodyY;
   for (const line of lines) {
-    doc.text(line, x, y, { width, align: "left", lineGap: 0 });
-    y += 9;
+    doc.text(line, x, leftY, { width: leftWidth, align: "left", lineGap: 0 });
+    leftY += 9;
   }
-  doc.font("Helvetica-Bold").fontSize(6.7).text("PORTARIA DO CMT G Nº PM1-007/02/23", x, y, { width, align: "left" });
-  doc.font("Helvetica");
-  return y + 10;
+  doc.font("Helvetica-Bold").fontSize(6.7)
+    .text("PORTARIA DO CMT G Nº PM1-007/02/23", x, leftY, { width: leftWidth, align: "left" });
+
+  const legendLines = [
+    "EXP = EXPEDIENTE",
+    "SR = SUPERVISOR REGIONAL",
+    "SS = SUPERIOR DE SOBREAVISO",
+    "EXP_SS = EXPEDIENTE SUPERIOR DE SOBREAVISO",
+    "FOLGA_TARDE = FOLGA À TARDE",
+    "FOLGA_MANHA = FOLGA DE MANHÃ",
+    "FOJ = FOLGA SEM DESCRIÇÃO",
+    "FO* = FOLGA COM DESCRIÇÃO",
+    "SV* = SERVIÇO COM DESCRIÇÃO",
+    "LP = LICENÇA-PRÊMIO",
+    "PF = PONTO FACULTATIVO",
+    "CFP_DIA = CFP DIURNO",
+    "CFP_NOITE = CFP NOTURNO",
+    "CAO = CURSO DE APERFEIÇOAMENTO DE OFICIAIS",
+    "EAP = ESTÁGIO DE APERFEIÇOAMENTO PROFISSIONAL",
+    "CSP = CURSO SUPERIOR DE POLÍCIA",
+    "PPJM = PLANTÃO DE POLÍCIA JUDICIÁRIA MILITAR",
+    "CFT = COMANDO DE FORÇA TÁTICA",
+    "TJM = TRIBUNAL DE JUSTIÇA MILITAR",
+  ];
+
+  const legendGap = 8;
+  const legendColW = (rightWidth - legendGap) / 2;
+  const splitAt = Math.ceil(legendLines.length / 2);
+  const legendCols = [legendLines.slice(0, splitAt), legendLines.slice(splitAt)];
+  let maxRightY = startBodyY;
+
+  doc.font("Helvetica").fontSize(4.7);
+  for (let col = 0; col < legendCols.length; col++) {
+    let colY = startBodyY;
+    const colX = rightX + col * (legendColW + legendGap);
+    for (const line of legendCols[col]) {
+      doc.text(line, colX, colY, { width: legendColW, align: "left", lineGap: 0 });
+      colY += 5.6;
+    }
+    if (colY > maxRightY) maxRightY = colY;
+  }
+
+  doc.font("Helvetica").fillColor("black");
+  return Math.max(leftY + 10, maxRightY + 4);
+}
+
+function drawPdfSignatures(doc, st) {
+  const usableW = doc.page.width - doc.page.margins.left - doc.page.margins.right;
+  const gap = 40;
+  const lineW = (usableW - gap) / 2;
+  const xCenter = doc.page.margins.left;
+  const xRight = xCenter + lineW + gap;
+  const yLine = doc.page.height - 72;
+  const rawSig = (st.meta && st.meta.signatures) ? st.meta.signatures : defaultSignatures();
+
+  const centerName = String(rawSig.center_name || "").trim().toUpperCase();
+  const rightName = String(rawSig.right_name || "").trim().toUpperCase();
+
+  doc.moveTo(xCenter, yLine).lineTo(xCenter + lineW, yLine).stroke();
+  doc.moveTo(xRight, yLine).lineTo(xRight + lineW, yLine).stroke();
+
+  doc.font("Helvetica").fillColor("black");
+  if (centerName) {
+    doc.fontSize(8.5).text(centerName, xCenter, yLine + 5, { width: lineW, align: "center" });
+  }
+  if (rightName) {
+    doc.fontSize(8.5).text(rightName, xRight, yLine + 5, { width: lineW, align: "center" });
+  }
+
+  doc.font("Helvetica-Bold").fontSize(8.5)
+    .text("CH P1/P5", xCenter, yLine + 16, { width: lineW, align: "center" });
+  doc.text("SUBCOMANDANTE", xRight, yLine + 16, { width: lineW, align: "center" });
+  doc.font("Helvetica").fillColor("black");
 }
 
 function renderFrozenScalePdf(res, st, filename = "escala_anterior_original.pdf") {
@@ -1513,7 +1695,8 @@ function renderFrozenScalePdf(res, st, filename = "escala_anterior_original.pdf"
   doc.fontSize(16).text(fixText(SYSTEM_NAME), { align: "center" });
   doc.moveDown(0.2);
   doc.fontSize(10).text(`Periodo: ${fmtDDMMYYYY(st.period && st.period.start)} a ${fmtDDMMYYYY(st.period && st.period.end)}`, { align: "center" });
-  doc.moveDown(0.6);
+  doc.moveDown(0.3);
+  drawPdfHolidayAlerts(doc, dates);
 
   const left = doc.page.margins.left;
   const top = doc.y;
@@ -1521,15 +1704,18 @@ function renderFrozenScalePdf(res, st, filename = "escala_anterior_original.pdf"
   const colWDay = 80;
 
   const renderCell = (text, x, y, width) => {
-    const raw = String(text || "-").trim() || "-";
+    const code = normalizeCodeValue(text);
+    const raw = displayCodeValue(code || text || "-") || "-";
+    doc.fillColor(isRedDutyCode(code) ? "#b00020" : "black");
     if ((raw.length > 10 && raw.includes(" ")) || raw.length > 14) {
       const parts = raw.split(/\s+/).filter(Boolean);
       const lines = parts.length >= 2 ? [parts[0], parts.slice(1).join(" ")] : [raw];
       doc.fontSize(5.2).text(lines.join("\n"), x, y + 1, { width, align: "center", lineGap: 0 });
-      doc.fontSize(8);
+      doc.fontSize(8).fillColor("black");
       return;
     }
     doc.fontSize(8).text(raw, x, y, { width, align: "center" });
+    doc.fillColor("black");
   };
 
   doc.fontSize(9).text("OFICIAIS", left, top, { width: colWName, align: "left" });
@@ -1554,20 +1740,7 @@ function renderFrozenScalePdf(res, st, filename = "escala_anterior_original.pdf"
   }
 
   drawReferenceHours(doc, y + 7);
-
-  const usableW = doc.page.width - doc.page.margins.left - doc.page.margins.right;
-  const gap = 40;
-  const lineW = (usableW - gap) / 2;
-  const xCenter = doc.page.margins.left;
-  const xRight = xCenter + lineW + gap;
-  const yLine = doc.page.height - 72;
-  const rawSig = (st.meta && st.meta.signatures) ? st.meta.signatures : defaultSignatures();
-  const centerRole = String(rawSig.center_role || "").trim() || defaultSignatures().center_role;
-  const rightRole = String(rawSig.right_role || "").trim() || defaultSignatures().right_role;
-  doc.moveTo(xCenter, yLine).lineTo(xCenter + lineW, yLine).stroke();
-  doc.moveTo(xRight, yLine).lineTo(xRight + lineW, yLine).stroke();
-  doc.fontSize(9).text(centerRole.toUpperCase(), xCenter, yLine + 10, { width: lineW, align: "center" });
-  doc.fontSize(9).text(rightRole.toUpperCase(), xRight, yLine + 10, { width: lineW, align: "center" });
+  drawPdfSignatures(doc, st);
 
   // Página 2 - descrições/registro, preservando a lógica institucional já existente.
   const noteEntries = [];
@@ -1719,7 +1892,8 @@ app.post("/api/login", async (req, res) => {
       is_readonly: false,
       is_p1_editor: isP1,
       can_view_audit: isP1 ? false : canViewAuditName(loginCanonical),
-      can_manage_officers: isP1 ? false : canManageOfficersName(loginCanonical),
+      can_manage_officers: canManageOfficersName(loginCanonical),
+      is_master: isMasterName(loginCanonical),
       must_change: !!userRow.must_change,
     };
 
@@ -1769,6 +1943,7 @@ app.post("/api/change_password", authRequired(true), async (req, res) => {
       is_p1_editor: !!req.user.is_p1_editor,
       can_view_audit: !!req.user.can_view_audit || canViewAuditName(req.user.canonical_name),
       can_manage_officers: canManageOfficersName(req.user.canonical_name),
+      is_master: isMasterName(req.user.canonical_name),
       must_change: false,
     };
     const token = signToken(refreshedMe);
@@ -1841,15 +2016,12 @@ app.get("/api/state", authRequired(true), async (req, res) => {
     const periodLabel = `periodo: ${fmtDDMMYYYY(st.period.start)} a ${fmtDDMMYYYY(st.period.end)}`;
 
     const p1_cell_editable = {};
+    const p1FullEditToday = req.user.is_p1_editor ? isP1GlobalEditDay() : false;
     if (req.user.is_p1_editor) {
-      const p1FridayFullEdit = isP1FullEditFriday();
       for (const off of OFFICERS) {
         for (const iso of st.dates || []) {
           const key = `${off.canonical_name}|${iso}`;
-          const code = String(assignments[key] || "").trim();
-          const meta = assignment_meta[key] || {};
-          const lastEditor = String(meta.updated_by || meta.created_by || "").trim();
-          p1_cell_editable[key] = p1FridayFullEdit || !code || !!(st.auto_assignments && st.auto_assignments[key]) || isP1EditorName(lastEditor);
+          p1_cell_editable[key] = p1FullEditToday;
         }
       }
     }
@@ -1861,8 +2033,12 @@ app.get("/api/state", authRequired(true), async (req, res) => {
         is_admin: req.user.is_admin,
         is_readonly: !!req.user.is_readonly,
         is_p1_editor: !!req.user.is_p1_editor,
+        is_master: isMasterName(req.user.canonical_name),
+        p1_full_edit_today: p1FullEditToday,
         can_view_audit: canViewAuditName(req.user.canonical_name),
         can_manage_officers: canManageOfficersName(req.user.canonical_name),
+        can_manage_extra_scales: canManageExtraScalesName(req.user.canonical_name),
+        can_manage_pdf_signatures: canManagePdfSignaturesName(req.user.canonical_name),
       },
       meta: {
         system_name: fixText(SYSTEM_NAME),
@@ -1890,7 +2066,7 @@ app.get("/api/state", authRequired(true), async (req, res) => {
       const holidays = getHolidaysForWeek(st.dates);
       return res.json({
         ok: true,
-        me: { canonical_name: req.user.canonical_name, is_admin: req.user.is_admin, is_readonly: !!req.user.is_readonly, is_p1_editor: !!req.user.is_p1_editor, can_view_audit: canViewAuditName(req.user.canonical_name), can_manage_officers: canManageOfficersName(req.user.canonical_name) },
+        me: { canonical_name: req.user.canonical_name, is_admin: req.user.is_admin, is_readonly: !!req.user.is_readonly, is_p1_editor: !!req.user.is_p1_editor, is_master: isMasterName(req.user.canonical_name), p1_full_edit_today: req.user.is_p1_editor ? isP1GlobalEditDay() : false, can_view_audit: canViewAuditName(req.user.canonical_name), can_manage_officers: canManageOfficersName(req.user.canonical_name), can_manage_extra_scales: canManageExtraScalesName(req.user.canonical_name), can_manage_pdf_signatures: canManagePdfSignaturesName(req.user.canonical_name) },
         meta: {
           system_name: fixText(SYSTEM_NAME),
           footer_mark: `© ${COPYRIGHT_YEAR} - ${fixText(AUTHOR)}`,
@@ -1915,35 +2091,31 @@ app.get("/api/state", authRequired(true), async (req, res) => {
   }
 });
 
-// assinaturas do PDF (somente admin)
+// assinaturas do PDF (Franzini master + usuários do P/1)
 app.put("/api/signatures", authRequired(true), async (req, res) => {
   try {
-    if (!req.user.is_admin) return res.status(403).json({ error: "não autorizado" });
+    if (!canManagePdfSignaturesName(req.user.canonical_name)) {
+      return res.status(403).json({ error: "não autorizado" });
+    }
 
     const { st } = await getStateAutoReset();
-    const cur = (st.meta && st.meta.signatures) ? st.meta.signatures : defaultSignatures();
+    const centerName = String(req.body && req.body.center_name ? req.body.center_name : "").trim();
+    const rightName = String(req.body && req.body.right_name ? req.body.right_name : "").trim();
 
-    const left_name = String(req.body && req.body.left_name ? req.body.left_name : cur.left_name).trim();
-    const left_role = String(req.body && req.body.left_role ? req.body.left_role : cur.left_role).trim();
-    const center_name = String(req.body && req.body.center_name ? req.body.center_name : cur.center_name).trim();
-    const center_role = String(req.body && req.body.center_role ? req.body.center_role : cur.center_role).trim();
-    const right_name = String(req.body && req.body.right_name ? req.body.right_name : cur.right_name).trim();
-    const right_role = String(req.body && req.body.right_role ? req.body.right_role : cur.right_role).trim();
-
-    if (left_name.length > 120 || center_name.length > 120 || right_name.length > 120) return res.status(400).json({ error: "nome muito longo" });
-    if (left_role.length > 120 || center_role.length > 120 || right_role.length > 120) return res.status(400).json({ error: "cargo/funcao muito longa" });
+    if (centerName.length > 120 || rightName.length > 120) {
+      return res.status(400).json({ error: "nome muito longo" });
+    }
 
     st.meta = st.meta || {};
     st.meta.signatures = {
-      left_name: left_name.toUpperCase(),
-      left_role: left_role.toUpperCase(),
-      center_name: center_name.toUpperCase(),
-      center_role: center_role.toUpperCase(),
-      right_name: right_name.toUpperCase(),
-      right_role: right_role.toUpperCase(),
+      left_name: "",
+      left_role: "",
+      center_name: centerName.toUpperCase(),
+      center_role: "CH P1/P5",
+      right_name: rightName.toUpperCase(),
+      right_role: "SUBCOMANDANTE",
     };
 
-    // metadados do último registro (para PDF)
     st.last_edit_actor = req.user.canonical_name;
     st.last_edit_at = new Date().toISOString();
 
@@ -1952,7 +2124,23 @@ app.put("/api/signatures", authRequired(true), async (req, res) => {
       [JSON.stringify(st)]
     );
 
-    await logAction(req.user.canonical_name, req.user.canonical_name, "update_signatures", "assinaturas do PDF atualizadas");
+    await logAction(
+      req.user.canonical_name,
+      req.user.canonical_name,
+      "update_signatures",
+      "assinaturas do PDF atualizadas"
+    );
+
+    await auditEvent(req, {
+      event_type: "assinaturas_pdf_atualizadas",
+      actor_name: req.user.canonical_name,
+      field_name: "assinaturas_pdf",
+      before_value: null,
+      after_value: `${centerName.toUpperCase()} | ${rightName.toUpperCase()}`,
+      details: "CH P1/P5 e SUBCOMANDANTE",
+      success: true,
+      http_status: 200,
+    });
 
     return res.json({ ok: true, signatures: st.meta.signatures });
   } catch (err) {
@@ -2204,7 +2392,7 @@ app.delete("/api/officers_manage/:id", authRequired(false), async (req, res) => 
 // Acesso administrativo. O título do bloco define o tipo; o posto do Oficial não limita a regra.
 app.post("/api/extra_scales/preview", authRequired(false), async (req, res) => {
   try {
-    if (!(canViewAuditName(req.user.canonical_name) || req.user.is_p1_editor)) {
+    if (!canManageExtraScalesName(req.user.canonical_name)) {
       return res.status(403).json({ error: "não autorizado" });
     }
     const text = String(req.body && req.body.text ? req.body.text : "");
@@ -2220,60 +2408,58 @@ app.post("/api/extra_scales/preview", authRequired(false), async (req, res) => {
 
 app.post("/api/extra_scales/apply", authRequired(false), async (req, res) => {
   try {
-    if (!(canViewAuditName(req.user.canonical_name) || req.user.is_p1_editor)) {
+    if (!canManageExtraScalesName(req.user.canonical_name)) {
       return res.status(403).json({ error: "não autorizado" });
     }
+
     const actor = req.user.canonical_name;
     const text = String(req.body && req.body.text ? req.body.text : "");
     const referenceMonth = String(req.body && req.body.reference_month ? req.body.reference_month : "").trim();
-    const overwriteConflicts = !!(req.body && req.body.overwrite_conflicts);
     if (!text.trim()) return res.status(400).json({ error: "cole o texto da escala extra" });
 
     const parsed = parseExtraScalesText(text, referenceMonth);
     const preview = await enrichExtraScalePreview(parsed);
-    let currentState = null;
-    try { ({ st: currentState } = await getStateAutoReset()); } catch (_e) {}
-    let stateChanged = false;
+
     let applied = 0;
     let skipped = 0;
     const results = [];
 
     for (const row of preview.rows || []) {
-      if (!row.canonical_name || row.status === "invalid" || row.status === "protected") {
+      if (
+        !row.canonical_name ||
+        row.status === "invalid" ||
+        row.status === "ignored_past" ||
+        row.status === "checked_same" ||
+        row.status === "checked_only" ||
+        row.status === "scheduled_same"
+      ) {
         skipped++;
         results.push({ ...row, applied: false });
         continue;
       }
-      if (row.status === "same") {
+
+      // Aplica a semana em preenchimento antes do fechamento e programa as semanas posteriores.
+      if (row.status !== "ready" && row.status !== "scheduled_replace") {
         skipped++;
         results.push({ ...row, applied: false });
-        continue;
-      }
-      if (row.status === "conflict" && !overwriteConflicts) {
-        skipped++;
-        results.push({ ...row, applied: false, message: `${row.message}. Conflito não substituído.` });
         continue;
       }
 
       const beforeCode = String(row.existing_code || "").trim();
+
       await safeQuery(
         "INSERT INTO escala_lancamentos (data, oficial, codigo, observacao, created_by, updated_by) VALUES (?, ?, ?, NULL, ?, ?) " +
         "ON DUPLICATE KEY UPDATE codigo=VALUES(codigo), observacao=NULL, updated_by=VALUES(updated_by), updated_at=CURRENT_TIMESTAMP",
         [row.date, row.canonical_name, row.code, actor, actor]
       );
 
-      if (currentState && Array.isArray(currentState.dates) && currentState.dates.includes(row.date)) {
-        const key = `${row.canonical_name}|${row.date}`;
-        currentState.assignments = currentState.assignments || {};
-        currentState.notes = currentState.notes || {};
-        currentState.auto_assignments = currentState.auto_assignments || {};
-        currentState.assignments[key] = row.code;
-        delete currentState.notes[key];
-        delete currentState.auto_assignments[key];
-        stateChanged = true;
-      }
+      await logAction(
+        actor,
+        row.canonical_name,
+        "extra_scale",
+        `${row.date}: ${beforeCode || "-"} -> ${row.code} (${row.type_label})`
+      );
 
-      await logAction(actor, row.canonical_name, "extra_scale", `${row.date}: ${beforeCode || "-"} -> ${row.code} (${row.type_label})`);
       await auditEvent(req, {
         event_type: "alteracao_feita",
         actor_name: actor,
@@ -2282,31 +2468,30 @@ app.post("/api/extra_scales/apply", authRequired(false), async (req, res) => {
         field_name: "codigo",
         before_value: beforeCode,
         after_value: row.code,
-        details: `escala extra: ${row.type_label}`,
+        details: `escala extra programada: ${row.type_label}`,
         success: true,
         http_status: 200,
       });
+
       try {
         await safeQuery(
           "INSERT INTO escala_change_log (actor_name, target_name, data, field_name, before_value, after_value) VALUES (?, ?, ?, 'codigo', ?, ?)",
           [actor, row.canonical_name, row.date, beforeCode || null, row.code]
         );
       } catch (_e) {}
+
       applied++;
-      results.push({ ...row, applied: true, status: "applied", message: "Aplicado" });
+      results.push({ ...row, applied: true, status: "applied", message: "Programado" });
     }
 
-    if (stateChanged && currentState) {
-      currentState.updated_at = new Date().toISOString();
-      currentState.last_edit_actor = actor;
-      currentState.last_edit_at = currentState.updated_at;
-      await safeQuery(
-        "INSERT INTO state_store (id, payload) VALUES (1, ?) ON DUPLICATE KEY UPDATE payload=VALUES(payload), updated_at=CURRENT_TIMESTAMP",
-        [JSON.stringify(currentState)]
-      );
-    }
-
-    return res.json({ ok: true, applied, skipped, rows: results, warnings: preview.warnings || [] });
+    return res.json({
+      ok: true,
+      applied,
+      skipped,
+      rows: results,
+      warnings: preview.warnings || [],
+      current_week: preview.current_week || null,
+    });
   } catch (err) {
     await auditEvent(req, {
       event_type: "erro_escala_extra",
@@ -2316,6 +2501,71 @@ app.post("/api/extra_scales/apply", authRequired(false), async (req, res) => {
       http_status: 500,
     });
     return res.status(500).json({ error: "erro ao aplicar escalas extras", details: err.message });
+  }
+});
+
+async function auditCrossUserAlertStatus() {
+  let seenId = 0;
+  try {
+    const rows = await safeQuery("SELECT payload FROM state_store WHERE id=1 LIMIT 1");
+    if (rows.length) {
+      const st = safeJsonParse(rows[0].payload) || {};
+      seenId = Number(st.meta && st.meta.audit_cross_user_seen_id ? st.meta.audit_cross_user_seen_id : 0) || 0;
+    }
+  } catch (_e) {}
+
+  const rows = await safeQuery(
+    `SELECT COALESCE(MAX(id),0) AS latest_id,
+            SUM(CASE WHEN id>? THEN 1 ELSE 0 END) AS unread_count
+       FROM audit_logs
+      WHERE event_type='alteracao_feita'
+        AND success=1
+        AND actor_name IS NOT NULL
+        AND target_name IS NOT NULL
+        AND TRIM(actor_name) <> ''
+        AND TRIM(target_name) <> ''
+        AND actor_name <> target_name`,
+    [seenId]
+  );
+
+  const row = rows[0] || {};
+  return {
+    seen_id: seenId,
+    latest_id: Number(row.latest_id || 0),
+    unread_count: Number(row.unread_count || 0),
+  };
+}
+
+app.get("/api/audit_alert_status", authRequired(true), async (req, res) => {
+  try {
+    if (!canViewAuditName(req.user.canonical_name)) {
+      return res.status(403).json({ error: "não autorizado" });
+    }
+    const status = await auditCrossUserAlertStatus();
+    return res.json({ ok: true, ...status });
+  } catch (err) {
+    return res.status(500).json({ error: "erro ao consultar alertas de auditoria", details: err.message });
+  }
+});
+
+app.post("/api/audit_alert_seen", authRequired(true), async (req, res) => {
+  try {
+    if (!canViewAuditName(req.user.canonical_name)) {
+      return res.status(403).json({ error: "não autorizado" });
+    }
+
+    const status = await auditCrossUserAlertStatus();
+    const { st } = await getStateAutoReset();
+    st.meta = st.meta || {};
+    st.meta.audit_cross_user_seen_id = status.latest_id;
+    await safeQuery(
+      "INSERT INTO state_store (id, payload) VALUES (1, ?) ON DUPLICATE KEY UPDATE payload=VALUES(payload), updated_at=CURRENT_TIMESTAMP",
+      [JSON.stringify(st)]
+    );
+
+    return res.json({ ok: true, seen_id: status.latest_id });
+  } catch (err) {
+    return res.status(500).json({ error: "erro ao registrar leitura da auditoria", details: err.message });
   }
 });
 
@@ -2440,15 +2690,33 @@ app.put("/api/assignments", authRequired(false), async (req, res) => {
       let target = String(u.canonical_name || "").trim();
       if (!officersByCanonical.has(target)) continue;
 
-      // Oficial comum altera somente a própria linha. P/1 possui regra restrita por célula:
-      // pode preencher vazio/autopreenchido ou corrigir lançamento cujo último editor seja do P/1.
-      if (!req.user.is_admin && !req.user.is_p1_editor && target !== actor) {
+      // Regra de edição:
+      // - Franzini (master) pode alterar qualquer linha;
+      // - P/1 pode alterar qualquer linha somente no dia geral autorizado;
+      // - os demais Oficiais alteram apenas a própria linha.
+      const isMaster = isMasterName(actor);
+      const p1CanEditAll = req.user.is_p1_editor && isP1GlobalEditDay();
+
+      if (req.user.is_p1_editor && !p1CanEditAll) {
+        await auditEvent(req, {
+          event_type: "tentativa_p1_fora_dia_autorizado",
+          actor_name: actor,
+          target_name: target,
+          scale_date: date,
+          details: "P1 tentou editar fora da sexta-feira ou do fechamento antecipado autorizado",
+          success: false,
+          http_status: 403,
+        });
+        continue;
+      }
+
+      if (!isMaster && !p1CanEditAll && target !== actor) {
         await auditEvent(req, {
           event_type: "tentativa_sem_permissao",
           actor_name: actor,
           target_name: target,
           scale_date: date,
-          details: "usuario tentou alterar linha de outro oficial",
+          details: "Oficial tentou alterar linha de outro Oficial",
           success: false,
           http_status: 403,
         });
@@ -2456,37 +2724,6 @@ app.put("/api/assignments", authRequired(false), async (req, res) => {
       }
 
       const key = `${target}|${date}`;
-      if (req.user.is_p1_editor) {
-        let allowedForP1 = isP1FullEditFriday();
-        const currentCode = String((st.assignments && st.assignments[key]) || "").trim();
-        if (!allowedForP1 && (!currentCode || (st.auto_assignments && st.auto_assignments[key]))) {
-          allowedForP1 = true;
-        } else if (!allowedForP1) {
-          try {
-            const ownerRows = await safeQuery(
-              "SELECT created_by, updated_by FROM escala_lancamentos WHERE data=? AND oficial=? LIMIT 1",
-              [date, target]
-            );
-            const owner = ownerRows.length ? String(ownerRows[0].updated_by || ownerRows[0].created_by || "").trim() : "";
-            allowedForP1 = isP1EditorName(owner);
-          } catch (_e) {
-            allowedForP1 = false;
-          }
-        }
-
-        if (!allowedForP1) {
-          await auditEvent(req, {
-            event_type: "tentativa_p1_campo_protegido",
-            actor_name: actor,
-            target_name: target,
-            scale_date: date,
-            details: "P1 tentou alterar lançamento já preenchido pelo Oficial",
-            success: false,
-            http_status: 403,
-          });
-          continue;
-        }
-      }
 
       let code = normalizeCodeValue(u.code);
       if (!code) code = ""; // limpar
@@ -2662,6 +2899,8 @@ app.post("/api/pdf_link", authRequired(true), async (req, res) => {
 
 function dailySituationDisplayCode(code) {
   const c = String(code || "").trim();
+  if (c === "MA") return "FOLGA_TARDE";
+  if (c === "VE") return "FOLGA_MANHA";
   if (c === "CFP_DIA") return "CFP DIURNO";
   if (c === "CFP_NOITE") return "CFP NOTURNO";
   if (c === "FERIAS") return "FÉRIAS";
@@ -3011,9 +3250,10 @@ app.get("/api/pdf", pdfAuth, async (req, res) => {
     doc.fontSize(16).text(fixText(SYSTEM_NAME), { align: "center" });
     doc.moveDown(0.2);
     doc.fontSize(10).text(`Periodo: ${fmtDDMMYYYY(st.period.start)} a ${fmtDDMMYYYY(st.period.end)}`, { align: "center" });
-    doc.moveDown(0.6);
+    doc.moveDown(0.3);
 
     const dates = st.dates || [];
+    drawPdfHolidayAlerts(doc, dates);
 
     // prefere dados do MySQL (escala_lancamentos); fallback para state_store
     let assignments = st.assignments || {};
@@ -3084,9 +3324,11 @@ if (!lastAt || !lastActor) {
 const lastStamp = fmtDDMMYYYYHHmm(lastAt);
 
     function renderPdfCellText(text, x, y, width) {
-      const raw = String(text || "-").trim() || "-";
+      const code = normalizeCodeValue(text);
+      const raw = displayCodeValue(code || text || "-") || "-";
       const longWithSpace = raw.length > 10 && raw.includes(" ");
       const veryLong = raw.length > 14;
+      doc.fillColor(isRedDutyCode(code) ? "#b00020" : "black");
       if (longWithSpace || veryLong) {
         const parts = raw.split(/\s+/).filter(Boolean);
         let lines = [];
@@ -3097,10 +3339,11 @@ const lastStamp = fmtDDMMYYYYHHmm(lastAt);
         }
         doc.fontSize(5.2);
         doc.text(lines.join("\n"), x, y + 1, { width, align: "center", lineGap: 0 });
-        doc.fontSize(8);
+        doc.fontSize(8).fillColor("black");
         return;
       }
       doc.fontSize(8).text(raw, x, y, { width, align: "center" });
+      doc.fillColor("black");
     }
 
     // tabela
@@ -3145,27 +3388,7 @@ const lastStamp = fmtDDMMYYYYHHmm(lastAt);
     drawReferenceHours(doc, y + 7);
 
     // assinaturas sempre na primeira página
-    {
-      const leftMargin = doc.page.margins.left;
-      const usableW = doc.page.width - doc.page.margins.left - doc.page.margins.right;
-      const gap = 40;
-      const lineW = (usableW - gap) / 2;
-      const xCenter = leftMargin;
-      const xRight = xCenter + lineW + gap;
-      const yLine = doc.page.height - 72;
-
-      const rawSig = (st.meta && st.meta.signatures) ? st.meta.signatures : defaultSignatures();
-      const sig = {
-        center_role: String(rawSig.center_role || "").trim() || defaultSignatures().center_role,
-        right_role: String(rawSig.right_role || "").trim() || defaultSignatures().right_role,
-      };
-
-      doc.moveTo(xCenter, yLine).lineTo(xCenter + lineW, yLine).stroke();
-      doc.moveTo(xRight, yLine).lineTo(xRight + lineW, yLine).stroke();
-
-      doc.fontSize(10).text(String(sig.center_role || "").toUpperCase(), xCenter, yLine + 14, { width: lineW, align: "center" });
-      doc.fontSize(10).text(String(sig.right_role || "").toUpperCase(), xRight, yLine + 14, { width: lineW, align: "center" });
-    }
+    drawPdfSignatures(doc, st);
 
     // detalhamento de descrições (OUTROS e códigos com asterisco)
     const noteEntries = [];

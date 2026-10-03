@@ -20,7 +20,8 @@
       <button id="btnConsult" class="btn">CONSULTAS</button>
       <button id="btnExtraScales" class="btn" style="display:none;">ESCALAS EXTRAS</button>
       <button id="btnManageOfficers" class="btn" style="display:none;">GERENCIAR OFICIAIS</button>
-      <button id="btnPdf" class="btn">PDF ATUAL</button>
+      <button id="btnAudit" class="btn" style="display:none;">AUDITORIA</button>
+      <button id="btnPdf" class="btn">VISUALIZAR ESCALA PARA IMPRESSÃO</button>
       <button id="btnLogout" class="btn btn--ghost">sair</button>
     </div>
   </header>
@@ -103,7 +104,7 @@
 
 
 <details id="auditBox" class="descbox" style="display:none;">
-  <summary>auditoria operacional e de seguranca</summary>
+  <summary id="auditSummary">auditoria operacional e de seguranca</summary>
   <div class="muted">visivel somente para Franzini. informe o Oficial e o período da escala para consultar todas as alterações registradas.</div>
   <div class="row row--actions auditFilters">
     <input id="auditName" placeholder="nome de guerra: ex. Franzini, Essaki, Siqueira" />
@@ -119,33 +120,25 @@
 
 <details id="sigBox" class="descbox" style="display:none;">
   <summary>assinaturas do PDF</summary>
-  <div class="muted">somente responsaveis autorizados podem editar. os cargos aparecem no rodape do PDF.</div>
+  <div class="muted">Franzini e usuários do P/1 podem informar os nomes completos. O sistema grava e imprime sempre em MAIÚSCULAS.</div>
   <div class="siggrid">
     <div class="sigcard">
-      <div class="sigtitle">assinatura 1</div>
+      <div class="sigtitle">CH P1/P5</div>
       <label>
-        nome
-        <input id="sigCenterName" placeholder="ex.: ALBERTO FRANZINI NETO" />
-      </label>
-      <label>
-        cargo/funcao
-        <input id="sigCenterRole" placeholder="ex.: CAP PM CH P1/P5" />
+        NOME COMPLETO
+        <input id="sigCenterName" placeholder="digite o nome completo" autocomplete="off" />
       </label>
     </div>
     <div class="sigcard">
-      <div class="sigtitle">assinatura 2</div>
+      <div class="sigtitle">SUBCOMANDANTE</div>
       <label>
-        nome
-        <input id="sigRightName" placeholder="ex.: EDUARDO MOSNA XAVIER" />
-      </label>
-      <label>
-        cargo/funcao
-        <input id="sigRightRole" placeholder="ex.: MAJ PM SUBCMT" />
+        NOME COMPLETO
+        <input id="sigRightName" placeholder="digite o nome completo" autocomplete="off" />
       </label>
     </div>
   </div>
   <div class="row row--actions">
-    <button id="btnSigSave" class="btn">salvar assinaturas</button>
+    <button id="btnSigSave" class="btn">SALVAR ASSINATURAS</button>
     <div class="muted" id="sigMsg"></div>
   </div>
 </details>
@@ -188,7 +181,7 @@
   <div id="extraScalesModal" class="modal" style="display:none;">
     <div class="modal__card modal__card--extras">
       <h3>ESCALAS EXTRAS</h3>
-      <div class="muted">Cole o texto mensal. O título do bloco define o tipo da escala; o posto do Oficial não limita a regra.</div>
+      <div class="muted">Cole a relação mensal antes da vigência. Até o fechamento administrativo, a semana em preenchimento pode receber as escalas extras; depois do fechamento ela é apenas conferida. As datas posteriores ficam programadas automaticamente.</div>
 
       <label>
         MÊS/ANO DA ESCALA
@@ -211,11 +204,7 @@
             <tbody id="extraScalesPreviewRows"></tbody>
           </table>
         </div>
-        <label class="extraOverwriteLabel">
-          <input id="extraOverwriteConflicts" type="checkbox" />
-          AUTORIZAR SUBSTITUIÇÃO DOS CONFLITOS MOSTRADOS NA PRÉVIA
-        </label>
-        <button id="extraScalesApply" class="btn btn--primary" type="button">CONFIRMAR PREENCHIMENTO</button>
+        <button id="extraScalesApply" class="btn btn--primary" type="button">CONFIRMAR ESCALAS EXTRAS</button>
       </div>
 
       <div class="modal__actions">

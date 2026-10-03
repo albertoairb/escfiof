@@ -18,6 +18,7 @@
     p1_cell_editable: {},
     auto_assignments: {},
     coverage_alerts: [],
+    audit_alert_count: 0,
     managedOfficers: [],
     officerFormMode: null,
     officerFormId: null,
@@ -122,6 +123,19 @@
   }
 
 
+  function displayCode(code) {
+    const c = String(code || "").trim();
+    if (c === "MA") return "FOLGA_TARDE";
+    if (c === "VE") return "FOLGA_MANHA";
+    return c;
+  }
+
+  function isRedDutyCode(code) {
+    const c = String(code || "").trim();
+    return c === "SR" || c === "SS" || c === "EXP_SS";
+  }
+
+
 function ddmmyyyy_hhmm(isoOrDate) {
   try {
     const dt = new Date(isoOrDate);
@@ -197,8 +211,8 @@ function fmtDateCompact(iso){ const [y,m,d]=iso.split("-"); const mons=["JAN","F
     const help = {
       "EXP": "EXPEDIENTE",
       "SR": "SUPERVISOR REGIONAL",
-      "MA": "TRABALHA MANHÃ",
-      "VE": "TRABALHA TARDE",
+      "MA": "FOLGA À TARDE",
+      "VE": "FOLGA DE MANHÃ",
       "FOJ": "FOLGA (SEM DESCRIÇÃO)",
       "FO*": "FOLGA (COM DESCRIÇÃO)",
       "SV*": "SERVIÇO (COM DESCRIÇÃO)",
@@ -231,7 +245,9 @@ function fmtDateCompact(iso){ const [y,m,d]=iso.split("-"); const mons=["JAN","F
       if (!c) continue;
       const div = document.createElement("div");
       div.className = "pill";
-      div.textContent = help[c] ? `${c} – ${help[c]}` : c;
+      const label = displayCode(c);
+      div.textContent = help[c] ? `${label} – ${help[c]}` : label;
+      if (isRedDutyCode(c)) div.classList.add("pill--red-duty");
       el.appendChild(div);
     }
   }
@@ -259,7 +275,9 @@ function fmtDateCompact(iso){ const [y,m,d]=iso.split("-"); const mons=["JAN","F
       return;
     }
     if (state.me && state.me.is_p1_editor) {
-      $("lockMsg").textContent = "P/1 - PODE PREENCHER CAMPOS VAZIOS/AUTOPREENCHIDOS E ALTERAR LANÇAMENTOS FEITOS PELO P/1. LANÇAMENTOS DOS OFICIAIS FICAM PROTEGIDOS.";
+      $("lockMsg").textContent = state.me.p1_full_edit_today
+        ? "P/1 - EDIÇÃO GERAL LIBERADA HOJE PARA TODOS OS OFICIAIS."
+        : "P/1 - SOMENTE CONSULTA. EDIÇÃO GERAL NA SEXTA-FEIRA OU NO FECHAMENTO ANTECIPADO AUTORIZADO.";
       return;
     }
     const week = weekRangeLabel();
@@ -373,6 +391,41 @@ function hideAuditLogs() {
   if (table) table.innerHTML = "";
 }
 
+function setAuditAlertVisual(count) {
+  const summary = $("auditSummary");
+  const button = $("btnAudit");
+  const n = Number(count || 0);
+  state.audit_alert_count = n;
+
+  if (summary) {
+    summary.classList.toggle("auditSummary--alert", n > 0);
+    summary.textContent = n > 0
+      ? `auditoria operacional e de seguranca — ${n} ALERTA(S)`
+      : "auditoria operacional e de seguranca";
+  }
+
+  if (button) {
+    button.classList.toggle("btn--audit-alert", n > 0);
+    button.textContent = n > 0 ? `AUDITORIA (${n})` : "AUDITORIA";
+  }
+}
+
+async function refreshAuditAlertStatus() {
+  if (!canViewAudit()) {
+    setAuditAlertVisual(0);
+    return;
+  }
+  const r = await api("/api/audit_alert_status", { method: "GET" });
+  if (!r.ok) return;
+  setAuditAlertVisual(Number(r.data && r.data.unread_count ? r.data.unread_count : 0));
+}
+
+async function markAuditAlertsSeen() {
+  if (!canViewAudit() || !state.audit_alert_count) return;
+  const r = await api("/api/audit_alert_seen", { method: "POST", body: JSON.stringify({}) });
+  if (r.ok) setAuditAlertVisual(0);
+}
+
 async function loadAuditLogs() {
   const box = $("auditBox");
   const table = $("auditTable");
@@ -447,12 +500,15 @@ async function loadAuditLogs() {
     const day = row.scale_date ? ddmmyyyy(String(row.scale_date).slice(0,10).replaceAll('/','-')) : "";
     const previous = String(row.before_value || "").trim() || "-";
     const current = String(row.after_value || "").trim() || "-";
-    html += "<tr>";
+    const crossUser = String(row.actor_name || "").trim() &&
+      String(row.target_name || "").trim() &&
+      String(row.actor_name || "").trim() !== String(row.target_name || "").trim();
+    html += `<tr${crossUser ? " class='auditCrossUserRow'" : ""}>`;
     html += `<td>${esc(row.actor_name || "")}</td>`;
     html += `<td>${esc(at)}</td>`;
     html += `<td>${esc(row.target_name || "")}</td>`;
     html += `<td>${esc(day)}</td>`;
-    html += `<td>${esc(auditAction(row))}</td>`;
+    html += `<td>${esc(crossUser ? "⚠ " + auditAction(row) + " em outro Oficial" : auditAction(row))}</td>`;
     html += `<td>${esc(previous)}</td>`;
     html += `<td>${esc(current)}</td>`;
     html += `<td>${esc(auditOrigin(row))}</td>`;
@@ -464,13 +520,14 @@ async function loadAuditLogs() {
 
   function canEditOfficer(officerCanonical) {
     if (!state.me || state.me.is_readonly) return false;
-    if (state.me.is_admin || state.me.is_p1_editor) return true;
+    if (state.me.is_master) return true;
+    if (state.me.is_p1_editor) return !!state.me.p1_full_edit_today;
     return officerCanonical === state.me.canonical_name;
   }
 
   function canEditCell(officerCanonical, iso) {
     if (!state.me || state.me.is_readonly) return false;
-    if (state.me.is_admin) return true;
+    if (state.me.is_master) return true;
     if (state.me.is_p1_editor) return !!state.p1_cell_editable[`${officerCanonical}|${iso}`];
     return officerCanonical === state.me.canonical_name;
   }
@@ -527,7 +584,8 @@ async function loadAuditLogs() {
           if (!code) continue;
           const opt = document.createElement("option");
           opt.value = code;
-          opt.textContent = code;
+          opt.textContent = displayCode(code);
+          if (isRedDutyCode(code)) opt.classList.add("redDutyOption");
           sel.appendChild(opt);
         }
 
@@ -536,6 +594,7 @@ async function loadAuditLogs() {
         const pending = state.pending.has(key) ? state.pending.get(key) : null;
         const pendingCode = (pending && typeof pending === "object") ? (pending.code || "") : pending;
         sel.value = (pendingCode !== null && pendingCode !== undefined) ? pendingCode : cur;
+        sel.classList.toggle("redDutySelect", isRedDutyCode(sel.value));
 
         // tooltip com descricao (quando houver)
         const noteText = (state.notes && state.notes[key]) ? String(state.notes[key]) : "";
@@ -572,6 +631,7 @@ async function loadAuditLogs() {
 
         sel.addEventListener("change", () => {
           const v = String(sel.value || "");
+          sel.classList.toggle("redDutySelect", isRedDutyCode(v));
           const needObs = (v === "OUTROS" || /\*$/.test(v));
 
           // controla exibição do campo de descrição
@@ -661,7 +721,7 @@ async function loadAuditLogs() {
   }
 
   function openExtraScales() {
-    if (!state.me || !(state.me.can_view_audit || state.me.is_p1_editor)) {
+    if (!state.me || !state.me.can_manage_extra_scales) {
       alert("Sem permissão para escalas extras.");
       return;
     }
@@ -679,34 +739,64 @@ async function loadAuditLogs() {
     const rows = Array.isArray(data && data.rows) ? data.rows : [];
     const warnings = Array.isArray(data && data.warnings) ? data.warnings : [];
     tbody.innerHTML = "";
+
     for (const row of rows) {
       const tr = document.createElement("tr");
-      const status = row.status === "ready" ? "PRONTO"
-        : row.status === "same" ? "JÁ ESTÁ CORRETO"
-        : row.status === "conflict" ? `CONFLITO: ${row.existing_code || ""}`
-        : row.status === "protected" ? "ESCALA ANTERIOR PROTEGIDA"
-        : (row.message || "NÃO APLICÁVEL");
-      const values = [row.type_label || row.type || "", row.date ? ddmmyyyy(row.date) : "", row.officer || "", row.code || "", status];
+      const statusText = row.message || (
+        row.status === "ready" ? "DATA FUTURA PRONTA"
+        : row.status === "scheduled_replace" ? "DATA FUTURA SERÁ ATUALIZADA"
+        : row.status === "scheduled_same" ? "JÁ PROGRAMADO"
+        : row.status === "checked_same" ? "SEMANA JÁ PREENCHIDA — CONFERE"
+        : row.status === "checked_only" ? "SEMANA JÁ PREENCHIDA — NÃO ALTERA"
+        : row.status === "ignored_past" ? "ESCALA ANTERIOR — IGNORADA"
+        : row.status === "invalid" ? "NÃO LOCALIZADO"
+        : "NÃO APLICÁVEL"
+      );
+
+      const values = [
+        row.type_label || row.type || "",
+        row.date ? ddmmyyyy(row.date) : "",
+        row.officer || "",
+        displayCode(row.code || ""),
+        statusText,
+      ];
+
       for (const value of values) {
         const td = document.createElement("td");
         td.textContent = String(value || "");
         tr.appendChild(td);
       }
-      if (row.status === "conflict" || row.status === "invalid" || row.status === "protected") tr.classList.add("extraPreviewWarn");
+
+      if (
+        row.status === "scheduled_replace" ||
+        row.status === "checked_only" ||
+        row.status === "invalid"
+      ) {
+        tr.classList.add("extraPreviewWarn");
+      }
+
       tbody.appendChild(tr);
     }
+
     box.style.display = "block";
-    apply.disabled = !rows.some(r => r.status === "ready" || r.status === "conflict");
+    apply.disabled = !rows.some(r => r.status === "ready" || r.status === "scheduled_replace");
+
     const ready = rows.filter(r => r.status === "ready").length;
-    const conflicts = rows.filter(r => r.status === "conflict").length;
-    const same = rows.filter(r => r.status === "same").length;
-    const protectedCount = rows.filter(r => r.status === "protected").length;
-    const parts = [`${ready} pronto(s)`];
-    if (conflicts) parts.push(`${conflicts} conflito(s)`);
-    if (same) parts.push(`${same} já correto(s)`);
-    if (protectedCount) parts.push(`${protectedCount} anterior(es) protegido(s)`);
+    const replace = rows.filter(r => r.status === "scheduled_replace").length;
+    const already = rows.filter(r => r.status === "scheduled_same").length;
+    const checked = rows.filter(r => r.status === "checked_same" || r.status === "checked_only").length;
+    const ignored = rows.filter(r => r.status === "ignored_past").length;
+
+    const parts = [];
+    if (ready) parts.push(`${ready} lançamento(s) para aplicar/programar`);
+    if (replace) parts.push(`${replace} lançamento(s) para ajustar/programar`);
+    if (already) parts.push(`${already} já programada(s)`);
+    if (checked) parts.push(`${checked} da semana já preenchida somente conferida(s)`);
+    if (ignored) parts.push(`${ignored} anterior(es) ignorada(s)`);
     if (warnings.length) parts.push(`${warnings.length} aviso(s)`);
-    msg.textContent = parts.join(" • ") + (warnings.length ? ` — ${warnings.join(" | ")}` : "");
+
+    msg.textContent = (parts.length ? parts.join(" • ") : "nenhum lançamento futuro para programar")
+      + (warnings.length ? ` — ${warnings.join(" | ")}` : "");
   }
 
   async function previewExtraScales() {
@@ -731,20 +821,26 @@ async function loadAuditLogs() {
   async function applyExtraScales() {
     const textValue = String($("extraScalesText").value || "").trim();
     const referenceMonth = String($("extraReferenceMonth").value || "").trim();
-    const overwrite = !!$("extraOverwriteConflicts").checked;
     $("extraScalesApply").disabled = true;
-    $("extraScalesMsg").textContent = "aplicando...";
+    $("extraScalesMsg").textContent = "aplicando/programando escalas extras...";
+
     const r = await api("/api/extra_scales/apply", {
       method: "POST",
-      body: JSON.stringify({ text: textValue, reference_month: referenceMonth, overwrite_conflicts: overwrite }),
+      body: JSON.stringify({ text: textValue, reference_month: referenceMonth }),
       timeoutMs: 30000,
     });
+
     if (!r.ok) {
-      $("extraScalesMsg").textContent = (r.data && (r.data.error || r.data.details)) ? (r.data.error || r.data.details) : "erro ao aplicar escalas extras";
+      $("extraScalesMsg").textContent = (r.data && (r.data.error || r.data.details))
+        ? (r.data.error || r.data.details)
+        : "erro ao programar escalas extras";
       $("extraScalesApply").disabled = false;
       return;
     }
-    $("extraScalesMsg").textContent = `${Number(r.data.applied || 0)} lançamento(s) aplicado(s); ${Number(r.data.skipped || 0)} não alterado(s).`;
+
+    $("extraScalesMsg").textContent =
+      `${Number(r.data.applied || 0)} lançamento(s) aplicado(s)/programado(s); ${Number(r.data.skipped || 0)} item(ns) apenas conferido(s)/ignorado(s).`;
+
     await loadState();
     await previewExtraScales();
   }
@@ -813,22 +909,25 @@ async function loadAuditLogs() {
     if (manageBtn) manageBtn.style.display = canManageOfficers() ? "" : "none";
     const extraBtn = $("btnExtraScales");
     if (extraBtn) extraBtn.style.display =
-      (state.me && (state.me.can_view_audit || state.me.is_p1_editor)) ? "" : "none";
+      (state.me && state.me.can_manage_extra_scales) ? "" : "none";
+
+    const auditBtn = $("btnAudit");
+    if (auditBtn) auditBtn.style.display = canViewAudit() ? "" : "none";
 
     // auditoria (somente Franzini)
     if (canViewAudit()) {
       await loadAuditLogs();
+      await refreshAuditAlertStatus();
     } else {
       hideAuditLogs();
+      setAuditAlertVisual(0);
     }
 
-    // assinaturas
+    // assinaturas do PDF: Franzini master + P/1
     const sig = (state.meta && state.meta.signatures) ? state.meta.signatures : null;
-    if (state.me && state.me.is_admin && sig) {
+    if (state.me && state.me.can_manage_pdf_signatures && sig) {
       $("sigCenterName").value = sig.center_name || "";
-      $("sigCenterRole").value = sig.center_role || "";
       $("sigRightName").value = sig.right_name || "";
-      $("sigRightRole").value = sig.right_role || "";
       $("sigMsg").textContent = "";
       show("sigBox", true);
     } else {
@@ -1306,19 +1405,25 @@ function logout() {
 
   async function saveSignatures() {
     $("sigMsg").textContent = "";
-    if (!state.me || !state.me.is_admin) {
+    if (!state.me || !state.me.can_manage_pdf_signatures) {
       $("sigMsg").textContent = "sem permissao.";
       return;
     }
 
     const payload = {
-      right_name: $("sigRightName").value,
-      right_role: $("sigRightRole").value,
+      center_name: String($("sigCenterName").value || "").trim(),
+      right_name: String($("sigRightName").value || "").trim(),
     };
 
-    const r = await api("/api/signatures", { method: "PUT", body: JSON.stringify(payload) });
+    const r = await api("/api/signatures", {
+      method: "PUT",
+      body: JSON.stringify(payload),
+    });
+
     if (!r.ok) {
-      $("sigMsg").textContent = (r.data && (r.data.error || r.data.details)) ? (r.data.error || r.data.details) : "erro ao salvar assinaturas";
+      $("sigMsg").textContent = (r.data && (r.data.error || r.data.details))
+        ? (r.data.error || r.data.details)
+        : "erro ao salvar assinaturas";
       return;
     }
 
@@ -1333,7 +1438,24 @@ function logout() {
   if (btnAuditRefresh) btnAuditRefresh.addEventListener("click", (e) => { e.preventDefault(); loadAuditLogs(); });
   const auditName = $("auditName");
   if (auditName) auditName.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); loadAuditLogs(); } });
+  const auditBox = $("auditBox");
+  if (auditBox) auditBox.addEventListener("toggle", () => {
+    if (auditBox.open) {
+      markAuditAlertsSeen();
+      loadAuditLogs();
+    }
+  });
   $("btnLogout").addEventListener("click", logout);
+  const btnAudit = $("btnAudit");
+  if (btnAudit) btnAudit.addEventListener("click", async () => {
+    const box = $("auditBox");
+    if (!box) return;
+    box.style.display = "block";
+    box.open = true;
+    await markAuditAlertsSeen();
+    await loadAuditLogs();
+    box.scrollIntoView({ behavior: "smooth", block: "start" });
+  });
   $("btnPdf").addEventListener("click", openPdf);
   const btnDailySituation = $("btnDailySituation");
   if (btnDailySituation) btnDailySituation.addEventListener("click", openDailySituation);

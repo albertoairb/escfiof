@@ -344,3 +344,32 @@ table#table{width:100%;border-collapse:separate;border-spacing:0;min-width:840px
   .modal__card--extras input[type="month"]{max-width:none}
   .extraScalesActions .btn{width:100%}
 }
+
+/* ===== ESCFIOF: destaques de serviço e auditoria ===== */
+.redDutySelect,
+.redDutySelect:disabled{
+  color:#b00020 !important;
+  font-weight:800;
+  -webkit-text-fill-color:#b00020;
+  opacity:1;
+}
+.redDutyOption{color:#b00020;font-weight:800}
+.pill--red-duty{color:#b00020;border-color:#b00020;font-weight:800}
+.auditSummary--alert{
+  color:#b00020 !important;
+  font-weight:900 !important;
+}
+.auditSummary--alert::before{content:"⚠ ";}
+.btn--audit-alert{
+  background:#b00020 !important;
+  border-color:#b00020 !important;
+  color:#fff !important;
+  font-weight:900 !important;
+}
+.auditCrossUserRow{background:#fff0f0 !important}
+.auditCrossUserRow td{color:#8f0019}
+
+#sigCenterName,#sigRightName{text-transform:uppercase}
+
+#table select:disabled{opacity:1;color:#2f3742;-webkit-text-fill-color:#2f3742;background:#f3f5f7}
+#table select.redDutySelect:disabled{color:#b00020 !important;-webkit-text-fill-color:#b00020 !important;font-weight:800}
