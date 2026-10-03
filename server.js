@@ -42,7 +42,7 @@ function defaultSignatures() {
     center_name: "",
     center_role: "CH P1/P5",
     right_name: "",
-    right_role: "SUBCMT",
+    right_role: "SUBCOMANDANTE",
   };
 }
 
@@ -675,7 +675,7 @@ async function enrichExtraScalePreview(parsed) {
     }
     try {
       const dbRows = await safeQuery(
-        "SELECT codigo FROM escala_lancamentos WHERE data=? AND oficial=? LIMIT 1",
+        "SELECT codigo FROM escala_lancamentos WHERE data=? AND oficial=? ORDER BY id DESC LIMIT 1",
         [item.date, item.canonical_name]
       );
       if (dbRows.length) existing = normalizeCodeValue(dbRows[0].codigo) || existing;
@@ -883,6 +883,8 @@ async function ensureSchema() {
       if (!names.has("observacao")) await conn.query("ALTER TABLE escala_lancamentos ADD COLUMN observacao TEXT NULL");
       if (!names.has("created_by")) await conn.query("ALTER TABLE escala_lancamentos ADD COLUMN created_by VARCHAR(255) NULL");
       if (!names.has("updated_by")) await conn.query("ALTER TABLE escala_lancamentos ADD COLUMN updated_by VARCHAR(255) NULL");
+      if (!names.has("created_at")) await conn.query("ALTER TABLE escala_lancamentos ADD COLUMN created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP");
+      if (!names.has("updated_at")) await conn.query("ALTER TABLE escala_lancamentos ADD COLUMN updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP");
     } catch (e) {
       // tolera corrida/duplicidade em inicialização concorrente
       const code = String((e && e.code) || "");
@@ -1093,6 +1095,7 @@ async function fetchLancamentosForPeriod(periodStartISO, periodEndISO) {
          ELSE STR_TO_DATE(SUBSTRING(CAST(data AS CHAR), 1, 10), '%Y-%m-%d')
        END
      ) BETWEEN ? AND ?
+     ORDER BY id ASC
   `;
   return safeQuery(sql, [periodStartISO, periodEndISO]);
 }
@@ -2407,6 +2410,7 @@ app.post("/api/extra_scales/preview", authRequired(false), async (req, res) => {
 });
 
 app.post("/api/extra_scales/apply", authRequired(false), async (req, res) => {
+  let conn = null;
   try {
     if (!canManageExtraScalesName(req.user.canonical_name)) {
       return res.status(403).json({ error: "não autorizado" });
@@ -2420,9 +2424,9 @@ app.post("/api/extra_scales/apply", authRequired(false), async (req, res) => {
     const parsed = parseExtraScalesText(text, referenceMonth);
     const preview = await enrichExtraScalePreview(parsed);
 
-    let applied = 0;
     let skipped = 0;
     const results = [];
+    const toApply = [];
 
     for (const row of preview.rows || []) {
       if (
@@ -2438,27 +2442,64 @@ app.post("/api/extra_scales/apply", authRequired(false), async (req, res) => {
         continue;
       }
 
-      // Aplica a semana em preenchimento antes do fechamento e programa as semanas posteriores.
       if (row.status !== "ready" && row.status !== "scheduled_replace") {
         skipped++;
         results.push({ ...row, applied: false });
         continue;
       }
 
-      const beforeCode = String(row.existing_code || "").trim();
+      toApply.push({
+        ...row,
+        beforeCode: String(row.existing_code || "").trim(),
+      });
+    }
 
-      await safeQuery(
-        "INSERT INTO escala_lancamentos (data, oficial, codigo, observacao, created_by, updated_by) VALUES (?, ?, ?, NULL, ?, ?) " +
-        "ON DUPLICATE KEY UPDATE codigo=VALUES(codigo), observacao=NULL, updated_by=VALUES(updated_by), updated_at=CURRENT_TIMESTAMP",
-        [row.date, row.canonical_name, row.code, actor, actor]
-      );
+    // Grava os lançamentos futuros de forma atômica: ou todos entram, ou nenhum entra.
+    // Não depende da existência de UNIQUE(data, oficial), pois bancos antigos podem não tê-la.
+    if (toApply.length) {
+      conn = await pool.getConnection();
+      await conn.beginTransaction();
+      try {
+        for (const row of toApply) {
+          const [existingRows] = await conn.query(
+            "SELECT id FROM escala_lancamentos WHERE data=? AND oficial=? LIMIT 1 FOR UPDATE",
+            [row.date, row.canonical_name]
+          );
 
-      await logAction(
-        actor,
-        row.canonical_name,
-        "extra_scale",
-        `${row.date}: ${beforeCode || "-"} -> ${row.code} (${row.type_label})`
-      );
+          if (existingRows.length) {
+            await conn.query(
+              "UPDATE escala_lancamentos SET codigo=?, observacao=NULL, updated_by=? WHERE data=? AND oficial=?",
+              [row.code, actor, row.date, row.canonical_name]
+            );
+          } else {
+            await conn.query(
+              "INSERT INTO escala_lancamentos (data, oficial, codigo, observacao, created_by, updated_by) VALUES (?, ?, ?, NULL, ?, ?)",
+              [row.date, row.canonical_name, row.code, actor, actor]
+            );
+          }
+        }
+        await conn.commit();
+      } catch (dbErr) {
+        try { await conn.rollback(); } catch (_e) {}
+        throw dbErr;
+      } finally {
+        try { conn.release(); } catch (_e) {}
+        conn = null;
+      }
+    }
+
+    // Logs são posteriores ao commit principal. Falha de log nunca desfaz lançamento válido.
+    for (const row of toApply) {
+      try {
+        await logAction(
+          actor,
+          row.canonical_name,
+          "extra_scale",
+          `${row.date}: ${row.beforeCode || "-"} -> ${row.code} (${row.type_label})`
+        );
+      } catch (logErr) {
+        console.warn("extra_scale_action_log_failed", logErr && logErr.message ? logErr.message : logErr);
+      }
 
       await auditEvent(req, {
         event_type: "alteracao_feita",
@@ -2466,7 +2507,7 @@ app.post("/api/extra_scales/apply", authRequired(false), async (req, res) => {
         target_name: row.canonical_name,
         scale_date: row.date,
         field_name: "codigo",
-        before_value: beforeCode,
+        before_value: row.beforeCode,
         after_value: row.code,
         details: `escala extra programada: ${row.type_label}`,
         success: true,
@@ -2476,31 +2517,40 @@ app.post("/api/extra_scales/apply", authRequired(false), async (req, res) => {
       try {
         await safeQuery(
           "INSERT INTO escala_change_log (actor_name, target_name, data, field_name, before_value, after_value) VALUES (?, ?, ?, 'codigo', ?, ?)",
-          [actor, row.canonical_name, row.date, beforeCode || null, row.code]
+          [actor, row.canonical_name, row.date, row.beforeCode || null, row.code]
         );
-      } catch (_e) {}
+      } catch (changeLogErr) {
+        console.warn("extra_scale_change_log_failed", changeLogErr && changeLogErr.message ? changeLogErr.message : changeLogErr);
+      }
 
-      applied++;
       results.push({ ...row, applied: true, status: "applied", message: "Programado" });
     }
 
     return res.json({
       ok: true,
-      applied,
+      applied: toApply.length,
       skipped,
       rows: results,
       warnings: preview.warnings || [],
       current_week: preview.current_week || null,
     });
   } catch (err) {
+    if (conn) {
+      try { await conn.rollback(); } catch (_e) {}
+      try { conn.release(); } catch (_e) {}
+    }
+    console.error("[ERRO] /api/extra_scales/apply:", err && err.stack ? err.stack : err);
     await auditEvent(req, {
       event_type: "erro_escala_extra",
       actor_name: req.user && req.user.canonical_name ? req.user.canonical_name : null,
-      details: err.message,
+      details: err && err.message ? err.message : String(err),
       success: false,
       http_status: 500,
     });
-    return res.status(500).json({ error: "erro ao aplicar escalas extras", details: err.message });
+    return res.status(500).json({
+      error: "erro ao aplicar escalas extras",
+      details: err && err.message ? err.message : String(err),
+    });
   }
 });
 
@@ -2773,11 +2823,22 @@ app.put("/api/assignments", authRequired(false), async (req, res) => {
           await safeQuery("DELETE FROM escala_lancamentos WHERE data=? AND oficial=?", [date, target]);
         } else {
           const obsToSave = needObs ? newObs : null;
-          await safeQuery(
-            "INSERT INTO escala_lancamentos (data, oficial, codigo, observacao, created_by, updated_by) VALUES (?, ?, ?, ?, ?, ?) " +
-              "ON DUPLICATE KEY UPDATE codigo=VALUES(codigo), observacao=VALUES(observacao), updated_by=VALUES(updated_by), updated_at=CURRENT_TIMESTAMP",
-            [date, target, code, obsToSave, actor, actor]
+          const existingRows = await safeQuery(
+            "SELECT id FROM escala_lancamentos WHERE data=? AND oficial=? ORDER BY id DESC LIMIT 1",
+            [date, target]
           );
+          if (existingRows.length) {
+            // Atualiza todas as duplicidades legadas sem apagar dados históricos.
+            await safeQuery(
+              "UPDATE escala_lancamentos SET codigo=?, observacao=?, updated_by=? WHERE data=? AND oficial=?",
+              [code, obsToSave, actor, date, target]
+            );
+          } else {
+            await safeQuery(
+              "INSERT INTO escala_lancamentos (data, oficial, codigo, observacao, created_by, updated_by) VALUES (?, ?, ?, ?, ?, ?)",
+              [date, target, code, obsToSave, actor, actor]
+            );
+          }
         }
       } catch (_e) {
         // ignora se a tabela não existir em algum ambiente

@@ -831,8 +831,8 @@ async function loadAuditLogs() {
     });
 
     if (!r.ok) {
-      $("extraScalesMsg").textContent = (r.data && (r.data.error || r.data.details))
-        ? (r.data.error || r.data.details)
+      $("extraScalesMsg").textContent = (r.data && (r.data.details || r.data.error))
+        ? (r.data.details || r.data.error)
         : "erro ao programar escalas extras";
       $("extraScalesApply").disabled = false;
       return;
