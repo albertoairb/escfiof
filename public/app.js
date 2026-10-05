@@ -127,12 +127,25 @@
     const c = String(code || "").trim();
     if (c === "MA") return "FOLGA_TARDE";
     if (c === "VE") return "FOLGA_MANHA";
+    if (c === "FOJ") return "FOLGA_JUNÇÃO";
+    if (c === "FO*") return "FOLGA_DESCRIÇÃO";
+    if (c === "SV*") return "SERVIÇO_DESCRIÇÃO";
     return c;
   }
 
   function isRedDutyCode(code) {
     const c = String(code || "").trim();
     return c === "SR" || c === "SS" || c === "EXP_SS";
+  }
+
+  function adjustSituationSelectFont(sel) {
+    if (!sel) return;
+    const c = String(sel.value || "").trim();
+    const longVisualCode = c === "FOJ" || c === "FO*" || c === "SV*";
+    sel.style.fontSize = longVisualCode ? "9px" : "12px";
+    sel.style.minWidth = "0";
+    sel.style.maxWidth = "100%";
+    sel.style.boxSizing = "border-box";
   }
 
 
@@ -213,9 +226,9 @@ function fmtDateCompact(iso){ const [y,m,d]=iso.split("-"); const mons=["JAN","F
       "SR": "SUPERVISOR REGIONAL",
       "MA": "FOLGA À TARDE",
       "VE": "FOLGA DE MANHÃ",
-      "FOJ": "FOLGA (SEM DESCRIÇÃO)",
-      "FO*": "FOLGA (COM DESCRIÇÃO)",
-      "SV*": "SERVIÇO (COM DESCRIÇÃO)",
+      "FOJ": "",
+      "FO*": "",
+      "SV*": "",
       "LP": "LICENÇA-PRÊMIO",
       "FERIAS": "FÉRIAS",
       "FERIADO": "FERIADO",
@@ -595,6 +608,7 @@ async function loadAuditLogs() {
         const pendingCode = (pending && typeof pending === "object") ? (pending.code || "") : pending;
         sel.value = (pendingCode !== null && pendingCode !== undefined) ? pendingCode : cur;
         sel.classList.toggle("redDutySelect", isRedDutyCode(sel.value));
+        adjustSituationSelectFont(sel);
 
         // tooltip com descricao (quando houver)
         const noteText = (state.notes && state.notes[key]) ? String(state.notes[key]) : "";
@@ -632,6 +646,7 @@ async function loadAuditLogs() {
         sel.addEventListener("change", () => {
           const v = String(sel.value || "");
           sel.classList.toggle("redDutySelect", isRedDutyCode(v));
+          adjustSituationSelectFont(sel);
           const needObs = (v === "OUTROS" || /\*$/.test(v));
 
           // controla exibição do campo de descrição

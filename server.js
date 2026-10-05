@@ -128,6 +128,9 @@ function displayCodeValue(value) {
   const code = normalizeCodeValue(value);
   if (code === "MA") return "FOLGA_TARDE";
   if (code === "VE") return "FOLGA_MANHA";
+  if (code === "FOJ") return "FOLGA_JUNÇÃO";
+  if (code === "FO*") return "FOLGA_DESCRIÇÃO";
+  if (code === "SV*") return "SERVIÇO_DESCRIÇÃO";
   return code;
 }
 
@@ -1613,11 +1616,7 @@ function drawReferenceHours(doc, startY) {
     "SR = SUPERVISOR REGIONAL",
     "SS = SUPERIOR DE SOBREAVISO",
     "EXP_SS = EXPEDIENTE SUPERIOR DE SOBREAVISO",
-    "FOLGA_TARDE = FOLGA À TARDE",
-    "FOLGA_MANHA = FOLGA DE MANHÃ",
-    "FOJ = FOLGA SEM DESCRIÇÃO",
-    "FO* = FOLGA COM DESCRIÇÃO",
-    "SV* = SERVIÇO COM DESCRIÇÃO",
+    "FO = FOLGA",
     "LP = LICENÇA-PRÊMIO",
     "PF = PONTO FACULTATIVO",
     "CFP_DIA = CFP DIURNO",
@@ -1626,6 +1625,7 @@ function drawReferenceHours(doc, startY) {
     "EAP = ESTÁGIO DE APERFEIÇOAMENTO PROFISSIONAL",
     "CSP = CURSO SUPERIOR DE POLÍCIA",
     "PPJM = PLANTÃO DE POLÍCIA JUDICIÁRIA MILITAR",
+    "DS = DISPENSA DE SERVIÇO",
     "CFT = COMANDO DE FORÇA TÁTICA",
     "TJM = TRIBUNAL DE JUSTIÇA MILITAR",
   ];
@@ -1771,7 +1771,7 @@ function renderFrozenScalePdf(res, st, filename = "escala_anterior_original.pdf"
   } else {
     doc.fontSize(10);
     for (const it of noteEntries) {
-      doc.font("Helvetica-Bold").text(`${fmtDDMMYYYY(it.iso)} - ${fixText(it.off.rank)} ${officerNameNoAccents(it.off.name)} (${it.code})`);
+      doc.font("Helvetica-Bold").text(`${fmtDDMMYYYY(it.iso)} - ${fixText(it.off.rank)} ${officerNameNoAccents(it.off.name)} (${displayCodeValue(it.code)})`);
       doc.font("Helvetica").text(fixText(it.text || ""));
       if (it.meta && (it.meta.updated_at || it.meta.updated_by || it.meta.created_by)) {
         const dt = it.meta.updated_at ? fmtDDMMYYYYHHmm(it.meta.updated_at) : "";
@@ -2962,6 +2962,9 @@ function dailySituationDisplayCode(code) {
   const c = String(code || "").trim();
   if (c === "MA") return "FOLGA_TARDE";
   if (c === "VE") return "FOLGA_MANHA";
+  if (c === "FOJ") return "FOLGA_JUNÇÃO";
+  if (c === "FO*") return "FOLGA_DESCRIÇÃO";
+  if (c === "SV*") return "SERVIÇO_DESCRIÇÃO";
   if (c === "CFP_DIA") return "CFP DIURNO";
   if (c === "CFP_NOITE") return "CFP NOTURNO";
   if (c === "FERIAS") return "FÉRIAS";
@@ -3479,7 +3482,7 @@ const lastStamp = fmtDDMMYYYYHHmm(lastAt);
       doc.fontSize(10);
 
       for (const it of noteEntries) {
-        const title = `${fmtDDMMYYYY(it.iso)} - ${fixText(it.off.rank)} ${officerNameNoAccents(it.off.name)} (${it.code})`;
+        const title = `${fmtDDMMYYYY(it.iso)} - ${fixText(it.off.rank)} ${officerNameNoAccents(it.off.name)} (${displayCodeValue(it.code)})`;
         doc.font("Helvetica-Bold").text(title);
         doc.font("Helvetica").text(fixText(it.text || ""), { width: doc.page.width - doc.page.margins.left - doc.page.margins.right });
         
