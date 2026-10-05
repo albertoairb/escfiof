@@ -122,12 +122,15 @@ const OFFICER_MANAGER_NAMES = new Set([
 // Códigos válidos (tudo em MAIÚSCULO, conforme regra)
 // - códigos terminados em * permitem descrição
 // - FOJ: sem descrição
-const CODES = ["EXP", "SR", "MA", "VE", "FOJ", "FO*", "SV*", "LP", "FERIAS", "FERIADO", "CONVALESCENCA", "CURSO", "CFP_DIA", "CFP_NOITE", "OUTROS", "SS", "EXP_SS", "FO", "PF", "CAO", "EAP", "CSP", "PPJM", "DS", "CFT", "TJM", "LUTO", "LICENCA PATERNIDADE", "NUPCIAS", "LICENCA ADOCAO"];
+const CODES = ["EXP_08H_18H", "EXP_09H_18H", "EXP_QOS_MANHA", "EXP_QOS_TARDE", "SR", "MA", "VE", "FOJ", "FO*", "SV*", "LP", "FERIAS", "FERIADO", "CONVALESCENCA", "CURSO", "CFP_DIA", "CFP_NOITE", "OUTROS", "SS", "EXP_SS", "FO", "PF", "CAO", "EAP", "CSP", "PPJM", "DS", "CFT", "TJM", "LUTO", "LICENCA PATERNIDADE", "LICENCA GESTANTE", "NUPCIAS", "LICENCA ADOCAO"];
 
 function displayCodeValue(value) {
   const code = normalizeCodeValue(value);
   if (code === "MA") return "FOLGA_TARDE";
   if (code === "VE") return "FOLGA_MANHA";
+  if (code === "LICENCA GESTANTE") return "LICENÇA GESTANTE";
+  if (code === "EXP_QOS_MANHA") return "EXP_QOS_MANHÃ";
+  if (code === "EXP_QOS_TARDE") return "EXP_QOS_TARDE";
   if (code === "FOJ") return "FOLGA_JUNÇÃO";
   if (code === "FO*") return "FOLGA_DESCRIÇÃO";
   if (code === "SV*") return "SERVIÇO_DESCRIÇÃO";
@@ -149,10 +152,16 @@ function normalizeCodeValue(value) {
   if (compact === "SV*") return "SV*";
   if (compact === "CFPDIA") return "CFP_DIA";
   if (compact === "CFPNOITE") return "CFP_NOITE";
+  if (compact === "EXP08H18H") return "EXP_08H_18H";
+  if (compact === "EXP09H18H") return "EXP_09H_18H";
+  if (compact === "EXPQOSMANHA") return "EXP_QOS_MANHA";
+  if (compact === "EXPQOSTARDE") return "EXP_QOS_TARDE";
+  if (compact === "EXPQOS") return "EXP_QOS";
   if (compact === "EXPSS") return "EXP_SS";
   if (compact === "FERIAS") return "FERIAS";
   if (compact === "CONVALESCENCA") return "CONVALESCENCA";
   if (compact === "LICENCAPATERNIDADE") return "LICENCA PATERNIDADE";
+  if (compact === "LICENCAGESTANTE") return "LICENCA GESTANTE";
   if (compact === "LICENCAADOCAO" || compact === "LICENAADDO" || compact === "LICENCAADDO") return "LICENCA ADOCAO";
   if (compact === "NUPCIAS") return "NUPCIAS";
   return code;
@@ -358,15 +367,14 @@ function isClosedNow() {
   return false;
 }
 
-// O horário de sexta-feira às 17h é apenas o gatilho do autopreenchimento.
-// Depois do gatilho, a rotina continua válida no sábado e domingo para preencher
-// somente campos que ainda estejam vazios.
-function shouldRunAutoFillNow() {
-  const now = new Date();
-  const day = now.getDay(); // 5=sexta, 6=sábado, 0=domingo
-  const hour = now.getHours();
-  if (day === 5) return hour >= AUTOFILL_FRIDAY_HOUR;
-  return day === 6 || day === 0;
+// O autopreenchimento é disparado somente às 17h do dia administrativo de fechamento:
+// normalmente sexta-feira; quando o fechamento é antecipado por feriado/PF, no último
+// dia útil correspondente. Não há disparo automático no sábado ou domingo.
+function shouldRunAutoFillNow(date = new Date()) {
+  const now = new Date(date);
+  const todayISO = fmtYYYYMMDD(now);
+  const triggerISO = getAdministrativeClosingDateISO(now);
+  return todayISO === triggerISO && now.getHours() >= AUTOFILL_FRIDAY_HOUR;
 }
 
 function isAdminName(canonicalName) {
@@ -547,7 +555,7 @@ function calculateCaptainCoverageAlerts(officers, dates, assignments) {
     if (dow === 0 || dow === 6) continue;
 
     const codes = group.map(off => String((assignments || {})[`${off.canonical_name}|${iso}`] || "").trim());
-    const hasExp = codes.includes("EXP");
+    const hasExp = codes.some(code => code === "EXP" || code === "EXP_08H_18H" || code === "EXP_09H_18H");
     if (hasExp) continue;
     const hasMorning = codes.includes("MA");
     const hasAfternoon = codes.includes("VE");
@@ -732,12 +740,19 @@ async function enrichExtraScalePreview(parsed) {
   return { rows: out, warnings: parsed.warnings || [], current_week: currentWeek, displayed_week_closed: displayedWeekClosed };
 }
 
+function isAutoFillOfficer(off) {
+  if (!off) return false;
+  if (isCapOrAbove(off)) return true;
+  return normKey(off.canonical_name) === normKey("Larissa Amadeu Leite") || normKey(off.name) === normKey("Larissa Amadeu Leite");
+}
+
 function autoCodeForOfficerDate(off, iso) {
-  if (!isCapOrAbove(off)) return "";
+  if (!isAutoFillOfficer(off)) return "";
   const [y, m, d] = iso.split("-").map(Number);
   const day = new Date(y, m - 1, d).getDay();
   if (day === 0 || day === 6) return "FO";
-  return "EXP";
+  const isSantarelli = normKey(off.canonical_name) === normKey("Andre Santarelli de Paula") || normKey(off.name) === normKey("Andre Santarelli de Paula");
+  return isSantarelli ? "EXP_09H_18H" : "EXP_08H_18H";
 }
 
 function applyAutoFill(st) {
@@ -746,7 +761,7 @@ function applyAutoFill(st) {
   st.auto_assignments = st.auto_assignments && typeof st.auto_assignments === "object" ? st.auto_assignments : {};
   let changed = false;
   for (const off of OFFICERS) {
-    if (!isCapOrAbove(off)) continue;
+    if (!isAutoFillOfficer(off)) continue;
     for (const iso of st.dates || []) {
       const key = `${off.canonical_name}|${iso}`;
       if (String(st.assignments[key] || "").trim()) continue;
@@ -1595,8 +1610,10 @@ function drawReferenceHours(doc, startY) {
 
   doc.font("Helvetica").fontSize(6.7).fillColor("black");
   const lines = [
-    "EXP - DAS 08H00 ÀS 18H00 / DAS 09H00 ÀS 18H00, NO MESMO DIA.",
-    "EXP QOS - das 07h00 às 13h00 e das 12h00 às 18h00",
+    "EXP_08H_18H - DAS 08H00 ÀS 18H00, NO MESMO DIA.",
+    "EXP_09H_18H - DAS 09H00 ÀS 18H00, NO MESMO DIA.",
+    "EXP_QOS_MANHÃ - DAS 07H00 ÀS 13H00, NO MESMO DIA.",
+    "EXP_QOS_TARDE - DAS 12H00 ÀS 18H00, NO MESMO DIA.",
     "CFP_DIA - DAS 05H00 ÀS 17H15, NO MESMO DIA - REGIME 12X36.",
     "CFP_NOITE - DAS 17H00 DO DIA DE INÍCIO ÀS 05H15 DO DIA SEGUINTE.",
     "SR - DIAS ÚTEIS: DAS 17H30 DO DIA DE INÍCIO ÀS 08H00 DO DIA SEGUINTE.",
@@ -1612,7 +1629,10 @@ function drawReferenceHours(doc, startY) {
     .text("PORTARIA DO CMT G Nº PM1-007/02/23", x, leftY, { width: leftWidth, align: "left" });
 
   const legendLines = [
-    "EXP = EXPEDIENTE",
+    "EXP_08H_18H = EXPEDIENTE DAS 08H00 ÀS 18H00",
+    "EXP_09H_18H = EXPEDIENTE DAS 09H00 ÀS 18H00",
+    "EXP_QOS_MANHÃ = EXPEDIENTE QOS DAS 07H00 ÀS 13H00",
+    "EXP_QOS_TARDE = EXPEDIENTE QOS DAS 12H00 ÀS 18H00",
     "SR = SUPERVISOR REGIONAL",
     "SS = SUPERIOR DE SOBREAVISO",
     "EXP_SS = EXPEDIENTE SUPERIOR DE SOBREAVISO",
@@ -2019,12 +2039,13 @@ app.get("/api/state", authRequired(true), async (req, res) => {
     const periodLabel = `periodo: ${fmtDDMMYYYY(st.period.start)} a ${fmtDDMMYYYY(st.period.end)}`;
 
     const p1_cell_editable = {};
-    const p1FullEditToday = req.user.is_p1_editor ? isP1GlobalEditDay() : false;
+    // P/1 tem edição geral permanente, em qualquer dia.
+    const p1FullEditToday = !!req.user.is_p1_editor;
     if (req.user.is_p1_editor) {
       for (const off of OFFICERS) {
         for (const iso of st.dates || []) {
           const key = `${off.canonical_name}|${iso}`;
-          p1_cell_editable[key] = p1FullEditToday;
+          p1_cell_editable[key] = true;
         }
       }
     }
@@ -2069,7 +2090,7 @@ app.get("/api/state", authRequired(true), async (req, res) => {
       const holidays = getHolidaysForWeek(st.dates);
       return res.json({
         ok: true,
-        me: { canonical_name: req.user.canonical_name, is_admin: req.user.is_admin, is_readonly: !!req.user.is_readonly, is_p1_editor: !!req.user.is_p1_editor, is_master: isMasterName(req.user.canonical_name), p1_full_edit_today: req.user.is_p1_editor ? isP1GlobalEditDay() : false, can_view_audit: canViewAuditName(req.user.canonical_name), can_manage_officers: canManageOfficersName(req.user.canonical_name), can_manage_extra_scales: canManageExtraScalesName(req.user.canonical_name), can_manage_pdf_signatures: canManagePdfSignaturesName(req.user.canonical_name) },
+        me: { canonical_name: req.user.canonical_name, is_admin: req.user.is_admin, is_readonly: !!req.user.is_readonly, is_p1_editor: !!req.user.is_p1_editor, is_master: isMasterName(req.user.canonical_name), p1_full_edit_today: !!req.user.is_p1_editor, can_view_audit: canViewAuditName(req.user.canonical_name), can_manage_officers: canManageOfficersName(req.user.canonical_name), can_manage_extra_scales: canManageExtraScalesName(req.user.canonical_name), can_manage_pdf_signatures: canManagePdfSignaturesName(req.user.canonical_name) },
         meta: {
           system_name: fixText(SYSTEM_NAME),
           footer_mark: `© ${COPYRIGHT_YEAR} - ${fixText(AUTHOR)}`,
@@ -2742,23 +2763,11 @@ app.put("/api/assignments", authRequired(false), async (req, res) => {
 
       // Regra de edição:
       // - Franzini (master) pode alterar qualquer linha;
-      // - P/1 pode alterar qualquer linha somente no dia geral autorizado;
+      // - P/1 pode alterar qualquer linha em qualquer dia;
       // - os demais Oficiais alteram apenas a própria linha.
+      // Toda alteração efetiva, inclusive do P/1, segue para audit_logs e escala_change_log.
       const isMaster = isMasterName(actor);
-      const p1CanEditAll = req.user.is_p1_editor && isP1GlobalEditDay();
-
-      if (req.user.is_p1_editor && !p1CanEditAll) {
-        await auditEvent(req, {
-          event_type: "tentativa_p1_fora_dia_autorizado",
-          actor_name: actor,
-          target_name: target,
-          scale_date: date,
-          details: "P1 tentou editar fora da sexta-feira ou do fechamento antecipado autorizado",
-          success: false,
-          http_status: 403,
-        });
-        continue;
-      }
+      const p1CanEditAll = !!req.user.is_p1_editor;
 
       if (!isMaster && !p1CanEditAll && target !== actor) {
         await auditEvent(req, {
@@ -2971,6 +2980,9 @@ function dailySituationDisplayCode(code) {
   if (c === "CONVALESCENCA") return "CONVALESCENÇA";
   if (c === "NUPCIAS") return "NÚPCIAS";
   if (c === "LICENCA PATERNIDADE") return "LICENÇA PATERNIDADE";
+  if (c === "LICENCA GESTANTE") return "LICENÇA GESTANTE";
+  if (c === "EXP_QOS_MANHA") return "EXP_QOS_MANHÃ";
+  if (c === "EXP_QOS_TARDE") return "EXP_QOS_TARDE";
   if (c === "LICENCA ADOCAO") return "LICENÇA ADOÇÃO";
   return c || "-";
 }

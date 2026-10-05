@@ -127,6 +127,9 @@
     const c = String(code || "").trim();
     if (c === "MA") return "FOLGA_TARDE";
     if (c === "VE") return "FOLGA_MANHA";
+    if (c === "LICENCA GESTANTE") return "LICENÇA GESTANTE";
+    if (c === "EXP_QOS_MANHA") return "EXP_QOS_MANHÃ";
+    if (c === "EXP_QOS_TARDE") return "EXP_QOS_TARDE";
     if (c === "FOJ") return "FOLGA_JUNÇÃO";
     if (c === "FO*") return "FOLGA_DESCRIÇÃO";
     if (c === "SV*") return "SERVIÇO_DESCRIÇÃO";
@@ -141,7 +144,7 @@
   function adjustSituationSelectFont(sel) {
     if (!sel) return;
     const c = String(sel.value || "").trim();
-    const longVisualCode = c === "FOJ" || c === "FO*" || c === "SV*";
+    const longVisualCode = c === "FOJ" || c === "FO*" || c === "SV*" || c === "EXP_08H_18H" || c === "EXP_09H_18H" || c === "EXP_QOS_MANHA" || c === "EXP_QOS_TARDE" || c === "LICENCA GESTANTE";
     sel.style.fontSize = longVisualCode ? "9px" : "12px";
     sel.style.minWidth = "0";
     sel.style.maxWidth = "100%";
@@ -222,7 +225,10 @@ function fmtDateCompact(iso){ const [y,m,d]=iso.split("-"); const mons=["JAN","F
     el.innerHTML = "";
 
     const help = {
-      "EXP": "EXPEDIENTE",
+      "EXP_08H_18H": "EXPEDIENTE DAS 08H ÀS 18H",
+      "EXP_09H_18H": "EXPEDIENTE DAS 09H ÀS 18H",
+      "EXP_QOS_MANHA": "EXPEDIENTE QOS DAS 07H ÀS 13H",
+      "EXP_QOS_TARDE": "EXPEDIENTE QOS DAS 12H ÀS 18H",
       "SR": "SUPERVISOR REGIONAL",
       "MA": "FOLGA À TARDE",
       "VE": "FOLGA DE MANHÃ",
@@ -250,6 +256,7 @@ function fmtDateCompact(iso){ const [y,m,d]=iso.split("-"); const mons=["JAN","F
       "TJM": "TRIBUNAL DE JUSTIÇA MILITAR",
       "LUTO": "LUTO",
       "LICENCA PATERNIDADE": "LICENÇA-PATERNIDADE",
+      "LICENCA GESTANTE": "",
       "NUPCIAS": "NÚPCIAS",
       "LICENCA ADOCAO": "LICENÇA-ADOÇÃO"
     };
@@ -288,9 +295,7 @@ function fmtDateCompact(iso){ const [y,m,d]=iso.split("-"); const mons=["JAN","F
       return;
     }
     if (state.me && state.me.is_p1_editor) {
-      $("lockMsg").textContent = state.me.p1_full_edit_today
-        ? "P/1 - EDIÇÃO GERAL LIBERADA HOJE PARA TODOS OS OFICIAIS."
-        : "P/1 - SOMENTE CONSULTA. EDIÇÃO GERAL NA SEXTA-FEIRA OU NO FECHAMENTO ANTECIPADO AUTORIZADO.";
+      $("lockMsg").textContent = "P/1 - EDIÇÃO GERAL LIBERADA PARA TODOS OS OFICIAIS.";
       return;
     }
     const week = weekRangeLabel();
@@ -534,14 +539,14 @@ async function loadAuditLogs() {
   function canEditOfficer(officerCanonical) {
     if (!state.me || state.me.is_readonly) return false;
     if (state.me.is_master) return true;
-    if (state.me.is_p1_editor) return !!state.me.p1_full_edit_today;
+    if (state.me.is_p1_editor) return true;
     return officerCanonical === state.me.canonical_name;
   }
 
   function canEditCell(officerCanonical, iso) {
     if (!state.me || state.me.is_readonly) return false;
     if (state.me.is_master) return true;
-    if (state.me.is_p1_editor) return !!state.p1_cell_editable[`${officerCanonical}|${iso}`];
+    if (state.me.is_p1_editor) return true;
     return officerCanonical === state.me.canonical_name;
   }
 
@@ -604,6 +609,13 @@ async function loadAuditLogs() {
 
         const key = `${off.canonical_name}|${iso}`;
         const cur = state.assignments[key] || "";
+        if (cur && !Array.from(sel.options).some(o => o.value === cur)) {
+          const legacyOpt = document.createElement("option");
+          legacyOpt.value = cur;
+          legacyOpt.textContent = displayCode(cur);
+          legacyOpt.dataset.legacy = "1";
+          sel.appendChild(legacyOpt);
+        }
         const pending = state.pending.has(key) ? state.pending.get(key) : null;
         const pendingCode = (pending && typeof pending === "object") ? (pending.code || "") : pending;
         sel.value = (pendingCode !== null && pendingCode !== undefined) ? pendingCode : cur;
