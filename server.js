@@ -191,7 +191,10 @@ app.use(express.static(path.join(__dirname, "public"), {
 // DB POOL
 // ===============================
 const pool = DB_URL
-  ? mysql.createPool(DB_URL)
+  ? mysql.createPool({
+      uri: DB_URL,
+      timezone: "Z",
+    })
   : mysql.createPool({
       host: DB_HOST,
       port: DB_PORT,
