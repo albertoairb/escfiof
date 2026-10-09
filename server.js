@@ -127,13 +127,20 @@ const CODES = ["EXP_08H_18H", "EXP_09H_18H", "EXP_QOS_MANHA", "EXP_QOS_TARDE", "
 function displayCodeValue(value) {
   const code = normalizeCodeValue(value);
   if (code === "MA") return "FOLGA_TARDE";
-  if (code === "VE") return "FOLGA_MANHA";
+  if (code === "VE") return "FOLGA_MANHÃ";
+  if (code === "FERIAS") return "FÉRIAS";
+  if (code === "CONVALESCENCA") return "CONVALESCENÇA";
+  if (code === "NUPCIAS") return "NÚPCIAS";
+  if (code === "LICENCA PATERNIDADE") return "LICENÇA PATERNIDADE";
   if (code === "LICENCA GESTANTE") return "LICENÇA GESTANTE";
+  if (code === "LICENCA ADOCAO") return "LICENÇA ADOÇÃO";
   if (code === "EXP_QOS_MANHA") return "EXP_QOS_MANHÃ";
   if (code === "EXP_QOS_TARDE") return "EXP_QOS_TARDE";
   if (code === "FOJ") return "FOLGA_JUNÇÃO";
   if (code === "FO*") return "FOLGA_DESCRIÇÃO";
   if (code === "SV*") return "SERVIÇO_DESCRIÇÃO";
+  if (code === "FO") return "FOLGA";
+  if (code === "PF") return "P. FACULTATIVO";
   return code;
 }
 
@@ -439,8 +446,8 @@ function getAdministrativeClosingDateISO(date = new Date()) {
   const friday = new Date(monday);
   friday.setDate(monday.getDate() + 4);
 
-  if (isHolidayISO(fmtYYYYMMDD(thursday))) return fmtYYYYMMDD(wednesday);
-  if (isHolidayISO(fmtYYYYMMDD(friday))) return fmtYYYYMMDD(thursday);
+  if (isHolidayOrPointFacultativoISO(fmtYYYYMMDD(thursday))) return fmtYYYYMMDD(wednesday);
+  if (isHolidayOrPointFacultativoISO(fmtYYYYMMDD(friday))) return fmtYYYYMMDD(thursday);
   return fmtYYYYMMDD(friday);
 }
 
@@ -500,34 +507,62 @@ function isoFromDate(d) {
 
 function getHolidaysForWeek(weekDates) {
   if (!Array.isArray(weekDates) || !weekDates.length) return [];
-  const year = Number(weekDates[0].slice(0, 4));
+  const years = [...new Set(weekDates.map(iso => Number(String(iso).slice(0, 4))).filter(Boolean))];
   const set = new Map();
 
-  // Feriados nacionais.
-  // Datas fixas em formato técnico MM-DD; a interface exibe DD/MM/AAAA.
-  const fixedNational = [
-    ["01-01", "Confraternização Universal", "NACIONAL"],
-    ["04-21", "Tiradentes", "NACIONAL"],
-    ["05-01", "Dia Mundial do Trabalho", "NACIONAL"],
-    ["09-07", "Independência do Brasil", "NACIONAL"],
-    ["10-12", "Nossa Senhora Aparecida", "NACIONAL"],
-    ["11-02", "Finados", "NACIONAL"],
-    ["11-15", "Proclamação da República", "NACIONAL"],
-    ["11-20", "Dia Nacional de Zumbi e da Consciência Negra", "NACIONAL"],
-    ["12-25", "Natal", "NACIONAL"],
-  ];
-  for (const [md, name, scope] of fixedNational) {
-    set.set(`${year}-${md}`, { name, type: "FERIADO", scope });
+  for (const year of years) {
+    // Feriados nacionais.
+    const fixedNational = [
+      ["01-01", "Confraternização Universal", "NACIONAL"],
+      ["04-21", "Tiradentes", "NACIONAL"],
+      ["05-01", "Dia Mundial do Trabalho", "NACIONAL"],
+      ["09-07", "Independência do Brasil", "NACIONAL"],
+      ["10-12", "Nossa Senhora Aparecida", "NACIONAL"],
+      ["11-02", "Finados", "NACIONAL"],
+      ["11-15", "Proclamação da República", "NACIONAL"],
+      ["11-20", "Dia Nacional de Zumbi e da Consciência Negra", "NACIONAL"],
+      ["12-25", "Natal", "NACIONAL"],
+    ];
+    for (const [md, name, scope] of fixedNational) {
+      set.set(`${year}-${md}`, { name, type: "FERIADO", scope, auto_code: "FERIADO" });
+    }
+
+    // Estado de São Paulo.
+    set.set(`${year}-07-09`, { name: "Revolução Constitucionalista", type: "FERIADO", scope: "ESTADUAL", auto_code: "FERIADO" });
+
+    // Município de São Paulo: feriados aplicáveis na Capital.
+    set.set(`${year}-01-25`, { name: "Aniversário da Cidade de São Paulo", type: "FERIADO", scope: "MUNICIPAL", auto_code: "FERIADO" });
+    const easter = easterDate(year);
+    set.set(isoFromDate(addDays(easter, -2)), { name: "Paixão de Cristo", type: "FERIADO", scope: "MUNICIPAL", auto_code: "FERIADO" });
+    set.set(isoFromDate(addDays(easter, 60)), { name: "Corpus Christi", type: "FERIADO", scope: "MUNICIPAL", auto_code: "FERIADO" });
+
+    // Pontos facultativos das repartições públicas estaduais em 2026
+    // (Decreto Estadual nº 70.273/2025, com a alteração do Decreto nº 70.925/2026).
+    if (year === 2026) {
+      const stateOptionalDays = [
+        ["02-16", "Carnaval"],
+        ["02-17", "Carnaval"],
+        ["04-20", "Véspera do feriado de Tiradentes"],
+        ["06-04", "Corpus Christi"],
+        ["06-05", "Ponto facultativo após Corpus Christi"],
+        ["07-10", "Ponto facultativo após 9 de Julho"],
+        ["10-30", "Dia do Servidor Público - transferido de 28/10"],
+        ["12-24", "Véspera de Natal"],
+        ["12-31", "Véspera de Ano Novo"],
+      ];
+      for (const [md, name] of stateOptionalDays) {
+        const iso = `${year}-${md}`;
+        // Se a data também for feriado, prevalece FERIADO.
+        if (!set.has(iso) || set.get(iso).type !== "FERIADO") {
+          set.set(iso, { name, type: "P. FACULTATIVO", scope: "ESTADUAL", auto_code: "PF" });
+        }
+      }
+
+      // Quarta-feira de Cinzas: ponto facultativo somente até 12h.
+      // Mantido apenas como aviso; não autopreenche o dia inteiro.
+      set.set(`${year}-02-18`, { name: "Quarta-feira de Cinzas - até 12h", type: "P. FACULTATIVO", scope: "ESTADUAL", auto_code: "" });
+    }
   }
-
-  // Estado de São Paulo.
-  set.set(`${year}-07-09`, { name: "REVOLUÇÃO CONSTITUCIONALISTA", type: "FERIADO", scope: "ESTADUAL" });
-
-  // Município de São Paulo.
-  set.set(`${year}-01-25`, { name: "Aniversário da Cidade de São Paulo", type: "FERIADO", scope: "MUNICIPAL" });
-  const easter = easterDate(year);
-  set.set(isoFromDate(addDays(easter, -2)), { name: "Paixão de Cristo", type: "FERIADO", scope: "MUNICIPAL" });
-  set.set(isoFromDate(addDays(easter, 60)), { name: "Corpus Christi", type: "FERIADO", scope: "MUNICIPAL" });
 
   const out = [];
   for (const iso of weekDates) {
@@ -536,9 +571,18 @@ function getHolidaysForWeek(weekDates) {
   return out;
 }
 
+function getCalendarEventISO(iso) {
+  return getHolidaysForWeek([iso]).find(h => h && h.date === iso) || null;
+}
 
 function isHolidayISO(iso) {
-  return getHolidaysForWeek([iso]).some(h => h && h.date === iso);
+  const event = getCalendarEventISO(iso);
+  return !!event && event.type === "FERIADO";
+}
+
+function isHolidayOrPointFacultativoISO(iso) {
+  const event = getCalendarEventISO(iso);
+  return !!event && (event.type === "FERIADO" || event.type === "P. FACULTATIVO");
 }
 
 function isCaptainCoverageMember(off) {
@@ -759,10 +803,33 @@ function autoCodeForOfficerDate(off, iso) {
 }
 
 function applyAutoFill(st) {
-  if (!st || !shouldRunAutoFillNow()) return false;
+  if (!st) return false;
   st.assignments = st.assignments && typeof st.assignments === "object" ? st.assignments : {};
   st.auto_assignments = st.auto_assignments && typeof st.auto_assignments === "object" ? st.auto_assignments : {};
   let changed = false;
+
+  // FERIADO e P. FACULTATIVO entram assim que a semana aparece no sistema.
+  // Nunca sobrescrevem um lançamento já existente (inclusive SR, SS e EXP_SS)
+  // e não bloqueiam edição posterior.
+  for (const off of OFFICERS) {
+    if (!isAutoFillOfficer(off)) continue;
+    for (const iso of st.dates || []) {
+      const key = `${off.canonical_name}|${iso}`;
+      if (String(st.assignments[key] || "").trim()) continue;
+      const event = getCalendarEventISO(iso);
+      const code = event && event.auto_code ? normalizeCodeValue(event.auto_code) : "";
+      if (code === "FERIADO" || code === "PF") {
+        st.assignments[key] = code;
+        st.auto_assignments[key] = true;
+        changed = true;
+      }
+    }
+  }
+
+  // O autopreenchimento ordinário (EXP/FOLGA) continua somente no horário
+  // administrativo de fechamento e só ocupa células que ainda estejam vazias.
+  if (!shouldRunAutoFillNow()) return changed;
+
   for (const off of OFFICERS) {
     if (!isAutoFillOfficer(off)) continue;
     for (const iso of st.dates || []) {
@@ -1589,7 +1656,7 @@ function drawPdfHolidayAlerts(doc, dates) {
   const holidays = getHolidaysForWeek(Array.isArray(dates) ? dates : []);
   if (!holidays.length) return;
   const text = holidays
-    .map(h => `FERIADO - ${fmtDDMMYYYY(h.date)} - ${String(h.name || "FERIADO").toUpperCase()}`)
+    .map(h => `${String(h.type || "FERIADO").toUpperCase()} - ${fmtDDMMYYYY(h.date)} - ${String(h.name || h.type || "FERIADO").toUpperCase()}`)
     .join("   |   ");
   doc.font("Helvetica-Bold").fontSize(7).fillColor("#b00020").text(text, { align: "center" });
   doc.fillColor("black").font("Helvetica");
@@ -1639,9 +1706,8 @@ function drawReferenceHours(doc, startY) {
     "SR = SUPERVISOR REGIONAL",
     "SS = SUPERIOR DE SOBREAVISO",
     "EXP_SS = EXPEDIENTE SUPERIOR DE SOBREAVISO",
-    "FO = FOLGA",
     "LP = LICENÇA-PRÊMIO",
-    "PF = PONTO FACULTATIVO",
+    "P. FACULTATIVO = PONTO FACULTATIVO",
     "CFP_DIA = CFP DIURNO",
     "CFP_NOITE = CFP NOTURNO",
     "CAO = CURSO DE APERFEIÇOAMENTO DE OFICIAIS",
@@ -1825,6 +1891,7 @@ function renderFrozenScalePdf(res, st, filename = "escala_anterior_original.pdf"
     doc.moveDown(0.35);
   }
   doc.font("Helvetica");
+  drawPdfSignatures(doc, st);
   doc.end();
 }
 
@@ -2973,10 +3040,12 @@ app.post("/api/pdf_link", authRequired(true), async (req, res) => {
 function dailySituationDisplayCode(code) {
   const c = String(code || "").trim();
   if (c === "MA") return "FOLGA_TARDE";
-  if (c === "VE") return "FOLGA_MANHA";
+  if (c === "VE") return "FOLGA_MANHÃ";
   if (c === "FOJ") return "FOLGA_JUNÇÃO";
   if (c === "FO*") return "FOLGA_DESCRIÇÃO";
   if (c === "SV*") return "SERVIÇO_DESCRIÇÃO";
+  if (c === "FO") return "FOLGA";
+  if (c === "PF") return "P. FACULTATIVO";
   if (c === "CFP_DIA") return "CFP DIURNO";
   if (c === "CFP_NOITE") return "CFP NOTURNO";
   if (c === "FERIAS") return "FÉRIAS";
@@ -3554,6 +3623,7 @@ doc.moveDown(0.6);
         doc.moveDown(0.35);
       }
       doc.font("Helvetica");
+      drawPdfSignatures(doc, st);
     };
 
     addOperationalChangesPage();

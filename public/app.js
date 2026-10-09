@@ -126,13 +126,20 @@
   function displayCode(code) {
     const c = String(code || "").trim();
     if (c === "MA") return "FOLGA_TARDE";
-    if (c === "VE") return "FOLGA_MANHA";
+    if (c === "VE") return "FOLGA_MANHÃ";
+    if (c === "FERIAS") return "FÉRIAS";
+    if (c === "CONVALESCENCA") return "CONVALESCENÇA";
+    if (c === "NUPCIAS") return "NÚPCIAS";
+    if (c === "LICENCA PATERNIDADE") return "LICENÇA PATERNIDADE";
     if (c === "LICENCA GESTANTE") return "LICENÇA GESTANTE";
+    if (c === "LICENCA ADOCAO") return "LICENÇA ADOÇÃO";
     if (c === "EXP_QOS_MANHA") return "EXP_QOS_MANHÃ";
     if (c === "EXP_QOS_TARDE") return "EXP_QOS_TARDE";
     if (c === "FOJ") return "FOLGA_JUNÇÃO";
     if (c === "FO*") return "FOLGA_DESCRIÇÃO";
     if (c === "SV*") return "SERVIÇO_DESCRIÇÃO";
+    if (c === "FO") return "FOLGA";
+    if (c === "PF") return "P. FACULTATIVO";
     return c;
   }
 
@@ -144,7 +151,7 @@
   function adjustSituationSelectFont(sel) {
     if (!sel) return;
     const c = String(sel.value || "").trim();
-    const longVisualCode = c === "FOJ" || c === "FO*" || c === "SV*" || c === "EXP_08H_18H" || c === "EXP_09H_18H" || c === "EXP_QOS_MANHA" || c === "EXP_QOS_TARDE" || c === "LICENCA GESTANTE";
+    const longVisualCode = c === "FOJ" || c === "FO*" || c === "SV*" || c === "PF" || c === "EXP_08H_18H" || c === "EXP_09H_18H" || c === "EXP_QOS_MANHA" || c === "EXP_QOS_TARDE" || c === "LICENCA GESTANTE" || c === "LICENCA PATERNIDADE" || c === "LICENCA ADOCAO" || c === "CONVALESCENCA";
     sel.style.fontSize = longVisualCode ? "9px" : "12px";
     sel.style.minWidth = "0";
     sel.style.maxWidth = "100%";
@@ -208,8 +215,9 @@ function fmtDateCompact(iso){ const [y,m,d]=iso.split("-"); const mons=["JAN","F
     }
     bar.style.display = "";
     bar.textContent = holidays.map(h => {
-      const name = String(h.name || "FERIADO").toUpperCase();
-      return `⚠ FERIADO - ${ddmmyyyy(h.date)} - ${name} ⚠`;
+      const type = String(h.type || "FERIADO").toUpperCase();
+      const name = String(h.name || type).toUpperCase();
+      return `⚠ ${type} - ${ddmmyyyy(h.date)} - ${name} ⚠`;
     }).join("   |   ");
   }
 
@@ -245,7 +253,7 @@ function fmtDateCompact(iso){ const [y,m,d]=iso.split("-"); const mons=["JAN","F
       "OUTROS": "COM DESCRIÇÃO",
       "SS": "SUPERIOR DE SOBREAVISO",
       "EXP_SS": "EXPEDIENTE SUPERIOR DE SOBREAVISO",
-      "FO": "FOLGA",
+      "FO": "",
       "PF": "PONTO FACULTATIVO",
       "CAO": "CURSO DE APERFEIÇOAMENTO DE OFICIAIS",
       "EAP": "ESTÁGIO DE APERFEIÇOAMENTO PROFISSIONAL",
@@ -262,7 +270,7 @@ function fmtDateCompact(iso){ const [y,m,d]=iso.split("-"); const mons=["JAN","F
     };
 
     for (const c of (state.codes || [])) {
-      if (!c) continue;
+      if (!c || c === "FO") continue;
       const div = document.createElement("div");
       div.className = "pill";
       const label = displayCode(c);
